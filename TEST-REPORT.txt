@@ -31,7 +31,20 @@ port 8799, separate test data; official Claude CLI 2.1.285 with subscription log
 - Public GitHub update check worked without a GitHub account.
 - A copy of the production SQLite database migrated successfully, preserving all
   three managed chats, paired tokens and messages. Discovery added folders only.
-- End-to-end installation of the newly published APK is checked after publication.
+- Settings downloaded the public GitHub APK and verified its SHA256/package/signer.
+  Android's unknown-source screen was dismissed once: the app returned normally,
+  without opening a permission loop. After allowing installs, the native installer
+  updated the app to 0.4.0. It reopened Connected with pairing retained. This used
+  an older-version fixture containing the new updater, since ordinary 0.3 has none.
+- GitHub push and signed-release workflows both passed on source commit c60d8ab.
+  Debug/release builds, 44 Android tests, debug/release lint and 29 Mac tests passed.
+  The published APK is versionCode 4, package dev.pocketbridge, non-debuggable,
+  and signed with the original certificate. SHA256:
+  ce143949a9dc1407de4540295f97e38f90aee768869248777ce17650e16891be
+- Production SQLite was backed up before an idle graceful LaunchAgent restart.
+  The updated Mac service exposes 11 folders and preserves three managed chats
+  and paired tokens. Private Tailscale HTTPS works; Funnel is disabled. Keep-awake
+  remains enabled. The Mac download link now serves the verified GitHub APK.
 
 INDEPENDENT REVIEW
 GPT-5.5 High implemented the Android extension. Cursor Grok reviewed/implemented
