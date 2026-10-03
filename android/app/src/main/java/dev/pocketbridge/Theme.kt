@@ -56,7 +56,7 @@ object PocketIcons {
 
 fun statusLabel(status: String) = when (status) {
     "running" -> "Working"; "waiting" -> "Needs your answer"; "stopping" -> "Stopping"
-    "interrupted" -> "Interrupted"; "error" -> "Failed"; else -> "Ready"
+    "interrupted" -> "Interrupted"; "error" -> "Failed"; "draft" -> "Draft"; "unconfirmed" -> "Not confirmed"; else -> "Ready"
 }
 fun isWorking(status: String?) = status in listOf("running", "waiting", "stopping")
 /** Preferred first, then the Mac's order; never a silent switch away from what the chat uses. */

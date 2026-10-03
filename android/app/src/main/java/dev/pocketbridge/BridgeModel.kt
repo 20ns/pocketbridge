@@ -25,12 +25,27 @@ import org.json.JSONObject
 
 fun JSONArray.objects() = (0 until length()).map { getJSONObject(it) }
 
-data class DraftChat(val id: String, val projectId: String, val mode: String, val model: String = "default", val effort: String = "default") {
-    fun json() = JSONObject().put("id", id).put("projectId", projectId).put("mode", mode).put("model", model).put("effort", effort).put("title", "New chat").put("status", "idle").put("updatedAt", System.currentTimeMillis())
-    fun store() = JSONObject().put("projectId", projectId).put("mode", mode).put("model", model).put("effort", effort).toString()
+data class DraftChat(val id: String, val projectId: String, val mode: String, val model: String = "default", val effort: String = "default", val createdAt: Long = 0) {
+    fun json() = JSONObject().put("id", id).put("projectId", projectId).put("mode", mode).put("model", model).put("effort", effort).put("title", "New chat").put("status", "idle").put("updatedAt", createdAt)
+    fun store() = JSONObject().put("projectId", projectId).put("mode", mode).put("model", model).put("effort", effort).put("createdAt", createdAt).toString()
     companion object {
-        fun parse(id: String, value: String) = JSONObject(value).let { DraftChat(id, it.getString("projectId"), it.optString("mode", "bypassPermissions"), it.optString("model", "default"), it.optString("effort", "default")) }
+        fun parse(id: String, value: String) = JSONObject(value).let { DraftChat(id, it.getString("projectId"), it.optString("mode", "bypassPermissions"), it.optString("model", "default"), it.optString("effort", "default"), it.optLong("createdAt")) }
     }
+}
+
+/** A local chat row. Blank and unsent drafts stay out of the list; a saved delivery id stays in. */
+data class ListedDraft(val id: String, val projectId: String, val text: String, val pending: Boolean, val updatedAt: Long = 0)
+
+fun listedDrafts(drafts: List<ListedDraft>) = drafts.mapNotNull { draft ->
+    if (draft.text.isBlank() && !draft.pending) null
+    else JSONObject().put("id", draft.id).put("projectId", draft.projectId).put("title", draft.text.trim().take(80).ifBlank { "New chat" }).put("local", true)
+        .put("status", if (draft.pending) "unconfirmed" else "draft").put("updatedAt", draft.updatedAt)
+}
+
+/** Server rows stay in their reconciled order. A local id already on the server is not listed twice. */
+fun projectChats(server: List<JSONObject>, projectId: String, locals: List<JSONObject>): List<JSONObject> {
+    val known = server.map { it.optString("id") }.toSet()
+    return server.filter { it.optString("projectId") == projectId } + locals.filter { it.optString("projectId") == projectId && it.optString("id") !in known }
 }
 
 data class ChatOptions(val mode: String, val model: String = "default", val effort: String = "default") {
@@ -79,6 +94,7 @@ class BridgeModel(application: Application) : AndroidViewModel(application) {
     var mode by mutableStateOf("bypassPermissions")
     var model by mutableStateOf("default")
     var effort by mutableStateOf("default")
+    var localDraftIds by mutableStateOf(store.localDraftIds()); private set
     var foreground = false
         private set
     val chat get() = chats.find { it.optString("id") == selected } ?: draftChat(selected)?.json()
@@ -124,8 +140,12 @@ class BridgeModel(application: Application) : AndroidViewModel(application) {
             ?: ChatOptions("bypassPermissions")
         setOptions(options)
     }
+    private fun refreshDraftIds() { localDraftIds = store.localDraftIds() }
     private fun discardEmptyDraft(id: String) {
-        if (id.isNotEmpty() && draftChat(id) != null && loadPending(id) == null && store.get("draft:$id").isBlank()) store.removeChat(id)
+        if (id.isNotEmpty() && draftChat(id) != null && loadPending(id) == null && store.get("draft:$id").isBlank()) {
+            store.removeChat(id)
+            refreshDraftIds()
+        }
     }
     private fun loadMessages(id: String) {
         messages = emptyList(); approvals = emptyList()
@@ -155,11 +175,11 @@ class BridgeModel(application: Application) : AndroidViewModel(application) {
             Api(base).request("/api/pair", JSONObject().put("code", code)).getString("token").also { store.savePair(base, it, pairingSession) }
         }
         api = Api(base, token); paired = true; pairCode = ""; cursor.committed = 0; connectionIssue = ""; revoked = false
-        projects = emptyList(); chats = emptyList(); messages = emptyList(); approvals = emptyList(); selected = ""; draft = ""; pending = null; model = "default"; effort = "default"
+        projects = emptyList(); chats = emptyList(); messages = emptyList(); approvals = emptyList(); selected = ""; draft = ""; pending = null; localDraftIds = emptyList(); model = "default"; effort = "default"
         if (foreground) start()
     }
     fun disconnect() {
-        actionJob?.cancel(); stopConnection(); store.clear(); api = null; paired = false; online = false; selected = ""; messages = emptyList(); chats = emptyList(); projects = emptyList(); draft = ""; pending = null; error = ""; connectionIssue = ""; revoked = false
+        actionJob?.cancel(); stopConnection(); store.clear(); api = null; paired = false; online = false; selected = ""; messages = emptyList(); chats = emptyList(); projects = emptyList(); draft = ""; pending = null; localDraftIds = emptyList(); error = ""; connectionIssue = ""; revoked = false
     }
     fun checkUpdate() = updateAction { updateStatus = withContext(Dispatchers.IO) { updater.check() } }
     fun downloadUpdate() = updateAction {
@@ -266,10 +286,26 @@ class BridgeModel(application: Application) : AndroidViewModel(application) {
             finally { updateBusy = false }
         }
     }
+    fun visibleDrafts() = listedDrafts(localDraftIds.mapNotNull { id ->
+        val saved = store.get("draftChat:$id")
+        if (saved.isEmpty()) return@mapNotNull null
+        val draft = runCatching { DraftChat.parse(id, saved) }.getOrNull() ?: return@mapNotNull null
+        val pendingRaw = store.get("pending:$id")
+        val typed = store.get("draft:$id")
+        val text = typed.ifBlank { pendingRaw.takeIf { it.isNotEmpty() }?.let { runCatching { PendingPrompt.parse(it).text }.getOrNull() }.orEmpty() }
+        ListedDraft(draft.id, draft.projectId, text, pendingRaw.isNotEmpty(), draft.createdAt)
+    })
+    fun discardDraft(id: String) {
+        if (store.get("pending:$id").isNotEmpty() || draftChat(id) == null || chats.any { it.optString("id") == id }) return
+        store.removeChat(id)
+        refreshDraftIds()
+        if (selected == id) open("")
+    }
     fun newChat(projectId: String, selectedMode: String, selectedModel: String = "default", selectedEffort: String = "default") {
         val id = UUID.randomUUID().toString()
         val options = chatOptions(selectedMode, selectedModel, selectedEffort)
-        store.put("draftChat:$id", DraftChat(id, projectId, options.mode, options.model, options.effort).store())
+        store.put("draftChat:$id", DraftChat(id, projectId, options.mode, options.model, options.effort, System.currentTimeMillis()).store())
+        refreshDraftIds()
         lastProject = projectId
         open(id)
     }
@@ -338,9 +374,15 @@ class BridgeModel(application: Application) : AndroidViewModel(application) {
         val currentApi = api ?: return@action
         val chat = chats.find { it.optString("id") == id }
         require(!isWorking(chat?.optString("status"))) { "Stop this chat before deleting it." }
-        withContext(Dispatchers.IO) { currentApi.request("/api/chats/$id/delete", JSONObject()) }
-        store.removeChat(id)
-        if (selected == id) open("")
+        val removalSession = store.session()
+        syncMutex.withLock {
+            withContext(Dispatchers.IO) {
+                currentApi.request("/api/chats/$id/delete", JSONObject())
+                store.commitChatRemoval(id, removalSession)
+            }
+            chats = chats.filter { it.optString("id") != id }
+            if (selected == id) open("")
+        }
         sync()
     }
     fun clearError() { error = "" }

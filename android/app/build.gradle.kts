@@ -2,7 +2,7 @@ plugins { id("com.android.application"); id("org.jetbrains.kotlin.android"); id(
 android {
     namespace = "dev.pocketbridge"
     compileSdk = 36
-    defaultConfig { applicationId = "dev.pocketbridge"; minSdk = 26; targetSdk = 36; versionCode = 4; versionName = "0.4.0" }
+    defaultConfig { applicationId = "dev.pocketbridge"; minSdk = 26; targetSdk = 36; versionCode = 5; versionName = "0.4.1" }
     val signingKey = System.getenv("POCKETBRIDGE_SIGNING_KEY")
     if (!signingKey.isNullOrBlank()) {
         signingConfigs.create("personal") {

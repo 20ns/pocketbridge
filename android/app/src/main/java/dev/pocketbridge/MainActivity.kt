@@ -108,7 +108,7 @@ private enum class Screen(val depth: Int) { Pair(0), Projects(0), Chats(1), Sett
             Screen.Chats -> Page(
                 model, snackbar,
                 title = { Text(projectName(model, project), maxLines = 1, overflow = TextOverflow.Ellipsis) },
-                navigation = { BackLabel("Projects", back) }, onSettings = { settings = true }, saved = model.chats.any { it.optString("projectId") == project },
+                navigation = { BackLabel("Projects", back) }, onSettings = { settings = true }, saved = projectChats(model.chats, project, model.visibleDrafts()).isNotEmpty(),
                 fab = { NewChatButton(model, project, snackbar) },
             ) { Chats(model, project) }
             Screen.Settings -> Page(model, snackbar, title = { Text("Connection") }, navigation = { BackLabel("", back) }) { Settings(model) }

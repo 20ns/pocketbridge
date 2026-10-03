@@ -13,7 +13,7 @@ ONE-TIME PHONE SETUP
    If it prints a Tailscale HTTPS enablement link, complete that step and rerun it.
 3. Download the latest PocketBridge APK from
    https://github.com/20ns/pocketbridge/releases/latest . Install it over the old app.
-   The local releases folder also contains PocketBridge-0.4.0.apk.
+   The local releases folder also contains PocketBridge-0.4.1.apk.
    Alternatively, open the private address from step 2 followed by /PocketBridge.apk
    in Chrome on your phone. Android will ask for the usual APK installation approval.
 4. In the Mac client choose Connect phone, then Create pairing code.

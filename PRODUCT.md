@@ -7,6 +7,7 @@ Personal remote control for the user's official Claude Code installation on thei
   local Claude Code session metadata, with manual registration on the Mac as a fallback.
 - Latest and All project views; newest, oldest and name ordering. Chats can be
   renamed or deleted. Empty conversations are not saved before the first prompt.
+  Typed drafts and unconfirmed first prompts remain reachable in Recent chats.
 - Persistent pairing, private networking, Mac service starts at user login.
 - Recent chats, prompts, formatted replies, streamed tool activity, Stop, questions when needed.
 - Bypass permissions is the preferred mode; Auto is also offered. Never silently change modes.

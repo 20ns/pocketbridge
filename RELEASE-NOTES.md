@@ -1,17 +1,10 @@
-PocketBridge 0.4.0
+PocketBridge 0.4.1
 
-- Project folders are discovered from local Claude Code chats. Their old
-  conversations are not imported. Choose Latest or All and change the ordering.
-- New chat stays a draft until you send the first prompt.
-- Hold a chat, or use its menu, to rename or delete it. Stop active work first.
-- Conversation options select the model, effort and permission mode for the next prompt.
-- Settings checks public GitHub releases and downloads a signed APK. Android
-  confirms installation. Pairing and drafts remain when updating the existing app.
-- The phone interface uses quieter lists and a compact options sheet.
+- Typed new-chat drafts stay reachable in Recent chats after Back, app restarts and project navigation. Empty untouched chats remain unsaved.
+- Unconfirmed first prompts stay reachable with their original delivery IDs. Draft previews distinguish multiple unfinished chats.
+- Confirmed chat deletion atomically clears cached list and delivery state, including an offline restart immediately after deletion.
+- A concurrency regression covers 60 first/resumed turns, triple deliveries, conflicting options and late sends after deletion.
 
-Install this APK over the existing PocketBridge app. Version 0.3.0 needs this one
-manual installation to gain the Settings updater. Keep Tailscale connected on
-both devices and the Mac awake, plugged in and lid open.
+Install over the existing app. Version 0.4.0 can download this update through Settings. The original signing certificate and pairing are retained.
 
-Source and releases: https://github.com/20ns/pocketbridge
-The Mac connection, Claude login and personal chat data remain private.
+Source and signed APKs: https://github.com/20ns/pocketbridge

@@ -220,7 +220,7 @@ private fun projectActivity(project: JSONObject, chats: List<JSONObject>) = proj
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable fun Chats(model: BridgeModel, project: String) {
     var sort by rememberSaveable { mutableStateOf(ChatSort.Newest) }
-    val chats = model.chats.filter { it.optString("projectId") == project }.sortedWith(when (sort) {
+    val chats = projectChats(model.chats, project, model.visibleDrafts()).sortedWith(when (sort) {
         ChatSort.Newest -> compareByDescending { it.optLong("updatedAt") }
         ChatSort.Oldest -> compareBy { it.optLong("updatedAt") }
     })
@@ -261,13 +261,16 @@ private fun projectActivity(project: JSONObject, chats: List<JSONObject>) = proj
     var rename by remember { mutableStateOf(false) }
     var delete by remember { mutableStateOf(false) }
     val id = chat.getString("id")
+    val local = chat.optBoolean("local")
+    val unconfirmed = local && status == "unconfirmed"
     val working = isWorking(status)
+    val open = { model.open(id) }
     ListItem(
         headlineContent = { Text(chat.optString("title").ifBlank { "New chat" }, maxLines = 2, overflow = TextOverflow.Ellipsis) },
         // Ready chats stay quiet; only states that need a look get a second line.
         supportingContent = if (status in listOf("idle", "")) null else {
             {
-                val tint = when (status) { "waiting" -> colors.tertiary; "error" -> colors.error; "interrupted" -> colors.onSurfaceVariant; else -> colors.primary }
+                val tint = when (status) { "waiting" -> colors.tertiary; "error", "unconfirmed" -> colors.error; "interrupted", "draft" -> colors.onSurfaceVariant; else -> colors.primary }
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                     if (status == "running" || status == "stopping") CircularProgressIndicator(Modifier.size(12.dp), color = tint, strokeWidth = 1.75.dp)
                     Text(statusLabel(status), color = tint)
@@ -276,22 +279,22 @@ private fun projectActivity(project: JSONObject, chats: List<JSONObject>) = proj
         },
         trailingContent = {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(relativeTime(chat.optLong("updatedAt"), now), style = MaterialTheme.typography.labelMedium)
-                Box {
+                if (!local || chat.optLong("updatedAt") > 0) Text(relativeTime(chat.optLong("updatedAt"), now), style = MaterialTheme.typography.labelMedium)
+                if (!unconfirmed) Box {
                     IconButton(onClick = { menu = true }) { Icon(Icons.Default.MoreVert, "Chat actions") }
-                    ChatMenu(menu, { menu = false }, { rename = true }, { delete = true }, working)
+                    ChatMenu(menu, { menu = false }, if (local) null else ({ rename = true }), { delete = true }, working)
                 }
             }
         },
-        modifier = Modifier.combinedClickable(onClickLabel = "Open chat", onClick = { model.open(id) }, onLongClickLabel = "Chat actions", onLongClick = { menu = true }),
+        modifier = if (unconfirmed) Modifier.clickable(onClickLabel = "Open chat", onClick = open) else Modifier.combinedClickable(onClickLabel = "Open chat", onClick = open, onLongClickLabel = "Chat actions", onLongClick = { menu = true }),
     )
     if (rename) RenameDialog(chat.optString("title").ifBlank { "New chat" }, { rename = false }, { model.rename(id, it); rename = false })
-    if (delete) DeleteDialog(chat.optString("title").ifBlank { "New chat" }, working, { delete = false }, { model.delete(id); delete = false })
+    if (delete) DeleteDialog(chat.optString("title").ifBlank { "New chat" }, working, local, { delete = false }, { if (local) model.discardDraft(id) else model.delete(id); delete = false })
 }
 
-@Composable private fun ChatMenu(expanded: Boolean, onDismiss: () -> Unit, onRename: () -> Unit, onDelete: () -> Unit, working: Boolean) {
+@Composable private fun ChatMenu(expanded: Boolean, onDismiss: () -> Unit, onRename: (() -> Unit)?, onDelete: () -> Unit, working: Boolean) {
     DropdownMenu(expanded, onDismiss) {
-        DropdownMenuItem(text = { Text("Rename") }, onClick = { onDismiss(); onRename() })
+        if (onRename != null) DropdownMenuItem(text = { Text("Rename") }, onClick = { onDismiss(); onRename() })
         DropdownMenuItem(
             text = { Text(if (working) "Stop before deleting" else "Delete") },
             enabled = !working,
@@ -311,11 +314,15 @@ private fun projectActivity(project: JSONObject, chats: List<JSONObject>) = proj
     )
 }
 
-@Composable private fun DeleteDialog(title: String, working: Boolean, onDismiss: () -> Unit, onDelete: () -> Unit) {
+@Composable private fun DeleteDialog(title: String, working: Boolean, local: Boolean, onDismiss: () -> Unit, onDelete: () -> Unit) {
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text(if (working) "Stop this chat first" else "Delete chat?") },
-        text = { Text(if (working) "Claude is still working or waiting. Stop it before deleting." else "Delete \"$title\" from PocketBridge on this phone and Mac.") },
+        text = { Text(when {
+            working -> "Claude is still working or waiting. Stop it before deleting."
+            local -> "Delete \"$title\" from this phone. It has not been sent."
+            else -> "Delete \"$title\" from PocketBridge on this phone and Mac."
+        }) },
         confirmButton = { TextButton(onClick = onDelete, enabled = !working) { Text("Delete", color = MaterialTheme.colorScheme.error) } },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
     )

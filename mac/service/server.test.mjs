@@ -54,6 +54,33 @@ test('prompt delivery is durable and idempotent; stream chunks reconcile with fi
   assert.ok(calls.every(c => c.args.includes(chat.id) && c.args.includes('--dangerously-skip-permissions')));
 });
 
+test('bulk concurrent retries execute each first and resumed turn once, including after deletion', async t => {
+  const f = await fixture(t), project = (await f.request('/api/state')).data.projects[0];
+  const chats = Array.from({ length: 10 }, () => ({ id: randomUUID() })), deliveries = [];
+  for (let turn = 0; turn < 6; turn++) await Promise.all(chats.map(async chat => {
+    const delivery = { id: randomUUID(), text: `${chat.id}:${turn}`, projectId: project.id, model: 'opus', effort: 'high' };
+    const replies = await Promise.all(Array.from({ length: 3 }, () => f.request(`/api/chats/${chat.id}/prompts`, delivery)));
+    assert.equal(replies.filter(reply => reply.status === 202 && !reply.data.duplicate).length, 1);
+    assert.equal(replies.filter(reply => reply.status === 200 && reply.data.duplicate).length, 2);
+    assert.equal((await f.request(`/api/chats/${chat.id}/prompts`, { ...delivery, model: 'sonnet' })).status, 409);
+    assert.equal((await f.finished(chat)).status, 'idle');
+    deliveries.push(delivery);
+  }));
+  const calls = () => readFileSync(join(f.projectPath, 'calls.ndjson'), 'utf8').trim().split('\n').map(JSON.parse);
+  assert.deepEqual(calls().map(call => call.prompt).sort(), deliveries.map(delivery => delivery.text).sort());
+  const db = new DatabaseSync(join(f.dir, 'data/data.sqlite'), { readOnly: true });
+  assert.equal(db.prepare("SELECT count(*) AS n FROM messages WHERE role='user'").get().n, 60);
+  assert.deepEqual(db.prepare('SELECT id FROM prompts').all().map(row => row.id).sort(), deliveries.map(delivery => delivery.id).sort());
+  db.close();
+  for (const chat of chats) {
+    assert.equal((await f.request(`/api/chats/${chat.id}/rename`, { title: 'Renamed' })).status, 200);
+    assert.equal((await f.request(`/api/chats/${chat.id}/delete`, {})).status, 200);
+    assert.equal((await f.request(`/api/chats/${chat.id}/prompts`, { ...deliveries[0], id: randomUUID(), projectId: project.id })).status, 410);
+  }
+  assert.equal(calls().length, 60);
+  assert.equal((await f.request('/api/state')).data.chats.length, 0);
+});
+
 test('pairing is one-time, QR matches the issued code, phone token persists, and project registration remains local', async t => {
   const f = await fixture(t), pair = (await f.request('/api/pairing')).data;
   assert.equal(new URL(pair.link).searchParams.get('code'), pair.code);
