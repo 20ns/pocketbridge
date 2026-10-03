@@ -18,6 +18,7 @@ const models = [
 const commands = [
   { name: 'deploy', description: 'Ship the current branch (project)', argumentHint: '[env]' },
   { name: 'review-notes', description: 'Summarise review notes (user)', argumentHint: '' },
+  { name: 'deploy', description: 'Deploy from the user scope (user)', argumentHint: '' },
   { name: 'model', description: 'Change the model', argumentHint: '', builtin: true },
 ];
 const usage = { subscription_type: 'max', rate_limits: { limits: [
@@ -99,6 +100,13 @@ async function run(message) {
   if (prompt === 'bg-shell') {
     emit({ type: 'system', subtype: 'background_tasks_changed', tasks: [{ task_id: 'b1', task_type: 'local_bash', description: 'dev server' }, { task_id: 'm1', task_type: 'local_agent', ambient: true }] });
     return result('Started the dev server in the background.');
+  }
+  if (prompt === 'steer-discard') {
+    emit({ type: 'assistant', message: { content: [{ type: 'tool_use', id: 'toolu_wait', name: 'Bash', input: { command: 'sleep 1' } }] } });
+    const steer = await nextMessage(3000);
+    if (steer) emit({ type: 'command_lifecycle', state: 'discarded', uuid: steer.uuid });
+    emit({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'toolu_wait', content: '' }] } });
+    return result('Finished without the steer');
   }
   if (prompt === 'steer-swallow') {
     emit({ type: 'assistant', message: { content: [{ type: 'tool_use', id: 'toolu_wait', name: 'Bash', input: { command: 'sleep 1' } }] } });

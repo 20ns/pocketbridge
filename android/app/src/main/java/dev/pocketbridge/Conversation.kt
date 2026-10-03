@@ -73,10 +73,14 @@ import org.json.JSONObject
 private val Mine = RoundedCornerShape(Corners.bubble, Corners.bubble, Corners.tail, Corners.bubble)
 
 @Composable fun Conversation(model: BridgeModel) {
-    val entries = remember(model.messages, model.subagents, model.turns) { withSubagents(transcript(model.messages.map(::said)), model.subagents, model.turns) }
-    val approvals = model.approvals.filter { it.optString("status") == "pending" }
     val chat = model.chat
     val status = chat?.optString("status").orEmpty()
+    // Once the chat stops working nothing it started still runs, whatever a sub-agent row last said.
+    val working = isWorking(status)
+    val stoppedAt = chat?.optLong("updatedAt")?.takeIf { it > 0 }
+    val subagents = remember(model.subagents, model.turns, working, stoppedAt) { settledSubagents(model.subagents, model.turns, working, stoppedAt) }
+    val entries = remember(model.messages, subagents, model.turns) { withSubagents(transcript(model.messages.map(::said)), subagents, model.turns) }
+    val approvals = model.approvals.filter { it.optString("status") == "pending" }
     val pending = model.pending
     // The Mac stores a prompt under its delivery ID, so an accepted-but-unconfirmed prompt is already in the transcript.
     val pendingShown = pending != null && model.messages.any { it.optString("id") == pending.id }
@@ -87,16 +91,16 @@ private val Mine = RoundedCornerShape(Corners.bubble, Corners.bubble, Corners.ta
     val scrolledUp by remember { derivedStateOf { list.firstVisibleItemIndex > 1 || (list.firstVisibleItemIndex == 1 && list.firstVisibleItemScrollOffset > away) } }
     val live = status == "running" || status == "waiting"
     // A reply that closes a turn gets a Copy action; replies still streaming don't.
-    val turnEnds = remember(entries, live) { turnEnds(entries, live) }
+    val turnEnds = remember(entries, live, model.turns) { turnEnds(entries, live, model.turns) }
     // Each finished turn says how long it ran, once, beside the reply that closed it.
     val durations = remember(entries, model.turns) { turnDurations(entries, model.turns) }
-    val startedAt = remember(model.messages, model.turns) { runningSince(model.turns, model.messages.lastOrNull { it.optString("role") == "user" }?.optLong("createdAt")?.takeIf { it > 0 }) }
+    val startedAt = remember(model.messages, model.turns, working) { runningSince(model.turns, model.messages.lastOrNull { it.optString("role") == "user" }?.optLong("createdAt")?.takeIf { it > 0 }, working) }
     val lastWork = entries.lastOrNull { it !is Agents }
     // Copied in from a Mac session: dimmed, under one divider naming where it came from.
     val firstImported = entries.firstOrNull { it is Message && it.said.kind == "imported" }?.key
     val agentName = agentProduct(chat?.optString("agent").orEmpty())
     val activity = model.activity.ifBlank { chat?.optString("activity").orEmpty() }
-    val runningAgents = model.subagents.count { it.running }
+    val runningAgents = subagents.count { it.running }
     val openImage = LocalImageViewer.current
     Box(Modifier.fillMaxSize()) {
         // Reverse layout anchors the newest content above the composer while replies stream in.
@@ -127,7 +131,8 @@ private val Mine = RoundedCornerShape(Corners.bubble, Corners.bubble, Corners.ta
                     }
                 }
             }
-            if (entries.isEmpty() && pending == null && !isWorking(status)) item(key = "empty") { EmptyConversation(model) }
+            // A saved chat invites a first prompt only once its messages are known to be none; offline it says it's waiting.
+            if (entries.isEmpty() && pending == null && !working && (model.transcriptReady || !model.online)) item(key = "empty") { EmptyConversation(model) }
         }
         AnimatedVisibility(
             scrolledUp, Modifier.align(Alignment.BottomCenter).padding(bottom = Spacing.md),
@@ -436,7 +441,7 @@ private val AnswersSaver = Saver<Answers, String>(save = { encodeAnswers(it) }, 
                     var answer by rememberSaveable(id) { mutableStateOf("") }
                     CardTitle(PocketIcons.Help, "$agent has a question")
                     OutlinedTextField(answer, { answer = it }, Modifier.fillMaxWidth(), label = { Text("Your answer") }, shape = RoundedCornerShape(Corners.groupInner * 3))
-                    Decision("Send answer", "Decline", enabled && answer.isNotBlank(), { model.decide(id, true, JSONObject().put("answer", answer)) }, { model.decide(id, false, JSONObject()) })
+                    Decision("Send answer", "Decline", enabled, { model.decide(id, true, JSONObject().put("answer", answer)) }, { model.decide(id, false, JSONObject()) }, ready = answer.isNotBlank())
                 }
                 else -> {
                     CardTitle(PocketIcons.Shield, "Allow $tool?")
@@ -462,10 +467,11 @@ private val AnswersSaver = Saver<Answers, String>(save = { encodeAnswers(it) }, 
     }
 }
 
-@Composable private fun Decision(confirm: String, decline: String, enabled: Boolean, onConfirm: () -> Unit, onDecline: () -> Unit, declineEnabled: Boolean = true) {
+/** Both buttons need the Mac and no other answer on its way; confirm also needs the answer to be [ready]. */
+@Composable private fun Decision(confirm: String, decline: String, enabled: Boolean, onConfirm: () -> Unit, onDecline: () -> Unit, ready: Boolean = true) {
     Row(Modifier.fillMaxWidth().padding(top = Spacing.xs), horizontalArrangement = Arrangement.spacedBy(Spacing.sm, Alignment.End)) {
-        OutlinedButton(onClick = onDecline, enabled = declineEnabled) { Text(decline) }
-        Button(onClick = onConfirm, enabled = enabled) { Text(confirm) }
+        OutlinedButton(onClick = onDecline, enabled = enabled) { Text(decline) }
+        Button(onClick = onConfirm, enabled = enabled && ready) { Text(confirm) }
     }
 }
 
@@ -498,9 +504,9 @@ private val AnswersSaver = Saver<Answers, String>(save = { encodeAnswers(it) }, 
         }
     }
     val complete = questions.all { answer(it).isNotBlank() }
-    Decision("Send answer", "Decline", enabled && complete, {
+    Decision("Send answer", "Decline", enabled, {
         model.decide(id, true, JSONObject().apply { questions.forEach { put(it.optString("question"), answer(it)) } })
-    }, { model.decide(id, false, JSONObject()) }, declineEnabled = enabled)
+    }, { model.decide(id, false, JSONObject()) }, ready = complete)
 }
 
 @Composable private fun OptionRow(label: String, description: String, selected: Boolean, multi: Boolean, onClick: () -> Unit) {

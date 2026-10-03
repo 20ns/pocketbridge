@@ -66,6 +66,8 @@ fun parseMarkdown(text: String): List<Block> {
     val lines = text.replace("\r\n", "\n").split('\n')
     val blocks = mutableListOf<Block>()
     val paragraph = mutableListOf<String>()
+    // Indents of the open list levels: an item nests one level when indented at least two past its parent.
+    val listIndents = mutableListOf<Int>()
     fun flush() { if (paragraph.isNotEmpty()) { blocks += Paragraph(paragraph.joinToString("\n")); paragraph.clear() } }
     var i = 0
     while (i < lines.size) {
@@ -98,7 +100,11 @@ fun parseMarkdown(text: String): List<Block> {
             listItem != null -> {
                 flush()
                 val marker = listItem.groupValues[2].let { if (it[0].isDigit()) it.dropLast(1) + "." else "•" }
-                blocks += Bullet(marker, listItem.groupValues[3], (listItem.groupValues[1].replace("\t", "    ").length / 2).coerceAtMost(3))
+                val indent = listItem.groupValues[1].replace("\t", "    ").length
+                if (blocks.lastOrNull() !is Bullet) listIndents.clear()
+                while (listIndents.isNotEmpty() && indent < listIndents.last()) listIndents.removeAt(listIndents.lastIndex)
+                if (listIndents.isEmpty() || indent >= listIndents.last() + 2) listIndents += indent
+                blocks += Bullet(marker, listItem.groupValues[3], (listIndents.size - 1).coerceAtMost(3))
             }
             line.trimStart().startsWith(">") -> {
                 flush()

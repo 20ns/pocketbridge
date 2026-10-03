@@ -262,7 +262,7 @@ private fun Modifier.fadeEnd(scroll: ScrollState) = graphicsLayer { compositingS
             onClick = { onSend(null) }, enabled = ready, modifier = Modifier.size(Sizes.sendButton),
             colors = IconButtonDefaults.filledIconButtonColors(disabledContainerColor = Pocket.colors.pill, disabledContentColor = colors.onSurfaceVariant.copy(alpha = 0.55f)),
         ) {
-            if (sending) CircularProgressIndicator(Modifier.size(Sizes.smallIcon), strokeWidth = 2.dp, color = colors.onSurfaceVariant)
+            if (sending) CircularProgressIndicator(Modifier.size(Sizes.smallIcon).semantics { contentDescription = "Sending" }, strokeWidth = 2.dp, color = colors.onSurfaceVariant)
             else Icon(PocketIcons.ArrowUp, "Send", Modifier.size(22.dp))
         }
     }

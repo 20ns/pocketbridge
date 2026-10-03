@@ -10,7 +10,7 @@ Personal remote control for the user's official Claude Code and Codex installati
 - An on/off switch per agent, shared by phone and Mac, for when only one subscription is
   active. Off agents aren't offered, probed or used for discovery.
 - Plan usage for Claude and Codex (session and weekly limits, reset times, credits) read from
-  each CLI, plus context fill for Claude chats.
+  each CLI, plus context fill for each chat.
 - Recent and All project views with search; newest, oldest and name ordering. Work in
   progress anywhere is listed first. Chat rows show the last reply and the model. Chats can be
   renamed or deleted. Empty conversations are not saved before the first prompt.
@@ -29,7 +29,7 @@ Personal remote control for the user's official Claude Code and Codex installati
 - User delegated implementation, technology and aesthetic choices. Build directly and test with available emulator; physical phone validation remains distinct.
 
 ## Stack
-Native Kotlin/Compose Android app, Node.js 22 JavaScript Mac service with built-in SQLite, local browser Mac client and launcher. PNPM for Node packages; Gradle for Android.
+Native Kotlin/Compose Android app, Node.js 22.13 or newer JavaScript Mac service with built-in SQLite, local browser Mac client and launcher. PNPM for Node packages; Gradle for Android.
 
 ## UI
 Operate mode. Open to projects, choose a project, then start or reopen a chat.

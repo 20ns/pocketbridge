@@ -150,6 +150,8 @@ export async function createService(options = {}) {
     usageProbe[agent] = (agent === 'claude' ? claudeUsage(probe) : codexUsage(probe)).catch(() => null).then(result => {
       usageProbe[agent] = null;
       if (result) usage[agent] = { ...result, updatedAt: Date.now() };
+      // Limits that can't be refreshed for ten minutes are dropped rather than shown as current.
+      else if (usage[agent] && Date.now() - usage[agent].updatedAt > 600_000) delete usage[agent];
       return usage[agent] ?? null;
     });
     return usageProbe[agent];
@@ -237,6 +239,9 @@ export async function createService(options = {}) {
     for (const row of all("SELECT id FROM chats WHERE status IN ('running','stopping','waiting')")) {
       status(row.id, 'interrupted', 'Mac service restarted during this task. Review the conversation before continuing.');
       run("UPDATE approvals SET status='deny' WHERE chatId=? AND status='pending'", row.id);
+      // Its turn and any sub-agents ended with the old process; nothing should keep ticking.
+      run("UPDATE subagents SET status='stopped',endedAt=? WHERE chatId=? AND status='running'", Date.now(), row.id);
+      run('UPDATE prompts SET endedAt=? WHERE chatId=? AND startedAt IS NOT NULL AND endedAt IS NULL', Date.now(), row.id);
     }
   } catch (error) { clearTimeout(eventTimer); releaseOwner(); db.close(); throw error; }
   const ignoredCwd = value => String(value).includes(`${sep}Library${sep}Application Support${sep}Claude${sep}scratch-workspaces${sep}`);
@@ -442,7 +447,11 @@ export async function createService(options = {}) {
         if (typeof event.parent_tool_use_id === 'string') { routeSubagent(event); return; }
         if (event.type === 'system' && event.subtype === 'init') { run('UPDATE chats SET sessionStarted=1 WHERE id=?', id); if (entry.turnPrompt || entry.written.size === 0) { entry.turnOpen = true; clearTimeout(entry.settleTimer); } }
         if (event.type === 'command_lifecycle' && ['cancelled', 'discarded', 'refused'].includes(event.state ?? event.status)) {
-          for (const key of [event.uuid, event.command_uuid, event.message_uuid]) if (typeof key === 'string') entry.written.delete(key);
+          // Claude dropped a message it had accepted; say so instead of leaving it looking delivered.
+          for (const key of [event.uuid, event.command_uuid, event.message_uuid]) if (typeof key === 'string' && entry.written.has(key)) {
+            message(id, 'activity', `Claude didn't run "${oneLine(entry.written.get(key).text, 80)}". Send it again if you still need it.`);
+            entry.written.delete(key);
+          }
           settle();
         }
         if (event.type === 'user' && !event.message.content.some(block => block.type === 'tool_result')) {
@@ -518,7 +527,8 @@ export async function createService(options = {}) {
         if (!writable()) { rejectCall(new Error('Codex is no longer running')); return; }
         const callId = nextId++; pending.set(callId, { resolveCall, rejectCall }); send({ id: callId, method, params });
       });
-      child.on('exit', () => { for (const waiter of pending.values()) waiter.rejectCall(new Error('Codex exited')); pending.clear(); });
+      // An exit leaves a request's outcome unknown: Codex may have applied it before going away.
+      child.on('exit', () => { for (const waiter of pending.values()) waiter.rejectCall(Object.assign(new Error('Codex exited'), { unknown: true })); pending.clear(); });
       const codex = codexAppConsumer({
         say: (role, value, messageId) => message(id, role, value, messageId),
         update: (messageId, value) => { run('UPDATE messages SET text=? WHERE id=?', value, messageId); change('message', id); },
@@ -532,17 +542,33 @@ export async function createService(options = {}) {
         const current = get('SELECT mode,model,effort FROM chats WHERE id=?', id);
         return { model: current.model !== 'default' ? current.model : null, effort: current.effort !== 'default' ? current.effort : null, ...codexPolicy(current.mode) };
       };
-      const skills = codexSkills.get(project.id) ?? [];
-      const input = next => {
-        const named = /^\/([\w:.-]+)/.exec(next.text)?.[1], skill = named && skills.find(item => item.name === named);
+      // A "/name" prompt passes that skill. The list is kept ten minutes; a new turn waits for a fresh one, while a
+      // steer must go out at once (its turn may end meanwhile), so it uses what is known and refreshes for next time.
+      const skillName = next => /^\/([\w:.-]+)/.exec(next.text)?.[1];
+      const fresh = () => { const cached = codexSkills.get(project.id); return cached && Date.now() - cached.at < 600_000 ? cached.list : null; };
+      const inputFor = (next, skills) => {
+        const skill = skills?.find(item => item.name === skillName(next));
         return [...(skill ? [{ type: 'skill', name: skill.name, path: skill.path }] : []), { type: 'text', text: next.text, text_elements: [] }, ...next.attachments.map(item => ({ type: 'localImage', path: item.path }))];
+      };
+      const withSkills = async next => inputFor(next, !skillName(next) ? null : fresh() ?? (await loadCodexSkills(project).catch(() => null)) ?? codexSkills.get(project.id)?.list);
+      const steerInput = next => {
+        if (skillName(next) && !fresh()) loadCodexSkills(project).catch(() => {});
+        return inputFor(next, codexSkills.get(project.id)?.list);
       };
       const shutdown = () => {
         if (entry.finishing) return; entry.finishing = true; child.stdin.end();
         setTimeout(() => { if (active.get(id) === entry) terminateGroup(child.pid, options.stopTimeoutMs ?? 3000).catch(() => {}); }, 3000).unref();
       };
-      const interruptNow = () => call('turn/interrupt', { threadId: entry.threadId, turnId: entry.turnId }).catch(() => {});
-      const steerNow = next => call('turn/steer', { threadId: entry.threadId, expectedTurnId: entry.turnId, input: input(next) }).catch(() => {
+      // A rejected interrupt is tried once more; if the turn still won't stop, the queued prompt runs when it ends.
+      const interruptNow = (retry = true) => {
+        const turnId = entry.turnId;
+        call('turn/interrupt', { threadId: entry.threadId, turnId }).catch(error => {
+          if (retry && !error.unknown) setTimeout(() => { if (entry.turnLive && entry.turnId === turnId && !entry.finishing) interruptNow(false); }, 1000).unref();
+        });
+      };
+      const steerNow = next => call('turn/steer', { threadId: entry.threadId, expectedTurnId: entry.turnId, input: steerInput(next) }).catch(error => {
+        // Codex may have taken a steer it never answered; running it again could repeat its work.
+        if (error.unknown) { message(id, 'activity', `Codex stopped before confirming "${oneLine(next.text, 80)}". Check the chat before sending it again.`); return; }
         // The turn ended before the steer landed; it becomes the next turn instead.
         if (entry.finishing) entry.after.push(next); else if (entry.turnOpen) entry.queue.push(next); else startTurn(next).catch(failRun);
       });
@@ -557,7 +583,7 @@ export async function createService(options = {}) {
       const startTurn = async next => {
         turnStarted(next.promptId); entry.turnOpen = true; entry.turnId = null; entry.turnLive = false;
         const { model, effort } = settings();
-        const opened = await call('turn/start', { threadId: entry.threadId, input: input(next), ...(model ? { model } : {}), ...(effort ? { effort } : {}) });
+        const opened = await call('turn/start', { threadId: entry.threadId, input: await withSkills(next), ...(model ? { model } : {}), ...(effort ? { effort } : {}) });
         if (!entry.turnLive) entry.turnId = opened?.turn?.id ?? entry.turnId;
       };
       const failRun = error => { entry.failure ??= error?.message ?? 'Codex could not start this turn.'; shutdown(); };
@@ -665,6 +691,8 @@ export async function createService(options = {}) {
     const catalog = await catalogFor(agent);
     if (input.model !== undefined && !checkModel(agent, input.model, catalog)) throw fail(400, 'Unsupported model');
     const model = input.model ?? stored?.model ?? 'default';
+    // A new model keeps the chat's effort only if that model supports it.
+    if (input.model !== undefined && input.effort === undefined && stored?.effort && stored.effort !== 'default' && !checkEffort(agent, model, stored.effort, catalog)) throw fail(400, 'Unsupported effort for this model');
     // Clients before 0.5 send no agent and only know the legacy effort list, so they keep its rules.
     const effortCatalog = input.agent === undefined && efforts.includes(input.effort) ? null : catalog;
     if (input.effort !== undefined && (typeof input.effort !== 'string' || !checkEffort(agent, model, input.effort, effortCatalog))) throw fail(400, 'Unsupported effort for this model');
@@ -677,9 +705,10 @@ export async function createService(options = {}) {
     response.end(compress ? gzipSync(payload, { level: 4 }) : payload);
   };
   const body = async request => {
-    let value = '', size = 0; for await (const chunk of request) { size += chunk.length; if (size > 200_000) throw fail(413, 'Request too large'); value += chunk; }
+    // Chunks are joined as bytes first: a character split across two network chunks must not be corrupted.
+    const chunks = []; let size = 0; for await (const chunk of request) { size += chunk.length; if (size > 200_000) throw fail(413, 'Request too large'); chunks.push(chunk); }
     if (closed) throw fail(503, 'Mac service is shutting down');
-    try { const result = JSON.parse(value); if (!result || typeof result !== 'object' || Array.isArray(result)) throw new Error(); return result; } catch { throw fail(400, 'Invalid JSON body'); }
+    try { const result = JSON.parse(Buffer.concat(chunks).toString('utf8')); if (!result || typeof result !== 'object' || Array.isArray(result)) throw new Error(); return result; } catch { throw fail(400, 'Invalid JSON body'); }
   };
   const rawBody = async (request, max) => {
     const chunks = []; let size = 0;
@@ -691,6 +720,25 @@ export async function createService(options = {}) {
     : data.subarray(0, 4).toString('latin1') === 'RIFF' && data.subarray(8, 12).toString('latin1') === 'WEBP' ? 'image/webp' : ['GIF87a', 'GIF89a'].includes(data.subarray(0, 6).toString('latin1')) ? 'image/gif' : null;
   const project = id => { const row = get('SELECT * FROM projects WHERE id=?', id); if (!row) throw fail(404, 'Project not found'); return row; };
   const gitCache = new Map();
+  /** Enabled Codex skills for a folder, remembered for "/name" prompts. Null when Codex didn't answer. */
+  const loadCodexSkills = async folder => {
+    const result = await codexRequest({ command: paths.codex, cwd: dataDir, env: agentEnv('codex'), signal: probes.signal, timeoutMs: options.catalogTimeoutMs ?? 20_000, method: 'skills/list', params: { cwds: [folder.path] } });
+    if (!result) return null;
+    // The same skill name can exist in several scopes; the first listed wins, as names must be unique to pick one.
+    const seen = new Set(), skills = (result.data ?? []).flatMap(item => Array.isArray(item?.skills) ? item.skills : []).filter(skill => skill?.enabled !== false && typeof skill?.name === 'string' && /^[\w:.-]{1,80}$/.test(skill.name) && typeof skill.path === 'string' && !seen.has(skill.name) && seen.add(skill.name));
+    codexSkills.set(folder.id, { at: Date.now(), list: skills.map(skill => ({ name: skill.name, path: skill.path })) });
+    return skills;
+  };
+  /** The last prompt and reply of a Codex thread, read from its newest turn. */
+  const codexLastExchange = async threadId => {
+    const listed = await codexRequest({ command: paths.codex, cwd: dataDir, env: agentEnv('codex'), signal: probes.signal, timeoutMs: options.catalogTimeoutMs ?? 20_000, method: 'thread/turns/list', params: { threadId, limit: 1, itemsView: 'full' } }).catch(() => null);
+    const items = Array.isArray(listed?.data?.[0]?.items) ? listed.data[0].items : [];
+    const textOf = item => (Array.isArray(item.content) ? item.content : []).filter(part => part?.type === 'text' && typeof part.text === 'string').map(part => part.text).join('\n');
+    const askedAt = items.findLastIndex(item => item?.type === 'userMessage' && textOf(item)), said = askedAt >= 0 ? textOf(items[askedAt]) : null;
+    // Only a reply after the last prompt answers it; an unanswered steer brings no older reply along.
+    const reply = items.slice(askedAt + 1).filter(item => item?.type === 'agentMessage' && typeof item.text === 'string' && item.text.trim()).at(-1)?.text;
+    return said || reply ? { lastPrompt: said ? said.slice(0, 4000) : null, lastReply: reply ? reply.slice(0, 8000) : null } : null;
+  };
   /** Sessions in a project folder that PocketBridge didn't start, newest first, for continuing on the phone. */
   const externalSessions = async folder => {
     const managed = new Set(all('SELECT id FROM chats UNION SELECT agentSession FROM chats WHERE agentSession IS NOT NULL UNION SELECT forkFrom FROM chats WHERE forkFrom IS NOT NULL UNION SELECT id FROM deleted_chats UNION SELECT id FROM hidden_sessions').map(item => item.id));
@@ -802,12 +850,7 @@ export async function createService(options = {}) {
             const cached = commandLists.get(key);
             if (!cached || Date.now() - cached.at > 10 * 60_000) {
               const probe = { command: paths[agent], cwd: folder.path, env: agentEnv(agent), signal: probes.signal, timeoutMs: options.catalogTimeoutMs ?? 20_000 };
-              const value = agent === 'claude' ? claudeCommands(probe) : codexRequest({ ...probe, cwd: dataDir, method: 'skills/list', params: { cwds: [folder.path] } }).then(result => {
-                const skills = (result?.data ?? []).flatMap(item => Array.isArray(item?.skills) ? item.skills : []).filter(skill => skill?.enabled !== false && typeof skill?.name === 'string' && /^[\w:.-]{1,80}$/.test(skill.name) && typeof skill.path === 'string');
-                if (!result) return null;
-                codexSkills.set(folder.id, skills.map(skill => ({ name: skill.name, path: skill.path })));
-                return skills.map(skill => ({ name: skill.name, description: oneLine(skill.interface?.shortDescription || skill.shortDescription || skill.description, 160), hint: '' }));
-              });
+              const value = agent === 'claude' ? claudeCommands(probe) : loadCodexSkills(folder).then(skills => skills && skills.map(skill => ({ name: skill.name, description: oneLine(skill.interface?.shortDescription || skill.shortDescription || skill.description, 160), hint: '' })));
               commandLists.set(key, { at: Date.now(), value: value.then(list => { if (!list) commandLists.delete(key); return list ?? []; }) });
             }
             return json(response, 200, { commands: await commandLists.get(key).value });
@@ -821,6 +864,7 @@ export async function createService(options = {}) {
           if (waitingChat) return json(response, 200, chat(waitingChat.id));
           const session = (await externalSessions(folder)).find(item => item.id === sessionId && item.agent === agent);
           if (!session) throw fail(404, 'Session not found in this project');
+          if (agent === 'codex') Object.assign(session, await codexLastExchange(sessionId) ?? {});
           if (closed) throw fail(503, 'Mac service is shutting down');
           const created = transaction(() => {
             // Another request for the same session may have created the chat while this one listed sessions.
@@ -882,7 +926,10 @@ export async function createService(options = {}) {
             // A retry is judged on the recorded payload alone, so a later catalog change cannot turn it into a new turn.
             const recorded = () => get('SELECT * FROM prompts WHERE id=?', promptId);
             const duplicate = previous => {
-              const same = previous.chatId === id && previous.text === prompt && (previous.attachments ?? '[]') === JSON.stringify(attachmentIds) && (input.mode === undefined || previous.mode === input.mode) && (input.model === undefined || (previous.model ?? 'default') === input.model) && (input.effort === undefined || (previous.effort ?? 'default') === input.effort) && (input.agent === undefined || (previous.agent ?? 'claude') === input.agent);
+              const same = previous.chatId === id && previous.text === prompt && (previous.attachments ?? '[]') === JSON.stringify(attachmentIds) && (input.mode === undefined || previous.mode === input.mode) && (input.model === undefined || (previous.model ?? 'default') === input.model) && (input.effort === undefined || (previous.effort ?? 'default') === input.effort) && (input.agent === undefined || (previous.agent ?? 'claude') === input.agent)
+                // A prompt that ran as a new turn ignored any delivery; a steer retried as "send now" (or back) is different content.
+                && (!['steer', 'interrupt'].includes(previous.delivery) || !['steer', 'interrupt'].includes(input.delivery) || previous.delivery === input.delivery)
+                && (input.projectId === undefined || get('SELECT projectId FROM chats WHERE id=?', id)?.projectId === input.projectId);
               if (!same) throw fail(409, 'Prompt id was already used for different content');
               return json(response, 200, { accepted: true, duplicate: true });
             };

@@ -13,6 +13,7 @@ import java.io.File
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicLong
 import kotlinx.coroutines.*
 import androidx.compose.runtime.snapshotFlow
 import java.net.ConnectException
@@ -55,6 +56,18 @@ fun projectChats(server: List<JSONObject>, projectId: String, locals: List<JSONO
     return server.filter { it.optString("projectId") == projectId } + locals.filter { it.optString("projectId") == projectId && it.optString("id") !in known }
 }
 
+/** The Mac saved this prompt under its delivery id: its POST answer may be lost, but it was accepted. */
+fun deliveredPrompt(messages: List<JSONObject>, promptId: String) = messages.any { it.optString("role") == "user" && it.optString("id") == promptId }
+
+/**
+ * Whether a state snapshot shows the open chat is gone. A snapshot asked for ([generation]) before the chat's first
+ * prompt was accepted ([acceptedAt]) predates it, so it can't say the chat was deleted.
+ */
+fun chatGone(listed: Boolean, local: Boolean, generation: Long, acceptedAt: Long?) = !listed && !local && generation > (acceptedAt ?: 0)
+
+/** The Mac no longer has an image a prompt named. Its local copy can be uploaded again. */
+fun lostUpload(failure: ApiError) = failure.status == 400 && failure.message == "Attachment not found"
+
 const val SYNC_STATE = 1
 const val SYNC_MESSAGES = 2
 
@@ -80,6 +93,9 @@ class BridgeModel(application: Application) : AndroidViewModel(application) {
     private val pendingSync = AtomicInteger(0)
     private val cursor = EventCursor()
     private val syncMutex = Mutex()
+    /** State requests started, and per chat the count when its prompt was accepted, so an older snapshot can't close it. */
+    private val syncStarts = AtomicLong()
+    private val acceptedAt = ConcurrentHashMap<String, Long>()
     var paired by mutableStateOf(false); private set
     var online by mutableStateOf(false); private set
     var busy by mutableStateOf(false); private set
@@ -99,6 +115,9 @@ class BridgeModel(application: Application) : AndroidViewModel(application) {
     var turns by mutableStateOf<List<Turn>>(emptyList()); private set
     var subagents by mutableStateOf<List<Subagent>>(emptyList()); private set
     var activity by mutableStateOf(""); private set
+    /** The chat whose messages are on screen, from the cache or the Mac; until then an empty transcript means nothing yet. */
+    private var loadedChat by mutableStateOf("")
+    val transcriptReady get() = loadedChat == selected || chats.none { it.optString("id") == selected }
     /** Images in the open chat's composer. */
     var attachments by mutableStateOf<List<Attachment>>(emptyList()); private set
     private val attachmentLists = mutableMapOf<String, List<Attachment>>()
@@ -192,9 +211,9 @@ class BridgeModel(application: Application) : AndroidViewModel(application) {
         }
     }
     private fun loadMessages(id: String) {
-        messages = emptyList(); approvals = emptyList(); turns = emptyList(); subagents = emptyList(); activity = ""
+        messages = emptyList(); approvals = emptyList(); turns = emptyList(); subagents = emptyList(); activity = ""; loadedChat = ""
         if (id.isEmpty()) return
-        transcripts.read(id).takeIf { it.isNotEmpty() }?.let { runCatching { applyMessages(JSONObject(it)) } }
+        transcripts.read(id).takeIf { it.isNotEmpty() }?.let { runCatching { applyMessages(JSONObject(it)); loadedChat = id } }
     }
     private fun applyMessages(result: JSONObject) {
         messages = result.getJSONArray("messages").objects(); approvals = result.optJSONArray("approvals")?.objects().orEmpty()
@@ -234,12 +253,12 @@ class BridgeModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch(Dispatchers.IO) { syncMutex.withLock { transcripts.clear() } }
         paired = false; online = false; usage = emptyList(); usageFetchedAt = 0; selected = ""; messages = emptyList(); chats = emptyList(); projects = emptyList(); draft = ""; pending = null; localDraftIds = emptyList(); error = ""; connectionIssue = ""; revoked = false
         forgetPairingData()
-        Alerts.stop(getApplication())
+        Alerts.stop(getApplication()); Alerts.clear(getApplication())
     }
     /** Mac-specific caches belong to one pairing. */
     private fun forgetPairingData() {
         turns = emptyList(); subagents = emptyList(); activity = ""; attachments = emptyList(); attachmentLists.clear(); shared = emptyList()
-        git = emptyMap(); gitFetchedAt.clear(); commands = emptyMap(); commandsFetchedAt.clear(); sessions = emptyMap(); alertsOn = true
+        git = emptyMap(); gitFetchedAt.clear(); acceptedAt.clear(); commands = emptyMap(); commandsFetchedAt.clear(); sessions = emptyMap(); alertsOn = true
         viewModelScope.launch(Dispatchers.IO) { outbox.deleteRecursively(); images.clear() }
     }
     fun checkUpdate() = updateAction { updateStatus = withContext(Dispatchers.IO) { updater.check() } }
@@ -284,8 +303,10 @@ class BridgeModel(application: Application) : AndroidViewModel(application) {
     private suspend fun sync(fetchState: Boolean = true, fetchMessages: Boolean = true) = syncMutex.withLock {
         val currentApi = api ?: return@withLock
         val id = selected
+        val deliverySession = store.session()
         var lastSeq = -1L
         if (fetchState) {
+            val generation = syncStarts.incrementAndGet()
             val (state, stateCache) = withContext(Dispatchers.IO) { currentApi.request("/api/state").let { it to it.toString() } }
             if (api !== currentApi) return@withLock
             val previous = chat
@@ -293,11 +314,12 @@ class BridgeModel(application: Application) : AndroidViewModel(application) {
             applyState(state); store.put("state", stateCache)
             val server = chats.find { it.optString("id") == id }
             if (pending == null && optionOverride(id) != null && optionOverride(id) == optionsFrom(server)) store.remove("options:$id")
-            if (id.isNotEmpty() && chats.none { it.optString("id") == id } && draftChat(id) == null && pending == null) {
+            // Only the chat this sync looked for closes, and only when the snapshot is newer than its first prompt.
+            if (id.isNotEmpty() && selected == id && pending == null && chatGone(chats.any { it.optString("id") == id }, draftChat(id) != null, generation, acceptedAt[id])) {
                 open("")
                 return@withLock
             }
-            if (followOptions) applyOptionsFromSelection()
+            if (followOptions && server != null) applyOptionsFromSelection()
             lastSeq = state.optLong("lastSeq")
         }
         if (fetchMessages && id.isNotEmpty() && chats.any { it.optString("id") == id }) {
@@ -305,7 +327,14 @@ class BridgeModel(application: Application) : AndroidViewModel(application) {
                 currentApi.request("/api/chats/$id/messages").also { if (api === currentApi) transcripts.write(id, it.toString()) }
             }
             if (api !== currentApi) return@withLock
-            if (selected == id) applyMessages(result)
+            if (selected == id) {
+                applyMessages(result); loadedChat = id
+                // Accepted, but the answer to its POST was lost: settle it exactly as a confirmed send would, never resend.
+                pending?.takeIf { deliveredPrompt(messages, it.id) }?.let { prompt ->
+                    withContext(Dispatchers.IO) { store.completePrompt(id, prompt, deliverySession, accepted = true) }
+                    accepted(id, prompt)
+                }
+            }
         }
         if (lastSeq >= 0) cursor.commit(lastSeq)
         online = foreground; connectionIssue = ""; revoked = false
@@ -424,9 +453,10 @@ class BridgeModel(application: Application) : AndroidViewModel(application) {
         val images = attachmentsOf(id)
         if (pending == null) require(images.all { it.state == UploadState.Ready }) { "Wait for the images to upload, or remove the ones that failed." }
         val working = isWorking(chats.find { it.optString("id") == id }?.optString("status"))
+        // A chosen delivery goes as chosen: the Mac runs it as a normal turn if the chat turns out idle.
         val prompt = pending ?: PendingPrompt(
             UUID.randomUUID().toString(), draft.trim(), chosen.mode, chosen.model, chosen.effort, local?.projectId.orEmpty(), chosen.agent,
-            images.map { it.upload }, if (working) delivery ?: STEER else null,
+            images.map { it.upload }, delivery ?: if (working) STEER else null,
         )
         require(prompt.text.isNotEmpty() || prompt.attachments.isNotEmpty()) { "Write a prompt first." }
         askForAlerts()
@@ -441,10 +471,7 @@ class BridgeModel(application: Application) : AndroidViewModel(application) {
                 store.completePrompt(id, prompt, deliverySession, accepted = true)
             }
             if (api !== currentApi) return@action
-            rememberOptions(prompt.options)
-            attachmentLists.remove(id)
-            if (selected == id) { pending = null; draft = store.get("draft:$id"); attachments = attachmentsOf(id) }
-            cleanOutbox()
+            accepted(id, prompt)
         } catch (failure: ApiError) {
             // Timeouts and server failures may follow execution. Keep their delivery IDs.
             if (api !== currentApi) return@action
@@ -455,10 +482,23 @@ class BridgeModel(application: Application) : AndroidViewModel(application) {
                     store.remove("draftChat:$id")
                     if (selected == id) open("")
                 }
+                // The Mac lost an image this prompt named: upload the local copies again so the next send has them.
+                if (lostUpload(failure)) {
+                    attachmentsOf(id).filter { it.upload in prompt.attachments }.forEach { upload(id, it.key) }
+                    throw ApiError(failure.status, "An image was no longer on your Mac. It's uploading again; send once it's ready.")
+                }
             }
             throw failure
         }
         sync()
+    }
+    /** After the Mac accepted [prompt], by its answer or by the transcript: the composer lets go of it. */
+    private fun accepted(id: String, prompt: PendingPrompt) {
+        acceptedAt[id] = syncStarts.get()
+        rememberOptions(prompt.options)
+        attachmentLists.remove(id)
+        if (selected == id) { pending = null; draft = store.get("draft:$id"); attachments = attachmentsOf(id) }
+        cleanOutbox()
     }
     /** Turns an agent CLI on or off on the Mac for every client. Off stops its probes, discovery and new turns. */
     fun setAgentEnabled(id: String, on: Boolean) = action {
@@ -544,7 +584,8 @@ class BridgeModel(application: Application) : AndroidViewModel(application) {
         val currentApi = api
         val file = attachmentsOf(chatId).find { it.key == key }?.file
         if (currentApi == null || file == null) { updateAttachment(chatId, key) { it.copy(state = UploadState.Failed) }; return }
-        updateAttachment(chatId, key) { it.copy(state = UploadState.Uploading) }
+        // The old id is dropped first and saved so: a restart mid-upload finds Retry, not an id the Mac may not have.
+        updateAttachment(chatId, key) { it.copy(upload = "", state = UploadState.Uploading) }
         viewModelScope.launch {
             try {
                 val (uploaded, bytes) = withContext(Dispatchers.IO) {
@@ -641,7 +682,8 @@ class BridgeModel(application: Application) : AndroidViewModel(application) {
     fun setAlerts(on: Boolean) {
         alertsOn = on
         store.put("alerts", if (on) "on" else "off")
-        if (!on) Alerts.stop(getApplication())
+        // Allow and Deny on a notification left behind would still answer for this phone.
+        if (!on) { Alerts.stop(getApplication()); Alerts.clear(getApplication()) }
     }
     val alertsActive get() = alertsOn && notificationsAllowed()
     /** Leaving the app with work running hands the watch to the alerts service, with what each chat was doing. */

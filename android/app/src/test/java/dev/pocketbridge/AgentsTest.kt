@@ -24,6 +24,11 @@ class AgentsTest {
         assertEquals(listOf("Opus 5.5", "Sonnet 5.5", "Haiku 4.5"), claude.models.map { it.name })
         assertEquals("Opus 5.5", modelName(claude, "default"))
         assertEquals("gpt-5", modelName(codex, "gpt-5"))
+        // "default" never shows as a name: the default model's, else the first model's, else the agent's.
+        assertEquals("Opus", modelName(claude.copy(models = emptyList()), "default"))
+        assertEquals("Opus 5.5", modelName(claude.copy(defaultModel = "default"), "default"))
+        assertEquals("Codex", modelName(codex.copy(models = emptyList(), defaultModel = "default"), "default"))
+        assertEquals("Claude", modelName(null, "default"))
         val legacy = parseAgents(JSONObject("""{"modes":["bypassPermissions","auto"],"models":["default","opus","haiku"],"efforts":["default","low","high"]}"""))
         assertEquals(listOf("opus", "haiku"), legacy.single().models.map { it.id })
         assertEquals(emptyList<String>(), legacy.single().models.last().efforts)
@@ -122,8 +127,10 @@ class AgentsTest {
         val usage = parseUsage(JSONObject("""{"agents":[
           {"id":"claude","name":"Claude","plan":"Max","limits":[{"id":"session","label":"5-hour session","percent":14,"resetsAt":1790000000000,"severity":"normal"},{"id":"weekly_all","label":"Weekly","percent":125,"resetsAt":0}],"updatedAt":5},
           {"id":"codex","name":"Codex","plan":"Pro Lite","limits":[{"id":"primary","label":"Weekly","percent":39,"resetsAt":1791580292000}],"credits":2353.72},
-          {"id":"other","name":"Other","limits":[]}]}"""))
-        assertEquals(listOf("claude", "codex"), usage.map { it.id })
+          {"id":"other","name":"Other","limits":[]},
+          {"id":"credits","name":"Credits only","limits":[],"credits":12.5}]}"""))
+        assertEquals(listOf("claude", "codex", "credits"), usage.map { it.id })
+        assertEquals(12.5, usage[2].credits!!, 0.001)
         assertEquals(listOf(14, 100), usage[0].limits.map { it.percent })
         assertEquals("normal", usage[0].limits[1].severity)
         assertEquals(2353.72, usage[1].credits!!, 0.001)

@@ -66,4 +66,16 @@ class TranscriptTest {
         )
         assertEquals(answers, decodeAnswers(encodeAnswers(answers)))
     }
+
+    @Test fun `a named result after a steer joins its command in the earlier group`() {
+        val entries = transcript(listOf(
+            activity("c2", "Shell\n{\"command\": \"pnpm test\"}"),
+            Said("n1", "assistant", "Noted: use staging."),
+            activity("c2:result", "Tool result\nok"),
+            activity("f1", "Edit\n{\"file_path\": \"src/http.ts\"}"),
+        ))
+        assertEquals(3, entries.size)
+        assertEquals("ok", (entries[0] as Steps).steps.single().result)
+        assertEquals(listOf("f1"), (entries[2] as Steps).steps.map { it.id })
+    }
 }

@@ -39,8 +39,9 @@ devices. Claude and Codex sign-ins and Tailscale device keys can each require re
 disable key expiry for your own devices in Tailscale if desired.
 
 Only chats started through PocketBridge appear. Use its Mac client to continue a
-phone chat on the Mac. Existing Claude and Codex terminal/desktop sessions are
-separate. Stop does not undo completed edits. Ready means the turn has ended;
+phone chat on the Mac. On this Mac, in the Mac client's sidebar, lists a project's
+Terminal, desktop and Codex sessions; picking one forks it into a new chat with
+its last exchange. Other sessions stay untouched. Stop does not undo completed edits. Ready means the turn has ended;
 PocketBridge cleans up tools left running in that turn. Concurrent
 manual file edits have the usual filesystem conflict risk.
 

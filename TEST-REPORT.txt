@@ -1,3 +1,41 @@
+PocketBridge 0.6.1 bug pass, 3 October 2026
+
+REVIEW
+- Four read-only reviews: GPT-6-Sol (xhigh, Codex CLI) on the Mac service and on the
+  Android data and alerts layer; Claude agents on the Android screens and the Mac
+  browser client plus docs. 13 service, 6 Android data, 11 Android UI and 10 browser
+  findings, plus 7 stale doc statements. Each was checked against the code before
+  fixing. GPT-6-Sol then reviewed both fix diffs and found 4 service and 4 Android
+  follow-up problems (a steer that could land in a later Codex turn, unanswered
+  Codex steers paired with an older reply, a skill cache that never expired, repo
+  paths ending in spaces, a second approval while a chat stays waiting, retry
+  buttons for already-answered approvals, notifications coming back after alerts
+  were turned off, a dead upload id after a crash). All are fixed.
+
+AUTOMATED CHECKS
+- Mac: pnpm test, 60 passed. New cases: a prompt body split inside an emoji, steer
+  vs Send now under one prompt id, effort checked on a model change, a steer Claude
+  discards, a Codex steer lost when Codex exits (reported, never re-run), "/"
+  skills before any listing, Codex continue with its last reply, unanswered
+  sessions, unicode and empty files in the git line, duplicate command names,
+  crash recovery ending turns and sub-agents, and tool results across a steer.
+- Android: assembleDebug, testDebugUnitTest and lintDebug passed; 103 JVM tests,
+  lint 0 errors. Signed assembleRelease and lintRelease 0.6.1 (versionCode 8), same
+  certificate.
+
+EMULATOR CHECKS (demo service on 8788)
+- Cold start, project and chat lists, a Codex turn steered mid-step ("Noted: Use
+  staging too"), the result card staying with its command after the steer, and an
+  idle-chat send going out as a normal turn. Send now was not reached in time on
+  the emulator this round; the service tests cover it for both agents.
+- Not tested: physical phone, alert actions on a device, the lost-upload retry.
+
+DEPLOYMENT
+- Live service upgraded with no chat running; database backed up
+  (data.sqlite.before-0.6.1). Health, agents and the APK download answered.
+  PocketBridge.apk and releases/PocketBridge-0.6.1.apk SHA-256
+  3a9218a96501873b337747d6c88b65704486d8580bd8c6fcd5d5d3f7eda40802.
+
 PocketBridge 0.6.0 verification, 3 October 2026
 
 AUTOMATED CHECKS

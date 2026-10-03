@@ -84,12 +84,14 @@ export function groupMessages(messages) {
   let group = null;
   for (const message of messages) {
     if (message.role !== 'activity') { group = null; items.push({type:'message', message}); continue; }
-    if (!group) { group = {type:'activity', id:message.id, steps:[]}; items.push(group); }
     const activity = parseActivity(message.text);
     const named = typeof message.id === 'string' && message.id.endsWith(':result') ? message.id.slice(0, -7) : null;
-    const waiting = activity.kind === 'result' && group.steps.find(step => step.kind === 'tool' && !step.result && (named === null || step.id === named));
-    if (waiting) waiting.result = activity;
-    else group.steps.push({id:message.id, ...activity, ...(activity.kind === 'tool' ? {summary:summariseInput(activity.input)} : {})});
+    const open = step => step.kind === 'tool' && !step.result && (named === null || step.id === named);
+    // A steer or note can land while a command runs; its named result still belongs to that earlier group.
+    const waiting = activity.kind === 'result' && (group?.steps.find(open) ?? (named ? items.findLast(item => item.type === 'activity' && item.steps.some(open))?.steps.find(open) : null));
+    if (waiting) { waiting.result = {id:message.id, ...activity}; continue; }
+    if (!group) { group = {type:'activity', id:message.id, steps:[]}; items.push(group); }
+    group.steps.push({id:message.id, ...activity, ...(activity.kind === 'tool' ? {summary:summariseInput(activity.input)} : {})});
   }
   return items;
 }
@@ -304,7 +306,8 @@ export function modeHelp(agent, mode) {
     default: 'Asks before every edit and command.',
   }[mode] ?? '';
 }
-export const modelName = (agent, id) => findModel(agent, id)?.name ?? (id === 'default' ? 'Default' : id);
+/** "Default" is never shown: an unlisted default is the catalog's first model, else the agent itself. */
+export const modelName = (agent, id) => findModel(agent, id)?.name ?? (id === 'default' ? agent?.models?.[0]?.name ?? agent?.name ?? 'Claude' : id);
 export function effortName(agent, model, effort) {
   if (effort !== 'default') return effortLabels[effort] ?? effort;
   const info = findModel(agent, model);
@@ -334,12 +337,20 @@ export function withAttachments(previous, attachments) {
   return {text: '', ...previous, id: previous?.id ?? crypto.randomUUID(), attempted: false, attachments};
 }
 
+/** The draft left after a delivery is accepted: none if it was the one sent, else without the images that went with it. */
+export function afterDelivery(current, sent) {
+  if (!current || current.id === sent.id) return null;
+  const sentIds = new Set((sent.attachments ?? []).map(item => item.id));
+  return {...current, attachments: (current.attachments ?? []).filter(item => !item.id || !sentIds.has(item.id))};
+}
+
 export function blankLocalDraft(draft) {
   return !draft?.attempted && !String(draft?.text ?? '').trim() && !draft?.attachments?.length;
 }
 
+// A retry keeps its id only for the same text and delivery: the Mac rejects a recorded id sent with other content.
 export function prepareDelivery(draft, text, options = {}, delivery = null) {
-  if (draft?.attempted && draft.text === text) return draft;
+  if (draft?.attempted && draft.text === text && (draft.delivery ?? null) === delivery) return draft;
   const id = draft && !draft.attempted ? draft.id : crypto.randomUUID();
   const attachments = (draft?.attachments ?? []).filter(item => item.id).map(({id: uploadId, type}) => ({id: uploadId, type}));
   return {...(draft?.projectId ? {projectId: draft.projectId} : {}), text, id, agent: options.agent ?? 'claude', mode: options.mode ?? 'bypassPermissions', model: options.model || 'default', effort: options.effort || 'default', attachments, ...(delivery ? {delivery} : {}), attempted: true};

@@ -65,6 +65,16 @@ class MarkdownTest {
         assertEquals(listOf(4 to 10), text.spanStyles.filter { it.item == code }.map { it.start to it.end })
     }
 
+    @Test fun `nested lists take their depth from the parent item, not the absolute indent`() {
+        assertEquals(
+            listOf(Bullet("•", "a", 0), Bullet("•", "b", 1), Bullet("•", "c", 2), Bullet("•", "d", 1), Bullet("•", "e", 0)),
+            parseMarkdown("- a\n    - b\n        - c\n    - d\n- e"),
+        )
+        assertEquals(listOf(Bullet("1.", "one", 0), Bullet("•", "sub", 1), Bullet("•", "less", 1)), parseMarkdown("1. one\n   - sub\n  - less"))
+        // A new list after other text starts at the top again.
+        assertEquals(listOf(Bullet("•", "a", 0), Paragraph("Then:"), Bullet("•", "x", 0)), parseMarkdown("- a\n\nThen:\n    - x"))
+    }
+
     @Test fun `spacing opens sections and keeps list items together`() {
         assertEquals(0, blockGap(null, Paragraph("a")))
         assertEquals(22, blockGap(Paragraph("a"), Heading(2, "b")))

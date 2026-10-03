@@ -67,10 +67,11 @@ fun gitDescription(git: GitInfo) = buildList {
 /** A command or skill the agent offers in this project, typed as "/name". */
 data class SlashCommand(val name: String, val description: String, val hint: String)
 
+/** One row per name: the first listed wins (a project command and a skill may share one). */
 fun parseCommands(json: JSONObject): List<SlashCommand> = json.optJSONArray("commands")?.objects().orEmpty().mapNotNull { command ->
     val name = command.optString("name").removePrefix("/").takeIf { it.isNotBlank() } ?: return@mapNotNull null
     SlashCommand(name, command.optString("description"), command.optString("hint"))
-}
+}.distinctBy { it.name }
 
 /** The typed command prefix while the draft is still a bare "/word"; null once there's a space or no slash. */
 fun slashQuery(draft: String): String? = if (draft.startsWith("/") && draft.none(Char::isWhitespace)) draft.drop(1) else null
@@ -180,7 +181,7 @@ private class AboveAnchor(private val gap: Int) : PopupPositionProvider {
                             Text("Loading commands", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
                     }
-                    items(commands, key = { it.name }) { command -> CommandRow(command) { onPick(command) } }
+                    items(commands, key = { "command:" + it.name }) { command -> CommandRow(command) { onPick(command) } }
                 }
             }
         }

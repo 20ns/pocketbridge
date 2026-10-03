@@ -103,7 +103,12 @@ fun supportedOptions(agent: AgentInfo?, options: ChatOptions): ChatOptions {
     return options.copy(effort = if (info.efforts.isEmpty()) "default" else info.defaultEffort)
 }
 
-fun modelName(agent: AgentInfo?, model: String) = agent?.model(model)?.name ?: modelLabel(model)
+/** Never "Default": a chat saved with the placeholder shows the model it resolves to, else the first one, else the agent. */
+fun modelName(agent: AgentInfo?, model: String): String {
+    agent?.model(model)?.let { return it.name }
+    if (model != "default") return modelLabel(model)
+    return agent?.defaultModel?.takeIf { it.isNotBlank() && it != "default" }?.let(::modelLabel) ?: agent?.models?.firstOrNull()?.name ?: agent?.name ?: "Claude"
+}
 
 /** Older chats saved effort "default"; show the level that actually applies when the catalog knows it. */
 fun effortName(agent: AgentInfo?, model: String, effort: String): String {
@@ -141,13 +146,14 @@ fun effortLabel(effort: String) = when (effort) {
 data class UsageLimit(val id: String, val label: String, val percent: Int, val resetsAt: Long, val severity: String)
 data class AgentUsage(val id: String, val name: String, val plan: String, val limits: List<UsageLimit>, val credits: Double?, val updatedAt: Long)
 
-/** /api/usage. Agents without readable limits (not installed, or an older Mac) are left out. */
+/** /api/usage. Agents with neither limits nor credits (not installed, or an older Mac) are left out. */
 fun parseUsage(json: JSONObject): List<AgentUsage> = json.optJSONArray("agents")?.objects().orEmpty().mapNotNull { agent ->
     val limits = agent.optJSONArray("limits")?.objects().orEmpty().map {
         UsageLimit(it.optString("id"), it.optString("label"), it.optInt("percent").coerceIn(0, 100), it.optLong("resetsAt"), it.optString("severity", "normal"))
     }
-    if (limits.isEmpty()) null
-    else AgentUsage(agent.optString("id"), agent.optString("name").ifBlank { agent.optString("id") }, agent.optString("plan"), limits, if (agent.has("credits")) agent.optDouble("credits") else null, agent.optLong("updatedAt"))
+    val credits = agent.optDouble("credits").takeUnless { it.isNaN() }
+    if (limits.isEmpty() && credits == null) null
+    else AgentUsage(agent.optString("id"), agent.optString("name").ifBlank { agent.optString("id") }, agent.optString("plan"), limits, credits, agent.optLong("updatedAt"))
 }
 
 /** How full a Claude chat's context window was after its last turn. */

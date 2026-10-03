@@ -47,7 +47,7 @@ fun parseSubagents(messages: JSONObject): List<Subagent> = messages.optJSONArray
 }
 
 /** A user message that opens a new turn: a known turn start, or any prompt that wasn't a steer. */
-private fun opensTurn(entry: Entry, starts: Set<String>) =
+fun opensTurn(entry: Entry, starts: Set<String>) =
     entry is Message && entry.said.role == "user" && entry.said.kind != "imported" && (entry.said.id in starts || entry.said.kind != STEER)
 
 private fun startOf(entry: Entry) = when (entry) { is Message -> entry.said.createdAt; is Steps -> entry.steps.first().at; else -> Long.MAX_VALUE }
@@ -94,8 +94,22 @@ fun turnDurations(entries: List<Entry>, turns: List<Turn>): Map<String, Long> {
     return result
 }
 
-/** The running turn's start, else the newest prompt's time. */
-fun runningSince(turns: List<Turn>, lastPromptAt: Long?): Long? = turns.lastOrNull { it.endedAt == null }?.startedAt?.takeIf { it > 0 } ?: lastPromptAt
+/**
+ * The running turn's start, else the newest prompt's time. Only the newest turn counts, and only while the chat
+ * works: an older turn a crash never closed doesn't tick.
+ */
+fun runningSince(turns: List<Turn>, lastPromptAt: Long?, working: Boolean = true): Long? =
+    if (!working) null else turns.maxByOrNull { it.startedAt }?.takeIf { it.endedAt == null }?.startedAt?.takeIf { it > 0 } ?: lastPromptAt
+
+/**
+ * Sub-agents as they stand once the chat has stopped working: one still marked running (its turn ended with a crash
+ * or a stop) shows as stopped, timed to its turn's end or [stoppedAt].
+ */
+fun settledSubagents(agents: List<Subagent>, turns: List<Turn>, working: Boolean, stoppedAt: Long?): List<Subagent> =
+    if (working) agents else agents.map { agent ->
+        if (!agent.running) agent
+        else agent.copy(status = "stopped", endedAt = (turns.find { it.id == agent.promptId }?.endedAt ?: stoppedAt)?.coerceAtLeast(agent.startedAt))
+    }
 
 /** "Worked 2m 14s"; under a second reads as "Worked 1s" so a finished turn never says 0. */
 fun workedLabel(millis: Long) = "Worked " + elapsedLabel(millis.coerceAtLeast(1000))

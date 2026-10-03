@@ -215,9 +215,13 @@ test('restart marks durable in-flight task interrupted and never reexecutes acce
   await f.service.close();
   const db = new DatabaseSync(join(f.dir, 'data/data.sqlite'));
   db.prepare("UPDATE chats SET status='running' WHERE id=?").run(chat.id);
-  db.prepare('INSERT INTO prompts (id,chatId,text) VALUES (?,?,?)').run('crash-id', chat.id, 'hello'); db.close();
+  db.prepare('INSERT INTO prompts (id,chatId,text,startedAt) VALUES (?,?,?,?)').run('crash-id', chat.id, 'hello', Date.now() - 5000);
+  db.prepare("INSERT INTO subagents (chatId,id,promptId,agent,title,status,startedAt) VALUES (?,?,?,?,?,?,?)").run(chat.id, 'toolu_x', 'crash-id', 'claude', 'Explore', 'running', Date.now() - 4000); db.close();
   await f.restart();
   assert.equal((await f.request('/api/state')).data.chats.find(c => c.id === chat.id).status, 'interrupted');
+  // The crashed turn and its sub-agents are over: nothing keeps ticking.
+  const after = (await f.request(`/api/chats/${chat.id}/messages`)).data;
+  assert.ok(after.turns[0].endedAt); assert.deepEqual(after.subagents.map(item => item.status), ['stopped']);
   assert.equal((await f.send(chat, 'hello', 'crash-id')).data.duplicate, true);
   assert.equal(existsSync(join(f.projectPath, 'calls.ndjson')), false);
 });
@@ -844,4 +848,67 @@ test('review regressions: one chat per continued session under concurrency, sess
   assert.ok(db.prepare('SELECT id FROM hidden_sessions WHERE id=?').get(thread)); db.close();
   const big = Buffer.alloc(5 * 1024 * 1024 + 10, 0); png.copy(big);
   assert.equal((await upload(f, big)).status, 413);
+});
+
+test('bug pass regressions: split UTF-8 bodies, delivery-aware duplicates, effort on model change, dropped steers, unknown Codex steers', async t => {
+  const f = await fixture(t), project = (await f.request('/api/state')).data.projects[0];
+  // A character split across two network chunks is stored intact, and a retry with the same text is a duplicate.
+  const chatId = randomUUID(), promptId = randomUUID(), payload = Buffer.from(JSON.stringify({ id: promptId, text: 'ship it 🙂', projectId: project.id, model: 'opus', effort: 'max' }));
+  const split = payload.indexOf(Buffer.from('🙂')) + 2;
+  const status = await new Promise((resolveRequest, reject) => {
+    const req = http.request(f.service.url + `/api/chats/${chatId}/prompts`, { method: 'POST', headers: { Authorization: `Bearer ${f.token}`, 'Content-Type': 'application/json', 'Content-Length': payload.length } }, res => { res.resume(); res.on('end', () => resolveRequest(res.statusCode)); });
+    req.on('error', reject); req.write(payload.subarray(0, split)); setTimeout(() => req.end(payload.subarray(split)), 50);
+  });
+  assert.equal(status, 202);
+  await f.finished({ id: chatId });
+  assert.equal((await messagesOf(f, chatId)).messages[0].text, 'ship it 🙂');
+  assert.equal((await f.request(`/api/chats/${chatId}/prompts`, { id: promptId, text: 'ship it 🙂', model: 'opus', effort: 'max' })).data.duplicate, true);
+  // A new model keeps the chat's effort only if it supports it.
+  assert.equal((await turnWith(f, chatId, 'hello', { model: 'haiku' })).status, 400);
+  // A turn retried as a steer is the same prompt; a steer retried as "send now" is not.
+  const steerChat = randomUUID();
+  assert.equal((await turnWith(f, steerChat, 'steer-discard', { projectId: project.id })).status, 202);
+  await wait(async () => (await messagesOf(f, steerChat)).messages.some(m => m.text.includes('sleep 1')));
+  const steerId = randomUUID();
+  assert.equal((await f.request(`/api/chats/${steerChat}/prompts`, { id: steerId, text: 'use staging', delivery: 'steer' })).data.delivery, 'steer');
+  assert.equal((await f.request(`/api/chats/${steerChat}/prompts`, { id: steerId, text: 'use staging', delivery: 'interrupt' })).status, 409);
+  assert.equal((await f.request(`/api/chats/${steerChat}/prompts`, { id: steerId, text: 'use staging', delivery: 'steer' })).data.duplicate, true);
+  assert.equal((await f.request(`/api/chats/${chatId}/prompts`, { id: promptId, text: 'ship it 🙂', delivery: 'steer' })).data.duplicate, true);
+  // Claude dropping an accepted steer is reported in the chat.
+  await f.finished({ id: steerChat });
+  assert.ok((await messagesOf(f, steerChat)).messages.some(m => m.role === 'activity' && m.text.includes('didn\'t run "use staging"')));
+  // Codex exiting before it confirms a steer: the steer is reported, never run again.
+  const codexChat = randomUUID();
+  assert.equal((await turnWith(f, codexChat, 'steer-exit', { agent: 'codex', projectId: project.id })).status, 202);
+  await wait(async () => (await messagesOf(f, codexChat)).messages.some(m => m.text.includes('sleep 1')));
+  assert.equal((await turnWith(f, codexChat, 'check staging', { delivery: 'steer' })).status, 202);
+  assert.equal((await f.finished({ id: codexChat })).status, 'error');
+  assert.ok((await messagesOf(f, codexChat)).messages.some(m => m.role === 'activity' && m.text.includes('Codex stopped before confirming "check staging"')));
+  const calls = readFileSync(join(f.projectPath, 'codex-calls.ndjson'), 'utf8').trim().split('\n').map(JSON.parse);
+  assert.equal(calls.filter(call => call.method === 'turn/start').length, 1);
+});
+
+test('bug pass regressions: Codex skills without a listing, Codex continue brings the reply, unanswered sessions, unusual git files', async t => {
+  const f = await fixture(t), project = (await f.request('/api/state')).data.projects[0];
+  // Unicode names are counted and empty new files add no lines.
+  const git = (...args) => spawnSync('git', ['-C', f.projectPath, ...args], { encoding: 'utf8' });
+  git('init', '-q'); writeFileSync(join(f.projectPath, 'ñandú.txt'), 'a\nb\n'); writeFileSync(join(f.projectPath, 'empty.txt'), '');
+  const status = (await f.request(`/api/projects/${project.id}/git`)).data;
+  assert.equal(status.added, 2); assert.equal(status.files, 2);
+  // A "/skill" prompt works right after a restart, before any client listed commands.
+  const skillChat = randomUUID();
+  assert.equal((await turnWith(f, skillChat, '/ship-it now', { agent: 'codex', projectId: project.id })).status, 202);
+  await f.finished({ id: skillChat });
+  assert.equal((await messagesOf(f, skillChat)).messages.find(m => m.role === 'assistant').text, 'skill ship-it at /skills/ship-it/SKILL.md');
+  // Continuing a Codex thread copies its last prompt and its final reply.
+  const codexChat = (await f.request('/api/chats/continue', { projectId: project.id, agent: 'codex', sessionId: 'codex-thread-1' })).data;
+  assert.deepEqual((await messagesOf(f, codexChat.id)).messages.map(m => [m.role, m.text]), [['user', 'Make the login page load faster'], ['assistant', 'Login now loads in 300 ms.']]);
+  // A session whose last prompt went unanswered doesn't pair it with an older reply.
+  const dir = join(f.claudeProjectsDir, project.path.replace(/[^a-zA-Z0-9]/g, '-')), source = randomUUID(); mkdirSync(dir, { recursive: true });
+  const record = value => JSON.stringify(value) + '\n';
+  writeFileSync(join(dir, `${source}.jsonl`), record({ type: 'user', cwd: project.path, isSidechain: false, message: { role: 'user', content: 'Add dark mode' } })
+    + record({ type: 'assistant', isSidechain: false, message: { role: 'assistant', content: [{ type: 'text', text: 'Dark mode is in.' }] } })
+    + record({ type: 'user', isSidechain: false, message: { role: 'user', content: 'Now add a toggle' } }));
+  const claudeChat = (await f.request('/api/chats/continue', { projectId: project.id, agent: 'claude', sessionId: source })).data;
+  assert.deepEqual((await messagesOf(f, claudeChat.id)).messages.map(m => [m.role, m.text]), [['user', 'Now add a toggle']]);
 });

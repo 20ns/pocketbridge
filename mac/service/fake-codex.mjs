@@ -40,6 +40,7 @@ async function runTurn(threadId, input, turnId) {
     note('error', { error: { message: 'Reconnecting... 1/5' }, willRetry: true });
     return done('failed', { message: 'Codex usage limit reached' });
   }
+  if (text === 'steer-exit') { turn.exitOnSteer = true; command('cmd_wait', "/bin/zsh -lc 'sleep 1'", ''); return; }
   if (text === 'steer-wait') {
     const finish = command('cmd_wait', "/bin/zsh -lc 'sleep 1'", '');
     for (let waited = 0; waited < 3000 && !turn.steer; waited += 20) await sleep(20);
@@ -89,12 +90,17 @@ for await (const line of createInterface({ input: process.stdin })) {
     ], nextCursor: null }); break;
     case 'config/read': reply({ config: { model: 'not-listed', model_reasoning_effort: 'xhigh' } }); break;
     case 'account/rateLimits/read': reply({ rateLimits: { planType: 'prolite', primary: { usedPercent: 39, windowDurationMins: 10080, resetsAt: 1791580292 }, secondary: { usedPercent: 92, windowDurationMins: 300, resetsAt: 1791000000 }, credits: { hasCredits: true, unlimited: false, balance: '2353.7232000000' } } }); break;
-    case 'skills/list': reply({ data: [{ cwd: params.cwds?.[0], errors: [], skills: [{ name: 'ship-it', description: 'Long description', shortDescription: 'Ship the build', path: '/skills/ship-it/SKILL.md', enabled: true, scope: 'repo' }, { name: 'off', description: 'Disabled', path: '/skills/off', enabled: false, scope: 'repo' }] }] }); break;
+    case 'skills/list': reply({ data: [{ cwd: params.cwds?.[0], errors: [], skills: [{ name: 'ship-it', description: 'Long description', shortDescription: 'Ship the build', path: '/skills/ship-it/SKILL.md', enabled: true, scope: 'repo' }, { name: 'off', description: 'Disabled', path: '/skills/off', enabled: false, scope: 'repo' }, { name: 'ship-it', description: 'User copy', path: '/user/ship-it/SKILL.md', enabled: true, scope: 'user' }] }] }); break;
     case 'thread/list': reply({ data: [
       { id: 'codex-thread-1', name: 'Fix the login page', preview: 'Make the login page load faster', updatedAt: 1791000000, cwd: params.cwd, threadSource: 'user' },
       { id: 'codex-thread-1', name: 'Fix the login page', preview: 'duplicate entry', updatedAt: 1790000000, cwd: params.cwd },
       { id: 'codex-sub', name: 'helper', preview: 'subagent', updatedAt: 1791000001, cwd: params.cwd, parentThreadId: 'codex-thread-1' },
     ], nextCursor: null }); break;
+    case 'thread/turns/list': reply({ data: params.threadId === 'codex-thread-1' ? [{ id: 't9', status: 'completed', items: [
+      { id: 'u1', type: 'userMessage', content: [{ type: 'text', text: 'Make the login page load faster' }] },
+      { id: 'a0', type: 'agentMessage', text: 'Looking.' }, { id: 'c1', type: 'commandExecution', command: 'ls' },
+      { id: 'a1', type: 'agentMessage', text: 'Login now loads in 300 ms.' },
+    ] }] : [], nextCursor: null }); break;
     case 'thread/start': case 'thread/resume': case 'thread/fork':
       thread = message.method === 'thread/resume' ? params.threadId : randomUUID();
       log({ method: message.method, params });
@@ -104,6 +110,7 @@ for await (const line of createInterface({ input: process.stdin })) {
       { const turnId = randomUUID(); reply({ turn: { id: turnId, status: 'inProgress' } }); runTurn(params.threadId, params.input ?? [], turnId); }
       break;
     case 'turn/steer':
+      if (turn?.exitOnSteer) { log({ method: 'turn/steer', params }); process.exit(1); }
       if (!turn) { emit({ id: message.id, error: { code: -32600, message: 'no active turn' } }); break; }
       turn.steer = (params.input ?? []).filter(part => part.type === 'text').map(part => part.text).join('\n');
       log({ method: 'turn/steer', params });

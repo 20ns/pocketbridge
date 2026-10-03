@@ -1,3 +1,16 @@
+PocketBridge 0.6.1
+
+- A prompt the Mac accepted but whose confirmation got lost no longer leaves the phone stuck on "Not confirmed".
+- Retrying a failed steer as Send now really interrupts. A prompt is never sent twice under the same ID with a different delivery.
+- Steers Claude or Codex dropped, or couldn't confirm before stopping, show up in the chat instead of looking delivered. They are never re-run on their own.
+- Alerts keep Allow and Deny when the Mac is briefly unreachable, pick up a second question in the same chat, and go away when you turn alerts off or disconnect.
+- After a Mac restart, sub-agents and timers stop instead of ticking forever.
+- Continuing a Codex session brings its last reply along. A session whose last prompt was never answered isn't paired with an older reply.
+- "/" skills work right after the Mac restarts, duplicate command names no longer crash the list, and Codex skills refresh every ten minutes.
+- Images the Mac no longer has upload again instead of failing every send. Typing while a message sends no longer re-attaches its images.
+- Emoji and other multi-byte text can't be corrupted in transit, and the git line counts files with unusual names and ignores empty ones.
+- A command's result stays with its command when a steer arrives mid-step. Nested lists indent correctly. "Default" never shows as a model name.
+
 PocketBridge 0.6.0
 
 - Screenshots: attach images from your photos or share them to PocketBridge from any app. Claude and Codex both see them. On the Mac, paste or drop them.

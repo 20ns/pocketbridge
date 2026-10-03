@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {EventDecoder, safeLink, markdown, parseActivity, summariseInput, groupMessages, activitySummary, statusLabel, relativeTime, editDraft, prepareDelivery, promptPayload, blankLocalDraft, withAttachments, slashMatches, turnPlacement, agentsFrom, usableAgent, newChatAgent, resolveOptions, supportedOptions, highlight, diffLines, resetLabel, modelName, effortName, modeHelp, liveStep, elapsedLabel} from '../public/support.mjs';
+import {EventDecoder, safeLink, markdown, parseActivity, summariseInput, groupMessages, activitySummary, statusLabel, relativeTime, editDraft, prepareDelivery, afterDelivery, promptPayload, blankLocalDraft, withAttachments, slashMatches, turnPlacement, agentsFrom, usableAgent, newChatAgent, resolveOptions, supportedOptions, highlight, diffLines, resetLabel, modelName, effortName, modeHelp, liveStep, elapsedLabel} from '../public/support.mjs';
 
 // A tiny DOM records writes. No browser or dependency is needed to assert the trust boundary.
 const fakeDoc = () => ({
@@ -85,7 +85,7 @@ test('consecutive activity groups by first message id and attaches results', () 
   const [, group, , tail] = items;
   assert.equal(group.id, '2');
   assert.equal(group.steps.length, 7);
-  assert.deepEqual(group.steps[1].result, {kind:'result', failed:true, text:'EADDRINUSE'});
+  assert.deepEqual(group.steps[1].result, {id:'5', kind:'result', failed:true, text:'EADDRINUSE'});
   assert.deepEqual(group.steps[0].summary, {text:'Api.kt', title:'/a/Api.kt'});
   assert.deepEqual(activitySummary(group.steps), {text:'7 steps · Read, Bash, Grep, Edit, +2 more', failed:1});
   assert.deepEqual(activitySummary(tail.steps), {text:'1 step', failed:0});
@@ -135,6 +135,9 @@ test('model catalogs resolve to concrete choices with real names', () => {
   assert.equal(resolveOptions(claude, {model:'haiku', effort:'max'}).effort, 'default');
   assert.equal(resolveOptions(claude, {mode:'auto', model:'sonnet', effort:'low'}).mode, 'auto');
   assert.equal(modelName(claude, 'default'), 'Opus 5.5');
+  assert.equal(modelName({...claude, defaultModel:'gone'}, 'default'), claude.models[0].name);
+  assert.equal(modelName({id:'codex', name:'Codex', models:[], defaultModel:'default'}, 'default'), 'Codex');
+  assert.equal(modelName(undefined, 'default'), 'Claude');
   assert.equal(effortName(claude, 'default', 'default'), 'High');
   assert.equal(effortName(codex, 'gpt-6-astra', 'ultra'), 'Ultra');
   assert.equal(modeHelp('codex', 'readOnly'), 'Reads and answers. Changes nothing.');
@@ -215,6 +218,21 @@ test('drafts carry images, attempted deliveries keep theirs, and steer or interr
   assert.equal('delivery' in promptPayload(prepareDelivery(editDraft(undefined, 'x'), 'x', {})), false);
 });
 
+test('a retry keeps its id only for the same delivery, and sent images leave the next draft', () => {
+  const sent = prepareDelivery(withAttachments(editDraft(undefined, 'look'), [{id:'u1', type:'image/png'}]), 'look', {agent:'claude', mode:'auto'}, 'steer');
+  assert.equal(prepareDelivery(sent, 'look', {}, 'steer'), sent);
+  const now = prepareDelivery(sent, 'look', {agent:'claude', mode:'auto'}, 'interrupt');
+  assert.notEqual(now.id, sent.id);
+  assert.equal(promptPayload(now).delivery, 'interrupt');
+  assert.deepEqual(now.attachments, [{id:'u1', type:'image/png'}]);
+  // Typing while the send is in flight forks a draft; once the send lands, its images aren't sent again.
+  const typed = withAttachments(editDraft(sent, 'look more'), [{id:'u1', type:'image/png'}, {id:'u2', type:'image/png'}, {key:'k', uploading:true}]);
+  assert.deepEqual(afterDelivery(typed, sent).attachments, [{id:'u2', type:'image/png'}, {key:'k', uploading:true}]);
+  assert.equal(afterDelivery(typed, sent).text, 'look more');
+  assert.equal(afterDelivery(sent, sent), null);
+  assert.equal(afterDelivery(undefined, sent), null);
+});
+
 test('slash matches prefer name prefixes and stop at the first space', () => {
   const commands = [{name:'release', description:'Ship it'}, {name:'review-pr', description:'Review'}, {name:'unslop', description:'Release notes cleanup'}];
   assert.deepEqual(slashMatches(commands, '/re').map(command => command.name), ['release', 'review-pr', 'unslop']);
@@ -231,4 +249,16 @@ test('turn timing lands after the last message of each turn and sub-agents group
   assert.deepEqual([...ends.keys()], [3, 5]);
   assert.equal(ends.get(3).endedAt, 5000);
   assert.equal(agents.get('p1').length, 2);
+});
+
+test('a named tool result after a steer joins its command in the earlier group', () => {
+  const items = groupMessages([
+    {id: 'c2', role: 'activity', text: 'Shell\n{"command":"pnpm test"}'},
+    {id: 'n1', role: 'assistant', text: 'Noted: use staging.'},
+    {id: 'c2:result', role: 'activity', text: 'Tool result\nok'},
+    {id: 'f1', role: 'activity', text: 'Edit\n{"file_path":"src/http.ts"}'},
+  ]);
+  assert.deepEqual(items.map(item => item.type), ['activity', 'message', 'activity']);
+  assert.equal(items[0].steps[0].result.id, 'c2:result');
+  assert.deepEqual(items[2].steps.map(step => step.id), ['f1']);
 });

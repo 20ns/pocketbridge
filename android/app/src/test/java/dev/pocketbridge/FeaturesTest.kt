@@ -177,6 +177,8 @@ class FeaturesTest {
         assertEquals(listOf("unslop"), filterCommands(commands, "usp").map { it.name })
         assertEquals(commands, filterCommands(commands, ""))
         assertEquals(listOf("release"), parseCommands(JSONObject("""{"commands":[{"name":"/release","description":"Ship","hint":""},{"name":""}]}""")).map { it.name })
+        // A command and a skill sharing a name list once, the first kept: the list keys rows by name.
+        assertEquals(listOf(SlashCommand("review", "Command", ""), SlashCommand("ship", "", "")), parseCommands(JSONObject("""{"commands":[{"name":"review","description":"Command"},{"name":"/review","description":"Skill"},{"name":"ship"}]}""")))
     }
 
     @Test fun `Mac sessions parse with their agent and an empty preview`() {
@@ -204,11 +206,68 @@ class FeaturesTest {
         assertEquals(listOf("Done", "Failed", "Stopped"), listOf("idle", "error", "interrupted").map(::endedLabel))
     }
 
+    @Test fun `a notification answer is judged by the Mac's record before its actions come back`() {
+        assertEquals("c1", approvalChat("""{"seq":4,"chatId":"c1","type":"approval"}"""))
+        assertNull(approvalChat("""{"seq":5,"chatId":"c1","type":"state"}"""))
+        assertNull(approvalChat("not json"))
+        val messages = JSONObject("""{"messages":[],"approvals":[{"id":"a","status":"allow"},{"id":"b","status":"pending"},{"id":"c","status":"deny"}]}""")
+        assertEquals("Allowed", approvalOutcome(messages, "a"))
+        assertNull(approvalOutcome(messages, "b"))
+        assertEquals("Denied", approvalOutcome(messages, "c"))
+        assertEquals("", approvalOutcome(messages, "gone"))
+        // Nothing could be read: the actions come back for another try.
+        assertNull(approvalOutcome(null, "a"))
+    }
+
     @Test fun `the ongoing summary names one chat or counts several`() {
         assertEquals("Chat a" to "Reading Api.kt", workingSummary(listOf(status("a", "running").copy(activity = "Reading Api.kt"))))
         assertEquals("Chat a" to "Working", workingSummary(listOf(status("a", "running"))))
         assertEquals("2 chats active" to "Chat a · Chat b", workingSummary(listOf(status("a", "running"), status("b", "waiting"))))
         assertEquals("Waiting for your answer" to "Chat b", workingSummary(listOf(status("b", "waiting"))))
+    }
+
+    @Test fun `a steer taken between turns starts its own turn for Copy and Worked alike`() {
+        val entries = transcript(listOf(
+            said("t1", "user", "go", 0), said("r1", "assistant", "done", 10),
+            said("s1", "user", "one more thing", 50, STEER), said("r2", "assistant", "also done", 60),
+        ))
+        val turns = listOf(Turn("t1", 0, 20), Turn("s1", 50, 70))
+        assertEquals(setOf("r1", "r2"), turnEnds(entries, live = false, turns))
+        assertEquals(turnDurations(entries, turns).keys, turnEnds(entries, live = false, turns))
+        // Without its turn the steer joined the running one.
+        assertEquals(setOf("r2"), turnEnds(entries, live = false))
+    }
+
+    @Test fun `nothing ticks once the chat stops, whatever a turn or sub-agent row still says`() {
+        val stale = listOf(Turn("t1", 100, null), Turn("t2", 200, 300))
+        assertNull(runningSince(stale, 250, working = false))
+        // An older turn a crash never closed doesn't count; the newest prompt does.
+        assertEquals(400L, runningSince(stale, 400))
+        assertEquals(500L, runningSince(stale + Turn("t3", 500, null), 450))
+        val agents = listOf(
+            Subagent("a", "t2", "Explore", "", "", "", "running", "", 210, null),
+            Subagent("b", "gone", "Plan", "", "", "", "running", "", 220, null),
+            Subagent("c", "t2", "Done", "", "", "", "completed", "", 205, 250),
+        )
+        assertEquals(agents, settledSubagents(agents, stale, working = true, stoppedAt = 900))
+        val settled = settledSubagents(agents, stale, working = false, stoppedAt = 900)
+        assertEquals(listOf("stopped" to 300L, "stopped" to 900L, "completed" to 250L), settled.map { it.status to it.endedAt })
+        assertTrue(settled.none { it.running })
+    }
+
+    @Test fun `a prompt the Mac saved settles without a resend and an older snapshot can't close its chat`() {
+        val messages = listOf(JSONObject().put("id", "p1").put("role", "user"), JSONObject().put("id", "p2").put("role", "assistant"))
+        assertTrue(deliveredPrompt(messages, "p1"))
+        assertFalse(deliveredPrompt(messages, "p2"))
+        assertFalse(deliveredPrompt(messages, "p3"))
+        // Accepted when three snapshots had been asked for: the third predates it, the fourth doesn't.
+        assertFalse(chatGone(listed = false, local = false, generation = 3, acceptedAt = 3))
+        assertTrue(chatGone(listed = false, local = false, generation = 4, acceptedAt = 3))
+        assertTrue(chatGone(listed = false, local = false, generation = 1, acceptedAt = null))
+        assertFalse(chatGone(listed = false, local = true, generation = 9, acceptedAt = null))
+        assertFalse(chatGone(listed = true, local = false, generation = 9, acceptedAt = null))
+        assertTrue(lostUpload(ApiError(400, "Attachment not found")))
+        assertFalse(lostUpload(ApiError(400, "Attachments must be up to 8 upload ids")))
     }
 
     private fun project(id: String, used: Long) = JSONObject().put("id", id).put("name", id).put("path", "/p/$id").put("lastUsedAt", used)

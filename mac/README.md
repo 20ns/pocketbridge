@@ -4,9 +4,9 @@ The service runs your official Claude Code or Codex CLI in registered project fo
 
 ## Run
 
-Install Node.js 22 or newer, PNPM and the official Claude Code CLI. Run `claude` once in Terminal and sign in through Claude's own login. Codex is optional: install the official Codex CLI and run `codex login`. PocketBridge does not read or copy either CLI's credentials.
+Install Node.js 22.13 or newer, PNPM and the official Claude Code CLI. Run `claude` once in Terminal and sign in through Claude's own login. Codex is optional: install the official Codex CLI and run `codex login`. PocketBridge does not read or copy either CLI's credentials.
 
-Plan usage comes from the same place: Claude's `get_usage` request (5-hour session, weekly and per-model weekly limits) and Codex's `account/rateLimits/read` (its windows and credit balance). The service asks at most once a minute and again after a turn ends. The browser header shows the fullest limit; click it for all of them. Claude chats also show how full their context window was after the last turn.
+Plan usage comes from the same place: Claude's `get_usage` request (5-hour session, weekly and per-model weekly limits) and Codex's `account/rateLimits/read` (its windows and credit balance). The service asks at most once a minute and again after a turn ends. The browser header shows the fullest limit; click it for all of them. Claude and Codex chats also show how full their context window was after the last turn.
 
 Model lists come from each CLI on this Mac. Claude's comes from its stream-json `initialize` handshake and Codex's from `codex app-server`. Neither call starts a turn or uses your quota. The service asks at startup and every 30 minutes, and keeps the last list it got.
 
@@ -67,7 +67,7 @@ The app wraps an unmodified official CLI. It does not guarantee Anthropic's appr
 
 ## Checks
 
-Run the 56 service and browser-helper tests with `pnpm test` from `mac/`. They use fake Claude and Codex CLIs and never touch your real installs. Browser stream parsing and safe text formatting checks are also available directly:
+Run the 60 service and browser-helper tests with `pnpm test` from `mac/`. They use fake Claude and Codex CLIs and never touch your real installs. Browser stream parsing and safe text formatting checks are also available directly:
 
 ```sh
 node --test mac/scripts/*.test.mjs

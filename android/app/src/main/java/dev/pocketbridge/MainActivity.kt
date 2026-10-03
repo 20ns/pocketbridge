@@ -163,6 +163,11 @@ private enum class Screen(val depth: Int) { Pair(0), Projects(0), Chats(1), Sett
             },
             label = "screen",
         ) { target ->
+            // The page a gesture sent away keeps its shrink only while it leaves; the next change of page starts flat.
+            if (target == screen) {
+                val settled = transition.currentState == transition.targetState
+                LaunchedEffect(settled) { if (settled) leavingProgress = 0f }
+            }
             val progress = FastOutSlowInEasing.transform(if (target == screen) backProgress else leavingProgress)
             Box(Modifier.fillMaxSize().graphicsLayer {
                 if (progress > 0f) {

@@ -1,4 +1,4 @@
-import {EventDecoder, markdown, resetLabel, withAttachments, slashMatches, turnPlacement, statusLabel, relativeTime, groupMessages, activitySummary, editDraft, prepareDelivery, promptPayload, blankLocalDraft, agentsFrom, usableAgent, newChatAgent, findModel, resolveOptions, supportedOptions, modeLabels, effortLabels, modeHelp, modelName, effortName, liveStep, elapsedLabel} from './support.mjs';
+import {EventDecoder, markdown, resetLabel, withAttachments, slashMatches, turnPlacement, statusLabel, relativeTime, groupMessages, activitySummary, editDraft, prepareDelivery, afterDelivery, promptPayload, blankLocalDraft, agentsFrom, usableAgent, newChatAgent, findModel, resolveOptions, supportedOptions, modeLabels, effortLabels, modeHelp, modelName, effortName, liveStep, elapsedLabel} from './support.mjs';
 
 const $ = id => document.getElementById(id);
 const el = (tag, className, text) => { const node = document.createElement(tag); if (className) node.className = className; if (text !== undefined) node.textContent = text; return node; };
@@ -152,7 +152,7 @@ function renderChatList() {
     const meta = el('span', 'chat-item-meta');
     const when = el('time', '', relativeTime(chat.updatedAt)); when.dateTime = new Date(chat.updatedAt).toISOString(); when.title = new Date(chat.updatedAt).toLocaleString();
     const where = el('span', 'chat-item-where', `${projectName(chat)} · `); where.append(when);
-    meta.append(where, chat.status && chat.status !== 'idle' ? statusBadge(chat.status) : el('span', 'chat-item-model', modelName(agentFor(chat.agent), chat.model || 'default')));
+    meta.append(where, chat.status && chat.status !== 'idle' ? statusBadge(chat.status) : el('span', 'chat-item-model', modelName(agentFor(chat.agent) ?? {name: chat.agent === 'codex' ? 'Codex' : 'Claude', models: []}, chat.model || 'default')));
     const preview = chat.preview ?? (localChats[chat.id] ? drafts[chat.id]?.text : '');
     button.append(el('span', 'chat-item-title', chat.title));
     if (preview) button.append(el('span', 'chat-item-preview', preview));
@@ -245,8 +245,9 @@ function renderSubagents(list) {
     head.append(el('strong', '', agent.title || 'Sub-agent'));
     if (agent.kind) head.append(el('span', 'subagent-kind', agent.kind));
     const meta = el('p', 'subagent-meta', [agent.model, agent.effort ? effortLabels[agent.effort] ?? agent.effort : null].filter(Boolean).join(' · '));
-    const time = el('span', 'subagent-time', `${meta.textContent ? ' · ' : ''}${agent.status === 'running' ? '' : `${{completed: 'Done', failed: 'Failed', stopped: 'Stopped'}[agent.status] ?? ''} in `}${elapsedLabel((agent.endedAt ?? Date.now()) - agent.startedAt)}`);
-    if (agent.status === 'running') { time.dataset.since = agent.startedAt; time.classList.add('ticking'); }
+    const lead = meta.textContent ? ' · ' : '';
+    const time = el('span', 'subagent-time', `${lead}${agent.status === 'running' ? '' : `${{completed: 'Done', failed: 'Failed', stopped: 'Stopped'}[agent.status] ?? ''} in `}${elapsedLabel((agent.endedAt ?? Date.now()) - agent.startedAt)}`);
+    if (agent.status === 'running') { time.dataset.since = agent.startedAt; time.dataset.lead = lead; time.classList.add('ticking'); }
     meta.append(time);
     text.append(head, meta);
     if (agent.activity) text.append(el('p', 'subagent-activity', agent.activity));
@@ -292,7 +293,7 @@ function renderStatusNote(chat, hasApprovals, step, since, activity) {
   }
   if (chat.status === 'error') {
     const callout = el('div', 'callout danger');
-    callout.append(el('strong', '', 'This turn failed'), el('p', '', chat.error || 'Claude stopped with an error.'), el('p', 'muted', 'Send a prompt to try again.'));
+    callout.append(el('strong', '', 'This turn failed'), el('p', '', chat.error || `${agentName(chat)} stopped with an error.`), el('p', 'muted', 'Send a prompt to try again.'));
     return callout;
   }
   if (chat.status === 'interrupted') {
@@ -328,7 +329,7 @@ async function loadMessages() {
   const items = groupMessages(result.messages), live = busy(chat);
   const {ends, agents: subagentsByTurn} = turnPlacement(result.messages, result.turns, result.subagents);
   const indexOf = new Map(result.messages.map((message, index) => [message.id, index]));
-  const lastIndexOf = item => item.type === 'message' ? indexOf.get(item.message.id) : Math.max(...item.steps.flatMap(step => [indexOf.get(step.id), step.result ? indexOf.get(step.result.id ?? '') ?? -1 : -1]));
+  const lastIndexOf = item => item.type === 'message' ? indexOf.get(item.message.id) : Math.max(...item.steps.flatMap(step => [indexOf.get(step.id), step.result ? indexOf.get(step.result.id) ?? -1 : -1]));
   let shownImported = false, turnPrompt = null;
   items.forEach((item, index) => {
     if (item.type === 'message' && item.message.kind === 'imported' && !shownImported) { shownImported = true; target.append(el('p', 'imported-divider', `Continued from ${chat.agent === 'codex' ? 'Codex' : 'Claude Code'}`)); }
@@ -346,7 +347,8 @@ async function loadMessages() {
     else if (index === items.length - 1 && turnPrompt && subagentsByTurn.get(turnPrompt)?.length && !end) target.append(renderSubagents(subagentsByTurn.get(turnPrompt)));
   });
   const pending = (result.approvals ?? []).some(approval => approval.status === 'pending');
-  const since = result.turns?.at(-1)?.startedAt ?? result.messages.findLast(message => message.role === 'user')?.createdAt;
+  // A turn that already ended isn't the work in progress; a new prompt not yet picked up counts from when it was sent.
+  const since = result.turns?.findLast(turn => !turn.endedAt)?.startedAt ?? result.messages.findLast(message => message.role === 'user')?.createdAt;
   const note = chat && renderStatusNote(chat, pending, liveStep(items), since, result.activity); if (note) target.append(note);
   renderApprovals(result.approvals ?? []);
   scroller.scrollTop = nearBottom ? scroller.scrollHeight : previousScroll;
@@ -453,10 +455,17 @@ function scheduleRefresh() {
 // Images: picked, pasted or dropped, shrunk to 2048 px JPEG when large, uploaded at once, sent by id.
 const imageUrls = new Map();
 function imageUrl(id) {
-  if (!imageUrls.has(id)) imageUrls.set(id, fetch(`/api/uploads/${encodeURIComponent(id)}`, {headers:{Authorization:`Bearer ${token}`}}).then(async response => { if (!response.ok) throw new Error('Image unavailable'); return URL.createObjectURL(await response.blob()); }));
+  if (!imageUrls.has(id)) {
+    const loading = fetch(`/api/uploads/${encodeURIComponent(id)}`, {headers:{Authorization:`Bearer ${token}`}}).then(async response => { if (!response.ok) throw new Error('Image unavailable'); return URL.createObjectURL(await response.blob()); });
+    // A failed load is tried again next time.
+    loading.catch(() => { if (imageUrls.get(id) === loading) imageUrls.delete(id); });
+    imageUrls.set(id, loading);
+  }
   return imageUrls.get(id);
 }
-async function openImage(id) { $('viewer-image').src = await imageUrl(id); $('viewer').showModal(); }
+async function openImage(id) {
+  try { $('viewer-image').src = await imageUrl(id); $('viewer').showModal(); } catch (error) { notice(error.message); }
+}
 $('viewer').onclick = () => $('viewer').close();
 async function shrink(file) {
   if (file.size <= 1_500_000 && !/heic|heif/.test(file.type)) return file;
@@ -474,7 +483,9 @@ function setImages(chatId, update) {
 }
 async function attach(files) {
   const chatId = selected; if (!chatId || drafts[chatId]?.attempted) return;
-  for (const file of [...files].filter(item => item.type.startsWith('image/')).slice(0, 8 - (drafts[chatId]?.attachments?.length ?? 0))) {
+  for (const file of [...files].filter(item => item.type.startsWith('image/'))) {
+    // Pastes can overlap, so the limit is checked against the draft as each image starts.
+    if ((drafts[chatId]?.attachments?.length ?? 0) >= 8 || drafts[chatId]?.attempted) break;
     const key = crypto.randomUUID();
     setImages(chatId, list => [...list, {key, uploading: true, local: URL.createObjectURL(file)}]);
     try {
@@ -571,6 +582,10 @@ function renderSlash() {
     option.onmousedown = event => { event.preventDefault(); chooseSlash(index); };
     return option;
   }));
+}
+function moveSlash(step) {
+  slashIndex = (slashIndex + step + slashItems.length) % slashItems.length; renderSlash();
+  $('slash').children[slashIndex]?.scrollIntoView({block: 'nearest'});
 }
 function chooseSlash(index) {
   const command = slashItems[index]; if (!command) return;
@@ -743,8 +758,9 @@ $('prompt').oninput = () => {
   controls();
 };
 $('prompt').onkeydown = event => {
-  if (slashItems.length) {
-    if (event.key === 'ArrowDown' || event.key === 'ArrowUp') { event.preventDefault(); slashIndex = (slashIndex + (event.key === 'ArrowDown' ? 1 : slashItems.length - 1)) % slashItems.length; renderSlash(); return; }
+  // Keys during IME composition belong to the input method.
+  if (slashItems.length && !event.isComposing) {
+    if (event.key === 'ArrowDown' || event.key === 'ArrowUp') { event.preventDefault(); moveSlash(event.key === 'ArrowDown' ? 1 : -1); return; }
     if (event.key === 'Tab' || (event.key === 'Enter' && !event.shiftKey)) { event.preventDefault(); chooseSlash(slashIndex); return; }
     if (event.key === 'Escape') { event.preventDefault(); hideSlash(); return; }
   }
@@ -752,7 +768,9 @@ $('prompt').onkeydown = event => {
 };
 $('prompt').addEventListener('blur', () => setTimeout(hideSlash, 150));
 $('send-now').onclick = () => submit('interrupt');
-$('composer').onsubmit = event => { event.preventDefault(); submit(busy() ? 'steer' : null); };
+// Always ask to steer: the Mac runs it as a normal turn when idle, so a stale busy state can't make it 409.
+// A retry keeps the delivery it was sent with, and so its id; Send now on a retry is a new delivery.
+$('composer').onsubmit = event => { event.preventDefault(); submit(drafts[selected]?.attempted ? drafts[selected].delivery ?? null : 'steer'); };
 async function submit(delivery) {
   if ($('send').disabled) return;
   const chatId = selected;
@@ -766,7 +784,11 @@ async function submit(delivery) {
     delete overrides[chatId]; persist('pocketbridge.options', overrides);
     lastOptions[draft.agent] = {agent: draft.agent, mode: draft.mode, model: draft.model, effort: draft.effort}; lastAgent = draft.agent;
     persist('pocketbridge.lastOptions', lastOptions); persist('pocketbridge.lastAgent', lastAgent);
-    if (drafts[chatId]?.id === draft.id) { delete drafts[chatId]; persist('pocketbridge.drafts', drafts); if (selected === chatId) { $('prompt').value = ''; autosize(); renderAttachments(); } }
+    // Text typed while sending stays; the images that were just sent don't.
+    const left = afterDelivery(drafts[chatId], draft);
+    if (left) drafts[chatId] = left; else delete drafts[chatId];
+    persist('pocketbridge.drafts', drafts);
+    if (selected === chatId) { if (!left) { $('prompt').value = ''; autosize(); } renderAttachments(); }
     notice(); await refresh();
   } catch (error) {
     if (error.status === 410) {
@@ -792,7 +814,7 @@ $('messages').addEventListener('click', async event => {
 });
 setInterval(() => {
   for (const time of document.querySelectorAll('.working-time')) time.textContent = `· ${elapsedLabel(Date.now() - Number(time.dataset.since))}`;
-  for (const time of document.querySelectorAll('.subagent-time.ticking')) time.textContent = ` · ${elapsedLabel(Date.now() - Number(time.dataset.since))}`;
+  for (const time of document.querySelectorAll('.subagent-time.ticking')) time.textContent = `${time.dataset.lead}${elapsedLabel(Date.now() - Number(time.dataset.since))}`;
 }, 1000);
 
 function showSettings(show) {

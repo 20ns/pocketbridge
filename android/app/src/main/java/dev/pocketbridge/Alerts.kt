@@ -13,6 +13,7 @@ import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.IBinder
 import java.io.IOException
+import java.util.concurrent.ConcurrentHashMap
 import kotlinx.coroutines.*
 import kotlinx.coroutines.channels.Channel
 import org.json.JSONObject
@@ -60,6 +61,23 @@ fun workingSummary(chats: List<ChatStatus>): Pair<String, String> {
     }
 }
 
+/** The chat an event-stream line says has a new or answered request, so its approvals are read again. */
+fun approvalChat(data: String): String? = runCatching { JSONObject(data) }.getOrNull()?.takeIf { it.optString("type") == "approval" }?.optString("chatId")?.ifBlank { null }
+
+/**
+ * What became of [approval] after its answer from a notification got no reply, from the chat's messages: null while it
+ * still waits or nothing could be read (the actions come back), "" once it's gone, else the line to show.
+ */
+fun approvalOutcome(messages: JSONObject?, approval: String): String? {
+    val list = messages?.optJSONArray("approvals")?.objects() ?: return null
+    return when (list.find { it.optString("id") == approval }?.optString("status")) {
+        null -> ""
+        "allow" -> "Allowed"
+        "deny" -> "Denied"
+        else -> null
+    }
+}
+
 fun endedLabel(status: String) = when (status) { "error" -> "Failed"; "interrupted" -> "Stopped"; else -> "Done" }
 
 object Alerts {
@@ -74,6 +92,8 @@ object Alerts {
     private const val ACTION_DENY = "dev.pocketbridge.DENY"
     private const val EXTRA_APPROVAL = "approval"
     private const val EXTRA_TITLE = "title"
+    private const val EXTRA_TEXT = "text"
+    private const val EXTRA_BODY = "body"
     // Android 16 reads this extra as a request for a promoted (Live Update) ongoing notification.
     private const val EXTRA_PROMOTED = "android.requestPromotedOngoing"
 
@@ -99,6 +119,10 @@ object Alerts {
     @SuppressLint("ImplicitSamInstance")
     fun stop(context: Context) { context.stopService(Intent(context, AlertService::class.java)) }
     fun dismiss(context: Context, chatId: String) { context.getSystemService(NotificationManager::class.java).cancel(chatId, CHAT_ID) }
+    /** Every PocketBridge notification, for when alerts go off or the pairing does. */
+    fun clear(context: Context) { context.getSystemService(NotificationManager::class.java).cancelAll() }
+    /** Allow and Deny only answer while alerts are on and this phone is still paired. */
+    fun answerable(store: Store) = store.get("alerts") != "off" && store.get("token").isNotEmpty()
 
     fun openIntent(context: Context, chatId: String?): PendingIntent = PendingIntent.getActivity(
         context, chatId?.hashCode() ?: 0,
@@ -115,8 +139,8 @@ object Alerts {
         notify(context, chat.id, builder(context, FINISHED, chat).setSubText(endedLabel(chat.status)).setContentText(body).setStyle(Notification.BigTextStyle().bigText(body)).build())
     }
 
-    /** A question or plan opens the chat; a permission request can be answered from the notification. */
-    fun needsAnswer(context: Context, chat: ChatStatus, approval: JSONObject?) {
+    /** A question or plan opens the chat; a permission request can be answered from the notification. [quiet] updates one already shown. */
+    fun needsAnswer(context: Context, chat: ChatStatus, approval: JSONObject?, quiet: Boolean = false) {
         val agent = if (chat.agent == CODEX) "Codex" else "Claude"
         val tool = approval?.optString("tool").orEmpty()
         val input = approval?.optJSONObject("input") ?: JSONObject()
@@ -129,26 +153,37 @@ object Alerts {
             tool == "ExitPlanMode" -> "Plan ready to review"
             else -> "Allow $tool?" + if (detail.isNotBlank()) " " + firstLine(detail, 120) else ""
         }
-        val builder = builder(context, NEEDS, chat).setSubText("Needs your answer").setContentText(text).setCategory(Notification.CATEGORY_REMINDER)
-            .setStyle(Notification.BigTextStyle().bigText(if (permission && detail.isNotBlank()) "Allow $tool?\n$detail" else text))
-        if (permission) {
-            val id = approval!!.optString("id")
-            builder.addAction(action(context, "Deny", ACTION_DENY, id, chat)).addAction(action(context, "Allow", ACTION_ALLOW, id, chat))
-        }
+        val body = if (permission && detail.isNotBlank()) "Allow $tool?\n$detail" else text
+        if (permission) permission(context, chat, approval!!.optString("id"), text, body, quiet)
+        else notify(context, chat.id, builder(context, NEEDS, chat).setSubText("Needs your answer").setContentText(text).setCategory(Notification.CATEGORY_REMINDER)
+            .setStyle(Notification.BigTextStyle().bigText(body)).setOnlyAlertOnce(quiet).build())
+    }
+
+    /** A permission request with Deny and Allow. [problem] says why the last answer from here didn't reach the Mac. */
+    private fun permission(context: Context, chat: ChatStatus, approval: String, text: String, body: String, quiet: Boolean, problem: String = "") {
+        val builder = builder(context, NEEDS, chat).setSubText("Needs your answer").setContentText(problem.ifEmpty { text }).setCategory(Notification.CATEGORY_REMINDER)
+            .setStyle(Notification.BigTextStyle().bigText(if (problem.isEmpty()) body else "$problem\n$body")).setOnlyAlertOnce(quiet)
+            .addAction(action(context, "Deny", ACTION_DENY, approval, chat, text, body)).addAction(action(context, "Allow", ACTION_ALLOW, approval, chat, text, body))
         notify(context, chat.id, builder.build())
     }
 
-    private fun action(context: Context, label: String, decision: String, approval: String, chat: ChatStatus): Notification.Action {
-        val intent = Intent(context, AlertActionReceiver::class.java).setAction(decision).putExtra(EXTRA_APPROVAL, approval).putExtra(EXTRA_CHAT, chat.id).putExtra(EXTRA_TITLE, chat.title)
+    private fun action(context: Context, label: String, decision: String, approval: String, chat: ChatStatus, text: String, body: String): Notification.Action {
+        val intent = Intent(context, AlertActionReceiver::class.java).setAction(decision).putExtra(EXTRA_APPROVAL, approval).putExtra(EXTRA_CHAT, chat.id)
+            .putExtra(EXTRA_TITLE, chat.title).putExtra(EXTRA_TEXT, text).putExtra(EXTRA_BODY, body)
         val pending = PendingIntent.getBroadcast(context, (approval + decision).hashCode(), intent, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
         return Notification.Action.Builder(null, label, pending).build()
     }
 
-    /** After Allow or Deny: a quiet line that clears itself, or the failure with the actions kept for another try. */
-    internal fun answered(context: Context, chatId: String, title: String, text: String, keep: Notification.Builder.() -> Unit = { setTimeoutAfter(5000) }) {
-        val builder = builder(context, NEEDS, ChatStatus(chatId, title, "waiting")).setContentText(text).setOnlyAlertOnce(true)
-        builder.keep()
-        notify(context, chatId, builder.build())
+    /** After Allow or Deny: a quiet line that clears itself. */
+    internal fun answered(context: Context, chatId: String, title: String, text: String) {
+        notify(context, chatId, builder(context, NEEDS, ChatStatus(chatId, title, "waiting")).setContentText(text).setOnlyAlertOnce(true).setTimeoutAfter(5000).build())
+    }
+
+    /** The answer from [intent] didn't arrive: the same request again, quietly, with the reason and its actions for another try. */
+    internal fun unanswered(context: Context, intent: Intent, problem: String) {
+        val (approval, chat) = answer(intent)
+        val text = intent.getStringExtra(EXTRA_TEXT).orEmpty().ifBlank { "Needs your answer" }
+        permission(context, ChatStatus(chat, title(intent), "waiting"), approval, text, intent.getStringExtra(EXTRA_BODY).orEmpty().ifBlank { text }, quiet = true, problem)
     }
 
     fun answer(intent: Intent) = Triple(intent.getStringExtra(EXTRA_APPROVAL).orEmpty(), intent.getStringExtra(EXTRA_CHAT).orEmpty(), intent.action == ACTION_ALLOW)
@@ -183,6 +218,11 @@ class AlertService : Service() {
     private var statuses = mutableMapOf<String, String>()
     private val started = mutableMapOf<String, Long>()
     private var lastSummary: Pair<List<ChatStatus>, Long?>? = null
+    /** Waiting chats announced without their approvals (the fetch failed): asked again until Allow and Deny can be added. */
+    private val unfetched = mutableSetOf<String>()
+    /** Per waiting chat, the request its notification shows; and chats whose requests changed since the last look. */
+    private val notified = mutableMapOf<String, String>()
+    private val approvalsChanged = ConcurrentHashMap.newKeySet<String>()
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -202,8 +242,9 @@ class AlertService : Service() {
 
     override fun onDestroy() { scope.cancel(); super.onDestroy() }
 
-    private fun finish() {
+    private fun finish(clear: Boolean = false) {
         stopForeground(STOP_FOREGROUND_REMOVE)
+        if (clear) Alerts.clear(this)
         stopSelf()
         scope.cancel()
     }
@@ -215,7 +256,7 @@ class AlertService : Service() {
     }
 
     private suspend fun watch() {
-        val api = api() ?: return finish()
+        val api = api() ?: return finish(clear = true)
         var backoff = 2000L
         var failingSince = 0L
         while (currentCoroutineContext().isActive) {
@@ -224,15 +265,20 @@ class AlertService : Service() {
                 backoff = 2000L; failingSince = 0L
                 val changes = Channel<Unit>(Channel.CONFLATED)
                 coroutineScope {
-                    // Bursts of changes become one state fetch a second.
-                    val fetcher = launch { for (change in changes) { delay(1000); if (refresh(api) == null) return@launch } }
-                    api.watch(seq, "status") { line -> if (line.startsWith("data:")) changes.trySend(Unit) }
+                    // Bursts of changes become one state fetch a second. A question still missing its actions asks again a little later.
+                    val fetcher = launch {
+                        if (unfetched.isNotEmpty()) changes.trySend(Unit)
+                        for (change in changes) { delay(if (unfetched.isEmpty()) 1000 else 5000); if (refresh(api) == null) return@launch; if (unfetched.isNotEmpty()) changes.trySend(Unit) }
+                    }
+                    api.watch(seq, "status") { line ->
+                        if (line.startsWith("data:")) { approvalChat(line.removePrefix("data:").trim())?.let(approvalsChanged::add); changes.trySend(Unit) }
+                    }
                     fetcher.cancel()
                 }
                 throw IOException("The event stream closed.")
             } catch (cancelled: CancellationException) { throw cancelled }
             catch (failure: Exception) {
-                if (failure is ApiError && failure.status == 401) return finish()
+                if (failure is ApiError && failure.status == 401) return finish(clear = true)
                 val now = System.currentTimeMillis()
                 if (failingSince == 0L) failingSince = now
                 // A Mac out of reach for a quarter of an hour isn't worth a radio kept awake.
@@ -244,15 +290,23 @@ class AlertService : Service() {
 
     /** One look at the Mac: posts what changed and updates the ongoing summary. Null once the service has stopped. */
     private suspend fun refresh(api: Api): Long? {
-        if (Store(this).get("alerts") == "off" || Store(this).get("token").isEmpty()) { finish(); return null }
+        if (!Alerts.answerable(Store(this))) { finish(clear = true); return null }
         val state = withContext(Dispatchers.IO) { api.request("/api/state") }
+        // Alerts may have gone off while that was on its way.
+        if (!Alerts.answerable(Store(this))) { finish(clear = true); return null }
         val chats = state.optJSONArray("chats")?.objects().orEmpty().map(::chatStatus)
         val viewing = if (Alerts.foreground) Alerts.viewing else ""
-        for (event in alertEvents(statuses, chats, viewing)) when (event) {
-            is NeedsAnswer -> Alerts.needsAnswer(this, event.chat, pendingApproval(api, event.chat.id))
+        val events = alertEvents(statuses, chats, viewing)
+        for (event in events) when (event) {
+            is NeedsAnswer -> announce(api, event.chat, fresh = true)
             is Ended -> Alerts.ended(this, event.chat)
             is Answered -> Alerts.dismiss(this, event.chat.id)
         }
+        val waiting = chats.filter { it.status == "waiting" && it.id != viewing }.map { it.id }.toSet()
+        unfetched.retainAll(waiting); notified.keys.retainAll(waiting)
+        // Still waiting, but on another request (one answered, the next asked between two looks), or still missing its actions.
+        val changed = approvalsChanged.toSet().also { approvalsChanged.removeAll(it) }
+        for (chat in chats.filter { it.id in waiting && (it.id in unfetched || it.id in changed) && events.none { event -> event.chat.id == it.id } }) announce(api, chat, fresh = false)
         statuses = chats.associate { it.id to it.status }.toMutableMap()
         val active = chats.filter { isWorking(it.status) }
         if (active.isEmpty()) { finish(); return null }
@@ -268,7 +322,24 @@ class AlertService : Service() {
 
     private suspend fun messages(api: Api, chatId: String) = runCatching { withContext(Dispatchers.IO) { api.request("/api/chats/$chatId/messages") } }.getOrNull()
     private suspend fun turnStart(api: Api, chatId: String) = messages(api, chatId)?.let { runningSince(parseTurns(it), null) }
-    private suspend fun pendingApproval(api: Api, chatId: String) = messages(api, chatId)?.optJSONArray("approvals")?.objects()?.lastOrNull { it.optString("status") == "pending" }
+    /**
+     * Posts the chat's pending request with its permission actions, once per request. A failed fetch posts a [fresh]
+     * one plainly and tries again. A request answered meanwhile takes its notification with it.
+     */
+    private suspend fun announce(api: Api, chat: ChatStatus, fresh: Boolean) {
+        val standIn = chat.id in unfetched
+        val messages = messages(api, chat.id)
+        if (!Alerts.answerable(Store(this))) return
+        if (messages == null) { unfetched += chat.id; if (fresh) Alerts.needsAnswer(this, chat, null); return }
+        unfetched -= chat.id
+        val approval = messages.optJSONArray("approvals")?.objects()?.lastOrNull { it.optString("status") == "pending" }
+        val key = approval?.optString("id").orEmpty()
+        if (!fresh && key.isEmpty()) { if (!notified[chat.id].isNullOrEmpty()) { Alerts.dismiss(this, chat.id); notified.remove(chat.id) }; return }
+        if (!fresh && notified[chat.id] == key) return
+        notified[chat.id] = key
+        // A plain notice already stood in for this request: it gains its actions without a second alert.
+        Alerts.needsAnswer(this, chat, approval, quiet = !fresh && standIn)
+    }
 }
 
 /** Allow or Deny from a permission notification, sent straight to the Mac. */
@@ -280,15 +351,29 @@ class AlertActionReceiver : BroadcastReceiver() {
         val app = context.applicationContext
         val result = goAsync()
         CoroutineScope(Dispatchers.IO).launch {
+            val token = Store(app).get("token")
+            // Alerts off or the pairing changed, now or while the answer was on its way: nothing is put back.
+            fun current() = Store(app).let { Alerts.answerable(it) && it.get("token") == token }
             try {
+                if (!current()) { Alerts.dismiss(app, chat); return@launch }
                 val store = Store(app)
                 val api = Api(normalizeServer(store.get("base")), store.token())
-                withTimeout(8000) { api.request("/api/approvals/$approval", JSONObject().put("decision", if (allow) "allow" else "deny")) }
-                Alerts.answered(app, chat, title, if (allow) "Allowed" else "Denied")
+                val outcome = try {
+                    withTimeout(6000) { api.request("/api/approvals/$approval", JSONObject().put("decision", if (allow) "allow" else "deny")) }
+                    if (allow) "Allowed" else "Denied"
+                } catch (failure: Exception) {
+                    // Answered on another device, or here with only the reply lost: say so rather than ask again.
+                    if (failure is ApiError && failure.status == 409) "Already answered"
+                    else approvalOutcome(runCatching { withTimeout(3000) { api.request("/api/chats/$chat/messages") } }.getOrNull(), approval)
+                }
+                when {
+                    !current() -> Alerts.dismiss(app, chat)
+                    outcome == null -> Alerts.unanswered(app, intent, "Couldn't reach your Mac. Try again.")
+                    outcome.isEmpty() -> Alerts.dismiss(app, chat)
+                    else -> Alerts.answered(app, chat, title, outcome)
+                }
             } catch (failure: Exception) {
-                // Already answered on another device: nothing left to do here.
-                if (failure is ApiError && failure.status == 409) Alerts.answered(app, chat, title, "Already answered")
-                else Alerts.answered(app, chat, title, "Couldn't reach your Mac. Open the chat to answer.") {}
+                if (current()) Alerts.unanswered(app, intent, "Couldn't reach your Mac. Try again.")
             } finally { result.finish() }
         }
     }

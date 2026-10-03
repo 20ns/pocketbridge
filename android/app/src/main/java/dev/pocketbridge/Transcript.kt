@@ -40,8 +40,13 @@ fun transcript(messages: List<Said>): List<Entry> {
         // The Mac names a result's tool message in its id ("<tool id>:result"). Older transcripts pair in call order.
         val waiting = if (said.id.endsWith(":result")) steps.indexOfFirst { it.id == said.id.removeSuffix(":result") && it.result == null }
             else steps.indexOfFirst { it.result == null && !it.isNote }
+        // A steer or note can land while a command runs; its named result still belongs to that earlier group.
+        val earlier = if (isResult && waiting < 0 && said.id.endsWith(":result")) entries.indexOfLast { entry -> entry is Steps && entry.steps.any { it.id == said.id.removeSuffix(":result") && it.result == null } } else -1
         when {
             isResult && waiting >= 0 -> steps[waiting] = steps[waiting].copy(result = body, failed = head == "Tool failed")
+            earlier >= 0 -> (entries[earlier] as Steps).let { group ->
+                entries[earlier] = Steps(group.steps.map { if (it.id == said.id.removeSuffix(":result") && it.result == null) it.copy(result = body, failed = head == "Tool failed") else it })
+            }
             isResult -> steps += Step(said.id, if (head == "Tool failed") "Failed" else "Result", firstLine(body), "", body, head == "Tool failed", said.createdAt)
             body.trimStart().startsWith("{") -> steps += Step(said.id, head, summarize(head, body), body, at = said.createdAt)
             else -> steps += Step(said.id, NOTE, firstLine(said.text), said.text, at = said.createdAt)
@@ -129,16 +134,22 @@ fun decodeAnswers(saved: String): Answers {
 /** The tool call still running at the end of the transcript, if any. A sub-agents card placed last doesn't count. */
 fun liveStep(entries: List<Entry>): Step? = (entries.lastOrNull { it !is Agents } as? Steps)?.steps?.lastOrNull { it.result == null && !it.isNote }
 
-/** Keys of replies that close a turn: followed by the next prompt (a steer joins the turn instead), or last once work has stopped. */
-fun turnEnds(entries: List<Entry>, live: Boolean): Set<String> = entries.indices.mapNotNull { index ->
-    val entry = entries[index] as? Message ?: return@mapNotNull null
-    if (entry.said.role != "assistant" || entry.said.text.isBlank()) return@mapNotNull null
-    val next = entries.drop(index + 1).firstOrNull { it is Message && !(it.said.role == "user" && it.said.kind == STEER) }
-    when {
-        next != null -> entry.key.takeIf { (next as Message).said.role == "user" }
-        else -> entry.key.takeIf { !live }
-    }
-}.toSet()
+/**
+ * Keys of replies that close a turn: followed by the prompt of the next turn, or last once work has stopped. A steer
+ * joins the running turn, unless it arrived between turns and started one of its own ([turns] lists it).
+ */
+fun turnEnds(entries: List<Entry>, live: Boolean, turns: List<Turn> = emptyList()): Set<String> {
+    val starts = turns.map { it.id }.toSet()
+    return entries.indices.mapNotNull { index ->
+        val entry = entries[index] as? Message ?: return@mapNotNull null
+        if (entry.said.role != "assistant" || entry.said.text.isBlank()) return@mapNotNull null
+        val next = entries.drop(index + 1).firstOrNull { it is Message && (it.said.role == "assistant" || opensTurn(it, starts)) }
+        when {
+            next != null -> entry.key.takeIf { (next as Message).said.role == "user" }
+            else -> entry.key.takeIf { !live }
+        }
+    }.toSet()
+}
 
 fun elapsedLabel(millis: Long): String {
     val seconds = (millis / 1000).coerceAtLeast(0)
