@@ -1,3 +1,109 @@
+PocketBridge 0.6.0 verification, 3 October 2026
+
+AUTOMATED CHECKS
+- Mac: pnpm test, 56 passed (38 service, 18 browser helper). New cases use the fake
+  Claude and Codex CLIs: image uploads (type sniffing, 5 MB limit, stale cleanup,
+  image-only prompts titled "Screenshot"), steer and Send now on both agents including
+  steers sent before Codex's turn starts, steers the CLI never echoes, background
+  sub-agents holding the turn open while background shells don't, sub-agent model,
+  effort, activity and status, turn start and end times, git counts against HEAD with
+  new files and a project folder nested in a larger repository, "/" commands and Codex
+  skills, continuing a Claude or Codex session once under concurrent requests, foreign
+  Codex thread events, the status-only event stream, and odd CLI output that once
+  crashed the service.
+- An independent review of the 0.6 service found ten bugs (background count, unechoed
+  steers holding a run open, foreign Codex events, interrupt while waiting, unguarded
+  close handler, steers after exit, duplicate continues, sessions from other folders,
+  blocking git on large trees, upload size). All are fixed with regression tests.
+- Android: assembleDebug, testDebugUnitTest and lintDebug passed; 97 JVM tests. Lint:
+  no errors, 14 warnings (Gradle and dependency versions, KTX style). Signed
+  assembleRelease 0.6.0 (versionCode 7) uses the same certificate as 0.5.0.
+
+REAL CLI CHECKS (isolated services in scratch folders, never the 8787 service)
+- Claude (Haiku 4.5): read an attached PNG, took a steer mid-turn, Send now stopped
+  the running step and ran the new message next, and a background sub-agent showed
+  its model, activity and completion.
+- Codex (GPT-6-Luna, low): read an attached image, steered and interrupted a running
+  turn after the turn-start fix, and reported context use. Test threads were archived
+  and Claude test sessions moved out of ~/.claude/projects afterwards.
+
+EMULATOR CHECKS (Android 16 AVD, demo service on 8788 with scripted CLIs)
+- Photo picker and share sheet attach images; thumbnails, removal, failed uploads and
+  the full-screen viewer. Image-only and mixed prompts on Claude and Codex.
+- A running turn shows Steer with a menu offering Send now; steered messages are
+  labelled. "/" lists commands and filters as you type. Git line shows branch, +8 −2
+  and 3 files. Sub-agent cards show title, type, model, effort, activity and time.
+  Turns show "Worked 1m 18s". "On your Mac" lists Terminal and Codex sessions and
+  Continue opens a new chat. Alerts while closed: working, needs your answer with
+  Allow and Deny, done. Light, dark and 1.3x font scale.
+- Not tested: pinch zoom in the viewer, the Live Update status chip, and anything on a
+  physical phone (Tailscale, real share targets, notification permissions on One UI).
+
+DEPLOYMENT
+- Live service upgraded with no chat running; database backed up first. Health,
+  agents, usage, git and Mac sessions answered. PocketBridge.apk and
+  releases/PocketBridge-0.6.0.apk SHA-256
+  e22611c28c908d06d573031260b436991797a65e7ef35db7dcc05955e6311e41.
+
+PocketBridge 0.5.0 verification, 3 October 2026
+
+AUTOMATED CHECKS
+- Mac: pnpm test, 42 passed. Agent switches: off persists across restart, blocks new chats
+  and prompts with 409, skips probes, usage and discovery, and turning on resumes them. New cases use fake Claude and Codex CLIs: usage endpoints,
+  context recording, legacy-client effort rules, shutdown during a catalog wait, catalog
+  handshakes (no "default" entry, no account details, hidden Codex models left out,
+  per-model effort validation, catalog kept across restart), Codex first turn, resume
+  by thread id, out-of-order tool results paired by id, Codex failure and Stop, Claude
+  tool-result ids, plain-text previews, gzip, and Codex session discovery that skips
+  subagent threads and Codex desktop task folders.
+- Android: assembleDebug, testDebugUnitTest and lintDebug passed; 79 JVM tests, including the new-chat agent choice under switches,
+  catalog option resolution and mode mapping, usage parsing, model tiers, the code
+  highlighter and Markdown alignment. Signed assembleRelease and lintRelease: no errors.
+- An independent review of the 0.5 changes found five bugs (shutdown race, catalog wait
+  longer than client timeouts, 0.4.1 effort rejection, locked browser draft after a
+  rejection, agent switch widening the permission mode). All are fixed and tested.
+
+REAL CLI CHECKS (isolated service, temporary data, never the 8787 service)
+- Claude Code 2.1.285 initialize handshake listed 11 models (Opus 5.5 default,
+  Fable 5.1, Sonnet 5.5, Haiku 4.5 and older versions) with effort levels, in about
+  1.2s and without starting a turn. Default effort followed effortLevel "high".
+- Codex 0.157.1 app-server listed 7 visible models; GPT-6-Astra became the default
+  because the configured gpt-6.1-sol is not in the list. Configured effort xhigh kept.
+- One real Codex turn on GPT-6-Luna (low, Auto) ran `pwd`, replied, and a second
+  prompt resumed the same thread and remembered the first reply. The test thread was
+  archived in Codex afterwards.
+
+EMULATOR CHECKS (Android 16 AVD, demo service on 8788 with scripted CLIs)
+- New chat shows Opus 5.5 / High / Bypass under the message field with no extra panel.
+  The model sheet lists Claude and Codex models by name; picking GPT-6-Astra switched
+  the draft to Codex and the mode menu offered Bypass permissions, Auto and Read only.
+- A Codex turn showed "Working · 15s" with the running command, then the reply,
+  grouped steps and Copy. Reopening New chat kept the last agent and model.
+- Back gesture from the left edge scaled the page with the finger and returned to the
+  project's chats. No back buttons remain. Light and dark themes, 1.0 and 1.3 font
+  scales, question cards, Settings and the chat list with previews were checked.
+- Mac browser client: model/effort/mode pills, agent groups for unsent chats, a Codex
+  turn, Copy, rename and delete buttons.
+
+REDESIGN (separate UI agent using the material-3, ui-android and Chris Banes compose skills)
+- Emulator screenshots in light, dark and 1.3x font: projects with Active and usage ring,
+  usage sheet, chats, composer, model panel (half height, older versions, Claude/Codex
+  switch), effort and mode menus, format reply (highlighted code, diff, aligned table),
+  working line, question card, settings. The unconfirmed delivery row was not captured.
+- The signed release APK installed over the debug build on the emulator and opened.
+- Switches on the emulator: Settings toggled Codex off and usage showed only Claude; a
+  saved Codex chat showed "Codex is off" with Turn on, which restored it; with Codex off a
+  new chat's model panel listed only Claude.
+
+DEPLOYMENT
+- The live Mac service was idle and restarted with 0.5.0. Claude (11 models) and Codex
+  (7 models) report available; the three existing chats are unchanged; Codex discovery
+  raised projects from 11 to 21. /api/usage answers with real plan data. The Mac's
+  /PocketBridge.apk serves the 0.5.0 release, SHA256
+  d7b2f234ab36a27eb87c36f94d290f1f285008ad5243cd2b788fe4e3cfda55f7.
+
+Physical S25 Ultra checks were not run in this pass.
+
 PocketBridge 0.4.1 repeated-use verification, 3 October 2026
 
 AUTOMATED CHECKS

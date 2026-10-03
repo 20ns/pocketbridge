@@ -16,6 +16,7 @@ for (const [key,value] of Object.entries({
   POCKETBRIDGE_DATA_DIR:data,
   POCKETBRIDGE_PUBLIC_URL:config.publicUrl,
   POCKETBRIDGE_CLAUDE_PATH:config.claudePath,
+  POCKETBRIDGE_CODEX_PATH:config.codexPath,
   POCKETBRIDGE_PORT:config.port,
 })) if (value !== undefined && !process.env[key]) process.env[key] = String(value);
 

@@ -22,6 +22,10 @@ class Store internal constructor(private val prefs: SharedPreferences) {
     fun localDraftIds() = prefs.all.keys.mapNotNull { key -> key.removePrefix("draftChat:").takeIf { key.startsWith("draftChat:") && it.isNotEmpty() } }
     fun put(key: String, value: String) { prefs.edit().putString(key, value).apply() }
     fun remove(key: String) { prefs.edit().remove(key).apply() }
+    fun removePrefixed(prefix: String) {
+        val keys = prefs.all.keys.filter { it.startsWith(prefix) }
+        if (keys.isNotEmpty()) prefs.edit().apply { keys.forEach(::remove) }.apply()
+    }
     @Synchronized fun commit(key: String, value: String, session: Int) {
         requireSession(session)
         check(prefs.edit().putString(key, value).commit()) { "Could not save prompt delivery state." }
@@ -32,6 +36,8 @@ class Store internal constructor(private val prefs: SharedPreferences) {
         if (accepted && get("draft:$id").trim() == prompt.text) edit.remove("draft:$id")
         if (accepted) edit.remove("draftChat:$id")
         if (accepted) edit.remove("options:$id")
+        // Images sent with this prompt leave the composer with it; ones added since stay.
+        if (accepted && decodeAttachments(get("attachments:$id")).map { it.upload } == prompt.attachments) edit.remove("attachments:$id")
         check(edit.commit()) { "Could not save prompt delivery state." }
     }
     /** Confirmed server deletion. Blank-draft cleanup stays on [removeChat] so typing never waits on disk. */
@@ -50,7 +56,9 @@ class Store internal constructor(private val prefs: SharedPreferences) {
         check(edit.commit()) { "Could not save chat deletion." }
     }
     @Synchronized fun removeChat(id: String) { chatRemoval(id).apply() }
-    private fun chatRemoval(id: String) = prefs.edit().remove("messages:$id").remove("draft:$id").remove("pending:$id").remove("draftChat:$id").remove("options:$id")
+    private fun chatRemoval(id: String) = prefs.edit().remove("messages:$id").remove("draft:$id").remove("pending:$id").remove("draftChat:$id").remove("options:$id").remove("attachments:$id")
+    /** Prepared image files some composer still holds, so the outbox can drop the rest. */
+    fun attachmentFiles(): Set<String> = prefs.all.filterKeys { it.startsWith("attachments:") }.values.flatMap { decodeAttachments(it as? String ?: "").map(Attachment::file) }.toSet()
     private fun requireSession(session: Int) {
         if (session != generation) throw CancellationException("Pairing changed.")
     }

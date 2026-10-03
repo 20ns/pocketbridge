@@ -31,10 +31,14 @@ class ApiTest {
         assertEquals("project", prompt.json().getString("projectId"))
         assertEquals(PendingPrompt("old", "hi", "auto"), PendingPrompt.parse("""{"id":"old","text":"hi","mode":"auto"}"""))
     }
-    @Test fun `local options reset effort for Haiku only`() {
-        assertEquals(ChatOptions("auto", "haiku", "default"), chatOptions("auto", "haiku", "high"))
-        assertEquals(ChatOptions("auto", "sonnet", "high"), chatOptions("auto", "sonnet", "high"))
-        assertEquals(ChatOptions("auto", "haiku", "default"), ChatOptions.parse("""{"mode":"auto","model":"haiku","effort":"max"}"""))
+    @Test fun `saved options keep their agent and older saves default to Claude`() {
+        assertEquals(ChatOptions("auto", "gpt-6-luna", "low", CODEX), ChatOptions.parse(ChatOptions("auto", "gpt-6-luna", "low", CODEX).store()))
+        assertEquals(ChatOptions("auto", "haiku", "max"), ChatOptions.parse("""{"mode":"auto","model":"haiku","effort":"max"}"""))
+        val codex = PendingPrompt("id", "hi", "readOnly", "gpt-6-luna", "low", "project", CODEX)
+        assertEquals(codex, PendingPrompt.parse(codex.json().toString()))
+        assertEquals(CODEX, codex.json().getString("agent"))
+        assertEquals(ChatOptions("readOnly", "gpt-6-luna", "low", CODEX), codex.options)
+        assertEquals(CLAUDE, PendingPrompt.parse("""{"id":"old","text":"hi"}""").agent)
     }
     @Test fun `cursor never commits unseen updates that arrived during reconciliation`() {
         val cursor = EventCursor(10)

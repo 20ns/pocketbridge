@@ -38,6 +38,25 @@ class StoreTest {
         assertNotEquals("", store.get("options:chat"))
     }
 
+    @Test fun `acceptance clears the composer images it sent and keeps ones added since`() {
+        val store = Store(Preferences().value)
+        val sent = listOf(Attachment("a", "/o/a.jpg", "u1"), Attachment("b", "/o/b.jpg", "u2"))
+        val prompt = PendingPrompt("delivery", "", attachments = listOf("u1", "u2"))
+        store.put("attachments:chat", encodeAttachments(sent))
+        store.commit("pending:chat", prompt.json().toString(), store.session())
+        store.completePrompt("chat", prompt, store.session(), accepted = false)
+        assertEquals(sent, decodeAttachments(store.get("attachments:chat")))
+        store.completePrompt("chat", prompt, store.session(), accepted = true)
+        assertEquals("", store.get("attachments:chat"))
+        val later = sent + Attachment("c", "/o/c.jpg", "u3")
+        store.put("attachments:chat", encodeAttachments(later))
+        store.completePrompt("chat", prompt, store.session(), accepted = true)
+        assertEquals(3, decodeAttachments(store.get("attachments:chat")).size)
+        assertEquals(setOf("/o/a.jpg", "/o/b.jpg", "/o/c.jpg"), store.attachmentFiles())
+        store.removeChat("chat")
+        assertEquals("", store.get("attachments:chat"))
+    }
+
     @Test fun `old requests cannot write delivery state after disconnect`() {
         val store = Store(Preferences().value)
         val session = store.session()

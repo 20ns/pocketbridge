@@ -1,47 +1,91 @@
 ---
 name: "PocketBridge"
-description: "Native phone messaging for Claude Code tasks on your Mac."
+description: "Native phone messaging for Claude Code and Codex tasks on your Mac."
 colors:
-  light-primary: "#006A60"
+  light-primary: "#006B5F"
   light-on-primary: "#FFFFFF"
-  light-secondary-container: "#D3E9E3"
-  light-on-secondary-container: "#0B201C"
-  light-tertiary: "#8A5100"
-  light-tertiary-container: "#FFDDB8"
+  light-primary-container: "#A0F2E2"
+  light-on-primary-container: "#00201C"
+  light-secondary-container: "#CCE8E1"
+  light-on-secondary-container: "#051F1B"
+  light-tertiary: "#8B5000"
+  light-tertiary-container: "#FFDCBD"
   light-on-tertiary-container: "#2C1600"
   light-error: "#BA1A1A"
   light-error-container: "#FFDAD6"
   light-on-error-container: "#410002"
-  light-surface: "#FAF9F5"
-  light-on-surface: "#1B1C1A"
-  light-on-surface-variant: "#474B47"
-  light-outline: "#767A76"
-  light-outline-variant: "#C7CBC6"
+  light-surface: "#F5F4EF"
+  light-on-surface: "#1A1C1A"
+  light-on-surface-variant: "#444A47"
+  light-outline: "#737975"
+  light-outline-variant: "#C3C8C4"
   light-surface-container-lowest: "#FFFFFF"
-  light-surface-container-low: "#F4F3EE"
-  light-surface-container: "#EFEEE9"
-  light-surface-container-high: "#E9E8E3"
-  light-surface-container-highest: "#E3E3DE"
-  dark-primary: "#81D5C8"
+  light-surface-container-low: "#EFEEE9"
+  light-surface-container: "#E9E8E3"
+  light-surface-container-high: "#E3E2DD"
+  light-surface-container-highest: "#DDDCD7"
+  light-row: "#FFFFFF"
+  light-user-bubble: "#006B5F"
+  light-on-user-bubble: "#FFFFFF"
+  light-composer: "#FFFFFF"
+  light-composer-border: "#D6DAD5"
+  light-pill: "#EEEDE8"
+  light-panel: "#FFFFFF"
+  light-code: "#FFFFFF"
+  light-code-header: "#F1F0EB"
+  light-code-border: "#DCDFDA"
+  light-inline-code: "#E7E6E0"
+  light-syntax-keyword: "#8C3A9C"
+  light-syntax-string: "#2E7531"
+  light-syntax-comment: "#6B726D"
+  light-syntax-number: "#B03E1B"
+  light-syntax-type: "#00687F"
+  light-syntax-function: "#2F5BAE"
+  light-syntax-annotation: "#8B5000"
+  light-diff-added: "#DFF3E3"
+  light-diff-removed: "#FCE3E1"
+  dark-primary: "#83D5C6"
   dark-on-primary: "#003731"
-  dark-secondary-container: "#234C46"
-  dark-on-secondary-container: "#D3E9E3"
-  dark-tertiary: "#FFB86E"
-  dark-tertiary-container: "#693C00"
-  dark-on-tertiary-container: "#FFDDB8"
+  dark-primary-container: "#005048"
+  dark-on-primary-container: "#A0F2E2"
+  dark-secondary-container: "#2A4A44"
+  dark-on-secondary-container: "#CCE8E1"
+  dark-tertiary: "#FFB86F"
+  dark-tertiary-container: "#6A3C00"
+  dark-on-tertiary-container: "#FFDCBD"
   dark-error: "#FFB4AB"
   dark-error-container: "#93000A"
   dark-on-error-container: "#FFDAD6"
-  dark-surface: "#101413"
-  dark-on-surface: "#E0E3E0"
-  dark-on-surface-variant: "#BEC9C4"
-  dark-outline: "#89938F"
-  dark-outline-variant: "#3F4945"
-  dark-surface-container-lowest: "#0B0F0E"
-  dark-surface-container-low: "#181C1B"
-  dark-surface-container: "#1C201F"
-  dark-surface-container-high: "#262B29"
-  dark-surface-container-highest: "#313634"
+  dark-surface: "#0E1312"
+  dark-on-surface: "#DEE4E1"
+  dark-on-surface-variant: "#BEC9C5"
+  dark-outline: "#889390"
+  dark-outline-variant: "#3F4946"
+  dark-surface-container-lowest: "#090E0D"
+  dark-surface-container-low: "#161D1B"
+  dark-surface-container: "#1A2120"
+  dark-surface-container-high: "#242B2A"
+  dark-surface-container-highest: "#2F3635"
+  dark-row: "#1A2120"
+  dark-user-bubble: "#005048"
+  dark-on-user-bubble: "#A0F2E2"
+  dark-composer: "#1A2120"
+  dark-composer-border: "#2C3533"
+  dark-pill: "#2A3230"
+  dark-panel: "#222A28"
+  dark-code: "#161D1B"
+  dark-code-header: "#1C2422"
+  dark-code-border: "#2A3230"
+  dark-inline-code: "#2A3230"
+  dark-syntax-keyword: "#D7A8EE"
+  dark-syntax-string: "#A0D58B"
+  dark-syntax-comment: "#8E9893"
+  dark-syntax-number: "#F2A07B"
+  dark-syntax-type: "#7CCFDF"
+  dark-syntax-function: "#A0C2FF"
+  dark-syntax-annotation: "#FFB86F"
+  dark-diff-added: "#173323"
+  dark-diff-removed: "#3D1D1C"
   mac-light-bg: "#f7f7f2"
   mac-light-surface: "#fffefa"
   mac-light-sidebar: "#eeeee7"
@@ -68,13 +112,19 @@ typography:
   headline-medium:
     fontFamily: "sans-serif"
     fontSize: "28sp"
-    fontWeight: 400
+    fontWeight: 500
     lineHeight: "36sp"
+    letterSpacing: "-0.2sp"
+  headline-small:
+    fontFamily: "sans-serif"
+    fontSize: "24sp"
+    fontWeight: 500
+    lineHeight: "32sp"
     letterSpacing: "0sp"
   title-large:
     fontFamily: "sans-serif"
     fontSize: "22sp"
-    fontWeight: 400
+    fontWeight: 500
     lineHeight: "28sp"
     letterSpacing: "0sp"
   title-medium:
@@ -82,7 +132,7 @@ typography:
     fontSize: "16sp"
     fontWeight: 500
     lineHeight: "24sp"
-    letterSpacing: "0.2sp"
+    letterSpacing: "0.1sp"
   title-small:
     fontFamily: "sans-serif"
     fontSize: "14sp"
@@ -94,7 +144,13 @@ typography:
     fontSize: "16sp"
     fontWeight: 400
     lineHeight: "24sp"
-    letterSpacing: "0.5sp"
+    letterSpacing: "0.15sp"
+  reading:
+    fontFamily: "sans-serif"
+    fontSize: "16sp"
+    fontWeight: 400
+    lineHeight: "26sp"
+    letterSpacing: "0.15sp"
   body-medium:
     fontFamily: "sans-serif"
     fontSize: "14sp"
@@ -106,7 +162,7 @@ typography:
     fontSize: "12sp"
     fontWeight: 400
     lineHeight: "16sp"
-    letterSpacing: "0.4sp"
+    letterSpacing: "0.3sp"
   label-large:
     fontFamily: "sans-serif"
     fontSize: "14sp"
@@ -118,37 +174,59 @@ typography:
     fontSize: "12sp"
     fontWeight: 500
     lineHeight: "16sp"
-    letterSpacing: "0.5sp"
+    letterSpacing: "0.3sp"
+  markdown-h1:
+    fontFamily: "sans-serif"
+    fontSize: "22sp"
+    fontWeight: 600
+    lineHeight: "30sp"
+  markdown-h2:
+    fontFamily: "sans-serif"
+    fontSize: "19sp"
+    fontWeight: 600
+    lineHeight: "26sp"
+  markdown-h3:
+    fontFamily: "sans-serif"
+    fontSize: "17sp"
+    fontWeight: 600
+    lineHeight: "24sp"
+  markdown-h4:
+    fontFamily: "sans-serif"
+    fontSize: "15sp"
+    fontWeight: 600
+    lineHeight: "22sp"
   code:
     fontFamily: "monospace"
-    fontSize: "12sp"
+    fontSize: "13sp"
     fontWeight: 400
-    lineHeight: "1.5em"
+    lineHeight: "20sp"
   mac-body:
     fontFamily: "-apple-system, BlinkMacSystemFont, \"Segoe UI\", system-ui, sans-serif"
     fontSize: "15px"
     lineHeight: 1.5
 rounded:
-  step: "8dp"
-  detail: "10dp"
-  container: "12dp"
-  question: "18dp"
-  bubble: "20dp"
+  group-inner: "4dp"
+  code: "14dp"
+  group-outer: "20dp"
+  bubble: "22dp"
   bubble-tail: "6dp"
-  composer: "26dp"
+  card: "24dp"
+  composer: "28dp"
+  panel: "28dp"
+  pill: "9999dp"
   mac-small: "6px"
   mac-control: "8px"
   mac-container: "12px"
 spacing:
+  "2": "2dp"
   "4": "4dp"
-  "6": "6dp"
   "8": "8dp"
-  "10": "10dp"
   "12": "12dp"
-  "14": "14dp"
   "16": "16dp"
+  "20": "20dp"
   "24": "24dp"
   "32": "32dp"
+  "48": "48dp"
   mac-4: "4px"
   mac-8: "8px"
   mac-12: "12px"
@@ -160,50 +238,64 @@ components:
     backgroundColor: "{colors.light-primary}"
     textColor: "{colors.light-on-primary}"
     typography: "{typography.label-large}"
-    height: "48dp"
-  button-tonal:
-    backgroundColor: "{colors.light-secondary-container}"
-    textColor: "{colors.light-on-secondary-container}"
-    typography: "{typography.label-large}"
-    height: "48dp"
-  button-text:
-    textColor: "{colors.light-primary}"
-    typography: "{typography.label-large}"
-    height: "48dp"
-  composer-field:
-    backgroundColor: "{colors.light-surface-container-highest}"
+    rounded: "{rounded.pill}"
+    height: "40dp"
+  grouped-row:
+    backgroundColor: "{colors.light-row}"
+    textColor: "{colors.light-on-surface}"
+    typography: "{typography.title-medium}"
+    rounded: "{rounded.group-outer}"
+    height: "64dp"
+  composer:
+    backgroundColor: "{colors.light-composer}"
     textColor: "{colors.light-on-surface}"
     typography: "{typography.body-large}"
     rounded: "{rounded.composer}"
-    height: "52dp"
+  composer-pill:
+    backgroundColor: "{colors.light-pill}"
+    textColor: "{colors.light-on-surface}"
+    typography: "{typography.label-large}"
+    rounded: "{rounded.pill}"
+    height: "34dp"
   send-button:
     backgroundColor: "{colors.light-primary}"
     textColor: "{colors.light-on-primary}"
-    size: "52dp"
+    size: "44dp"
   stop-button:
     backgroundColor: "{colors.light-error-container}"
     textColor: "{colors.light-on-error-container}"
-    size: "52dp"
-  user-bubble:
+    size: "44dp"
+  steer-button:
     backgroundColor: "{colors.light-primary}"
     textColor: "{colors.light-on-primary}"
+    typography: "{typography.label-large}"
+    rounded: "{rounded.pill}"
+    height: "44dp"
+  image-tile:
+    rounded: "12dp"
+    size: "64dp"
+  user-bubble:
+    backgroundColor: "{colors.light-user-bubble}"
+    textColor: "{colors.light-on-user-bubble}"
     typography: "{typography.body-large}"
+    rounded: "{rounded.bubble}"
     padding: "10dp 16dp"
-  assistant-bubble:
-    backgroundColor: "{colors.light-surface-container-high}"
+  reply:
     textColor: "{colors.light-on-surface}"
-    typography: "{typography.body-large}"
-    padding: "12dp 16dp"
+    typography: "{typography.reading}"
   question-card:
-    backgroundColor: "{colors.light-surface-container-low}"
+    backgroundColor: "{colors.light-row}"
     textColor: "{colors.light-on-surface}"
-    rounded: "{rounded.question}"
+    rounded: "{rounded.card}"
     padding: "16dp"
   code-block:
-    backgroundColor: "{colors.light-surface-container-lowest}"
+    backgroundColor: "{colors.light-code}"
     textColor: "{colors.light-on-surface}"
     typography: "{typography.code}"
-    rounded: "{rounded.container}"
+    rounded: "{rounded.code}"
+  model-panel:
+    backgroundColor: "{colors.light-panel}"
+    rounded: "{rounded.panel}"
   mac-button:
     backgroundColor: "{colors.mac-light-accent}"
     textColor: "{colors.mac-light-accent-ink}"
@@ -218,81 +310,85 @@ components:
 
 **Creative North Star: "Native conversation log"**
 
-PocketBridge follows a familiar messaging layout on Android. Projects and recent chats use native lists. Right-aligned user bubbles, left-aligned replies and a fixed composer keep the conversation readable while Claude works on the Mac.
+On Android, PocketBridge is a Material You app on a fixed teal seed, laid out like the Android 16 system apps: large collapsing titles, grouped rounded lists on a warm page, tonal pills and spring motion. The conversation reads like a current AI chat app: teal prompt bubbles on the right, full-width unbubbled replies with careful Markdown, and a composer that holds every choice for the next prompt. The Mac keeps its existing two-column conversation layout and platform font stack.
 
-The phone follows system light or dark appearance and font scaling. Warm light backgrounds and charcoal dark backgrounds carry most of the interface. Teal identifies user messages and primary actions. Amber marks a question or decision; red marks errors and Stop. The Mac keeps its existing two-column conversation layout and platform font stack.
+The phone follows system light or dark appearance and font scaling. Warm off-white and charcoal pages carry the interface. Teal identifies prompts, primary actions and Working. Amber marks a question or decision; red marks failures and Stop. Wallpaper colour is not used, because it would recolour those status cues.
 
 **Key Characteristics:**
 
-- Platform typography and Material 3 controls on Android.
-- Tonal separation for messages, code and the composer.
-- Expandable steps and questions stay inside the conversation.
-- Separate visual signals for Mac connection and chat activity.
+- Material 3 components and roles, extended by a few named app tokens.
+- Grouped lists: rows are tonal cards with 20dp outer and 4dp inner corners and 2dp gaps.
+- Replies are reading text, not bubbles; code and tables are their own bordered surfaces.
+- Status is always a word or icon with its colour, never colour alone.
 
-This document merges the finished Android messaging system with the confirmed Mac guidance. Android color truth is `android/app/src/main/java/dev/pocketbridge/Theme.kt`; component truth is `MainActivity.kt`, `Screens.kt`, `Conversation.kt` and `Markdown.kt` in that directory. `PocketTheme` inherits Material 3 typography and shapes from the installed `material3-android:1.3.2`. Mac tokens remain in `mac/public/style.css`.
+Android colour truth is `android/app/src/main/java/dev/pocketbridge/Theme.kt` (`PocketTheme`, the `Pocket.colors` extension tokens, `Spacing`, `Corners`, `Sizes` and `Motion`). Component truth is `MainActivity.kt`, `Screens.kt`, `Conversation.kt`, `Composer.kt`, `Work.kt` (sub-agents), `ProjectInfo.kt` (git line, "/" list), `Attachments.kt` and `Images.kt` (images, Send to, viewer), `Alerts.kt`, `Usage.kt`, `Markdown.kt` and `Highlight.kt` in that directory. Mac tokens remain in `mac/public/style.css`.
 
 Frontmatter uses Android dp and sp without converting them to CSS pixels. Light-prefixed component assignments show the light scheme; switch to the corresponding dark role when system appearance is dark. Native runtime tokens own disabled, pressed, focused and menu states. Sidecar HTML samples translate logical sizes to baseline CSS pixels solely for the documentation panel. They are previews of native components, not Android implementations. Their browser focus outline is a documentation-panel affordance; native focus uses Material state layers.
 
 ## Colors
 
-The Android palette pairs teal with warm neutrals; amber and red carry attention and error states.
+The Android palette pairs teal with warm neutrals; amber and red carry attention and error states. Every text pair passes WCAG AA in both schemes.
 
 ### Primary
 
-The `primary` and `on-primary` pairs color user bubbles, Send, confirmation buttons and links in each scheme. Text selection inside a user bubble uses `onPrimary` with a translucent selection background so the selection remains visible. Tonal buttons use `secondary-container` and `on-secondary-container`.
+`primary` fills Send, confirmation buttons, the Working status, links and section labels. User bubbles use the `user-bubble` token: primary with white text in light, the deeper primary container with light teal text in dark, so prompts stay calm at night. Selected rows, selected options and open pills use `secondary-container`.
 
 ### Tertiary
 
-The `tertiary` role marks pending answers and the border of question cards. Notices use `tertiary-container` and `on-tertiary-container`. Error text uses `error`; Stop and error notices use the paired error container roles.
+`tertiary` is "needs you": the Needs your answer status, the border of question, plan and permission cards, the amber tile on waiting rows and the usage meter near a limit. Failures and Stop use the error roles.
 
 ### Neutral
 
-`surface` and `on-surface` are the page and main text. `on-surface-variant` is supporting text. The composer uses `surface-container`; its input uses `surface-container-highest`. Replies use `surface-container-high`. Code and tables inside replies use `surface-container-lowest`. Question cards use `surface-container-low`. Outline roles serve native field strokes and Markdown dividers.
+`surface` is the page. `row` lifts grouped list rows, step groups, cards and banners off it (white in light, `surface-container` in dark). The composer and model panel use their own tokens with a hairline `composer-border`; composer pills use `pill`. Code blocks and tables use `code` with a `code-header` strip and `code-border`. Inline code uses `inline-code`.
+
+Syntax colours (keyword, string, comment, number, type, function, annotation) and diff line tints are theme tokens, each at least 4.5:1 on the code surface.
 
 Mac-prefixed tokens describe the existing browser client. Its accent is muted teal; sidebar and sunken fills distinguish navigation and code. Keep the Mac's separate values rather than substituting Android colors.
 
-**The Sender Rule.** On Android, teal bubbles identify the user. Claude replies use neutral bubbles. Primary actions and links also use teal.
+**The Sender Rule.** On Android, teal bubbles identify the user. Replies have no bubble. Primary actions and links also use teal.
 
 ## Typography
 
-Android uses the platform sans-serif through Material 3. Monospace is reserved for code and expanded tool details. There is no custom display face.
+Android uses the platform sans-serif through Material 3 with firmer weights: headlines and titles at Medium, body tracking tightened for long reading. Monospace is reserved for code, tool names and tool details.
 
 ### Hierarchy
 
-- `headline-medium` introduces pairing.
-- `title-large` labels empty states and first-level Markdown headings; the native app bar also uses this role.
-- `title-medium` labels questions and second-level Markdown headings.
-- `title-small` labels individual questions, warning titles and deeper Markdown headings.
-- `body-large` carries messages, option labels and the main input.
-- `body-medium` carries notices, tables and step summaries.
-- `body-small` carries supporting descriptions and tool output.
-- `label-large` carries button labels, compact menu labels and step group titles.
-- `label-medium` carries timestamps, connection subtitles and delivery status.
-- `code` uses the body-small size with a 1.5em line height in fenced blocks. Inline code uses 0.9em of its surrounding text.
+- `headline-medium` titles list screens in the large app bar and introduces pairing.
+- `headline-small` opens an empty conversation.
+- `title-large` names the usage sheet and empty states; the collapsed app bar uses it too.
+- `title-medium` carries list row headlines, the conversation title and card titles.
+- `reading` (16/26) carries reply paragraphs and list items; `body-large` carries prompts and the composer.
+- `body-medium` carries row supporting text, notices and tables.
+- `label-large` carries buttons, pills, step group titles, status words and section labels.
+- `label-medium` carries times, code block languages, menu headers and percentages.
+- Markdown headings step from 22sp to 15sp, SemiBold, with more space above than below.
+- `code` is 13sp monospace on a 20sp line. Inline code is 0.88em on a tinted chip.
+
+Numbers that line up (usage, elapsed time, table cells, ordered list markers) use tabular figures.
 
 The Mac uses its existing system font stack with a 15px root. Conversation text has a 1.65 line height, and code uses its native monospace stack. Preserve the Mac's CSS type scale when adding browser controls.
 
-**The Native Scale Rule.** Use the existing Material typography roles and keep Android text in sp so device font scaling applies.
+**The Native Scale Rule.** Use the theme's typography roles and keep Android text in sp so device font scaling applies. Layouts are checked at 1.3x.
 
 ## Layout
 
-Android is a single-column stack inside a Material `Scaffold`. The app bar and persistent connection banner sit above content. The composer is the bottom bar, with navigation and keyboard insets. The transcript scrolls independently and anchors the newest content at the bottom. Its outer padding is 12dp and gaps are 10dp. User rows leave 48dp at the opposite edge; reply rows leave 24dp.
+Android is a single-column stack inside a Material `Scaffold`. List screens (Projects, a project's chats, Settings) use a large app bar that collapses as the list scrolls; pull down expands it before pull-to-refresh engages. Lists draw behind the navigation bar and pad their last row. The persistent connection banner sits under the app bar. The conversation keeps a compact app bar and the composer as its bottom bar, with navigation and keyboard insets.
 
-Projects and recent chats use native `ListItem` rows and pull to refresh. Projects filter with Latest (activity in the last 7 days) or All, and sort Newest, Oldest or Name. Recent chats sort Newest or Oldest. Those choices are compact menu chips. Recent chats leave 96dp below the last row for the New chat floating action. Pairing uses 24dp horizontal padding and a scrollable form. Interactive question rows and explicit text actions have a 48dp minimum height; Send, Stop and the composer field are 52dp. At font scales above 1.3, Back keeps the arrow and accessible destination name while hiding its visible text label. The chat options sheet scrolls at that scale.
+Spacing follows a 4dp grid (`Spacing`): 16dp page gutters, 16dp row padding, 12dp between conversation entries, 20dp above a section label. Section labels align with the text inside rows (32dp). Rows are at least 64dp; every control has a 48dp touch target. The New chat button shrinks to its icon once the chats list scrolls.
 
 The Mac keeps a 300px sidebar beside a flexible conversation. Messages have a 46rem maximum measure. Below 760px the sidebar becomes a drawer and header controls stack. At 560px and below, connection text becomes an accessible compact icon treatment, pairing details stack and composer controls wrap. Browser controls use their existing 40px baseline; principal conversation actions and navigation use the 44px target token.
 
 ## Elevation & Depth
 
-Android messages, code, notices and composer containers use tonal separation without custom shadows. Buttons, floating actions, dropdown menus and dialogs retain Material 3 state and elevation behavior. The Mac uses borders and distinct fills for structural separation; its dialog and drawer use a translucent scrim. Neither client defines a decorative shadow vocabulary.
+Depth on Android is tonal: rows, cards and code sit one step lighter (light) or higher (dark) than the page. Only floating things cast a shadow: the model panel, menus, the floating buttons and sheets. Modal layers dim what is behind them with a 32% scrim, including the app bar. The Mac uses borders and distinct fills for structural separation; its dialog and drawer use a translucent scrim.
 
-**The Tonal Depth Rule.** Conversation content uses flat tonal layers. Preserve native Material elevation for floating actions and menus.
+**The Tonal Depth Rule.** Conversation content uses flat tonal layers. Shadows belong to things that float.
 
-Android navigation enters with a short horizontal slide and fade. Expanding steps use native expand and fade transitions; a chevron rotates with state. Three pulsing dots mark live work. The Mac keeps its existing brief control transitions and respects `prefers-reduced-motion`.
+Motion uses Material 3 Expressive springs (`Motion.spatial`, `fastSpatial`, `effects`). Screens move on a shared horizontal axis. Steps, the model panel and the composer resize with springs; Send and Stop swap with a scale; new conversation entries fade in without sliding so streaming never makes neighbours drift. Three wave dots mark live work and are drawn without recomposition. Animator duration scale 0 settles every animation at once. The Mac keeps its existing brief control transitions and respects `prefers-reduced-motion`.
 
 ## Shapes
 
-Android message bubbles have 20dp corners with the sender's bottom corner reduced to 6dp. User bubbles reduce the bottom-right corner; Claude bubbles reduce the bottom-left. The composer field uses a 26dp radius. Question cards use 18dp, code and notices use 12dp, expanded tool detail uses 10dp and step rows use 8dp. Native buttons and menus retain Material shapes.
+Grouped rows use 20dp outer and 4dp inner corners. Prompt bubbles use 22dp corners with a 6dp tail at the bottom right. Question, plan and permission cards use 24dp. The composer and model panel use 28dp. Code blocks and tables use 14dp. Pills, chips, Send, Stop and filter chips are fully round. List tiles are 40dp with 12dp corners.
 
 The Mac retains its 6px small corners, 8px control corners and 12px container corners. Its connection badge is a capsule. Keep these browser shapes separate from the phone's message silhouettes.
 
@@ -300,50 +396,80 @@ The Mac retains its 6px small corners, 8px control corners and 12px container co
 
 ### Buttons
 
-Use native filled buttons for confirmation, tonal buttons for reconnect and text buttons for Back, Options and secondary decisions. Send is a circular filled icon button. While Claude is working, the same position holds a tonal Stop button using error-container colors. Material owns interaction and disabled treatments. Native icons carry accessible descriptions where the visible label is absent.
+Filled buttons confirm (Approve plan, Allow, Send answer, Install); outlined buttons decline; tonal buttons retry and check. Send is a 44dp round filled button with an up arrow; it shows a small spinner while the prompt is being delivered. While work runs the same place holds Stop in error-container colours, and the two swap with a spring scale. Once something is typed during a turn, a split Steer button grows in beside Stop: a filled "Steer" segment (one tap steers the running turn) and a narrow arrow segment, 2dp apart with 4dp inner corners. The arrow, or a long press on Steer, opens a two-row menu: Steer first, then Send now (interrupts and runs the message next), each with one line of detail. Icon-only buttons carry content descriptions.
 
 ### Inputs / Fields
 
-Pairing and question answers use native outlined fields. The composer uses a filled field without an underline, rounded corners and up to six visible lines. An Options text button, in supporting text color, sits above the input. The pending-delivery state locks the input and shows the outgoing prompt in the conversation with its confirmation status. Offline state preserves editable drafts while disabling Send and Stop.
+The composer is one 28dp box: picked images, a borderless field that grows to eight lines with a spring, then a row with a round attach button, the pills (model, effort, permission mode) and Send or Stop. Pills are 34dp tonal capsules with a chevron that turns while their menu or panel is open; they dim when an unconfirmed prompt locks them, and fade out at the row's end when they run under Stop and Steer. Images sit above the text as 64dp tiles with 12dp corners and a hairline border: a scrim and spinner while uploading, an error-container tint with a retry mark after a failure, and a small dark remove mark on the corner. Send waits until every image is on the Mac. The pending-delivery state empties and locks the box with "Waiting for your Mac to confirm". Offline keeps drafts editable while disabling Send and Stop. Search and pairing fields are rounded; search is a full pill on the row colour.
+
+Above the box a single quiet line shows the project's git state: a branch glyph and the branch (or short commit), then "+8 −2" in the diff tokens with their signs, the file count, and ↑/↓ only when the branch is ahead or behind. It keeps its last value while refreshing and taps open a plain tooltip that spells every number out. Typing "/" opens the agent's commands and skills in a 20dp panel sitting on the composer, without taking the keyboard: monospace names with their argument hint, one line of description, prefix matches first. A pick inserts "/name " with the cursor at the end; Back or Escape hides the list until the text changes.
 
 ### Navigation
 
-The phone starts at Projects when there is no reopened chat. Project selection opens recent chats; Back from a conversation returns to that project's recent chats. The title names the chat and the subtitle names its project. Large-font Back uses an arrow with an accessible destination. The Mac retains its sidebar, selected chat border and narrow-window drawer.
+The phone starts at Projects when there is no reopened chat. Project selection opens its chats; the system back gesture from a conversation returns to them. Top bars hold only the title and actions: no back arrow, no "back to" label and no project subtitle in a conversation. During the back gesture the page scales to 90%, shifts 16dp toward the swipe and rounds its corners over a `surface-container-highest` backdrop. The model panel takes back first and shrinks with the gesture. Connection state shows as a small labelled pill beside the title only when not connected. The Mac retains its sidebar, selected chat border and narrow-window drawer.
 
 ### Messages and steps
 
-User text is selectable inside the teal bubble, with 16dp horizontal and 10dp vertical padding. Replies use 16dp horizontal and 12dp vertical padding and selectable Markdown. Code has a labelled Copy control; wide code and tables scroll horizontally. Steps stay collapsed until opened. Expanded tool details scroll within a 280dp height cap and show up to 6,000 characters. This existing ceiling is a detail-view limit, not permission to truncate commands awaiting approval.
+Prompts are selectable text in the teal bubble, leaving 48dp at the opposite edge. Their images sit above the bubble: one keeps its own shape inside 220 by 280dp, several become 96dp squares, all with 14dp corners and a hairline border; a tap opens the viewer. An image sent alone hides the Mac's stand-in text. A prompt that joined a running turn carries a small "Steered" or "Sent now" label with its glyph under the bubble. Replies are full-width selectable Markdown with a labelled Copy action below replies that end a turn, followed by a quiet "Worked 2m 14s" once that turn has finished. Messages continued from a Mac session sit below a hairline divider reading "Continued from Claude Code" (or Codex); their prompt uses the tonal secondary-container bubble and their reply is dimmed. Consecutive tool activity is one `row`-coloured card: a terminal icon (spinner while live), "N steps · tools", the latest summary and a chevron. Opened, it lists each step with its tool name in monospace; a step opens to its input and result in code surfaces capped at 280dp, with shell commands highlighted and edits shown as diffs. The working line pairs wave dots with "Working · 1m 05s" in primary (adding "2 sub-agents running" when any are) and, beneath, the agent's own summary of what it is doing, or the running step when it gives none.
+
+Sub-agents a turn started appear as one `row` card after the steps that launched them: "2 sub-agents · 1 running", then a row each with a status mark that differs in shape (spinner, check, error, stop square), the title, the elapsed time (primary and ticking while running, frozen after), a quiet "Explore · Sonnet 5.5 · High" line and the current activity on one line. Running ones come first; more than three fold behind "+N more". A turn that ends badly shows a card: Failed in error-container colours, Interrupted on the row colour, long output folded. A round jump-to-latest button appears once the newest content is about a screen away.
+
+### Markdown and code
+
+Headings, paragraphs, ordered and nested lists (•, ◦, ▪ by depth; numbers right-aligned in tabular figures), quotes with a 3dp rule, rules, bold, italic, strikethrough, inline code and links (web addresses only) render natively. File links Claude writes as relative paths read as inline code and never open. Raw HTML stays text. Code blocks have a header strip with the language name and a labelled Copy, then monospace text that scrolls sideways. A small single-pass tokenizer colours keywords, strings, comments, numbers, types, calls, annotations and shell variables for Kotlin, Java, Swift, TypeScript and JavaScript, Python, Go, Rust, shell, JSON, YAML and TOML, SQL, CSS and C-family code; other languages stay plain. Diffs tint added and removed lines across the full block width and colour their signs and hunk headers. Tables are bordered grids with a header strip, columns that honour `:---:` and `---:` alignment, a 260dp column cap and sideways scroll.
 
 ### Questions and notices
 
-Question cards use a tonal fill, amber border and 16dp padding. Native radios or checkboxes make the whole option row selectable. Free-text answers use outlined fields. Confirm is enabled only when every question has an answer and the Mac is connected. Question drafts survive activity recreation. Persistent connection banners report connection failures; action failures use snackbars. An empty offline transcript says it is waiting for the Mac rather than claiming the chat has no history.
+Question, plan and permission cards are 24dp `row` cards with a 1.5dp amber border and an amber icon tile beside the title. Options are whole-row radios or checkboxes that tint `secondary-container` when chosen; Something else reveals a field. Permission requests show the full wrapped command before Allow. Send answer is enabled only when every question has an answer and the Mac is connected. Question drafts survive activity recreation. Connection failures use the persistent banner, a `row` card with an error icon, reason and Retry; action failures use snackbars.
 
 ### Lists and chat options
 
-New chat is an extended floating action. Long press or the overflow menu opens Rename and Delete in native dialogs. Delete stays unavailable while that chat is working. An untouched blank chat stays out of Recent chats. Typed drafts use their prompt text as the preview and show Draft; they can be deleted locally while offline. Unconfirmed first prompts show Not confirmed and stay openable without a Delete action until delivery resolves. Server rows replace local rows with the same ID. Options opens a native bottom sheet titled Next prompt. Permission, model and effort are compact menu chips: an assist chip at least 48dp tall shows the current value, and a dropdown lists the choices. Apply is a full-width filled button. Haiku keeps default effort, disables the effort chip and says it does not support effort levels. Pickers and Apply stay disabled while a prompt is unconfirmed or Claude is working.
+Projects open with a pill search field, then Recent and All chips with Sort at the end. An Active group lists working or waiting chats from every project, each with its status in the leading tile (spinner on primary container, amber question mark on tertiary container) and in words. Project rows lead with a monogram tile, then the name and a compacted folder path (first two and last two parts), or the status when work runs. A project's chats list starts with its folder path; rows show the title, the last reply or status, and the time and model at the end. Long press opens Rename and Delete; the conversation menu offers the same. Drafts show Draft and unconfirmed first prompts show Not confirmed. When the Mac has Claude or Codex sessions in that folder that PocketBridge didn't start, an "On your Mac" section with its count and a turning chevron comes first: up to three grouped rows (agent glyph tile, title, one line of the last words, time and agent name), then "Show all N". A tap forks the session into a chat and opens it, and a "Chats" label introduces the rest. Empty states are an icon in a circle, a title and at most one line, with one action where it helps.
+
+### Model selector
+
+The model pill opens a panel that rises from the composer, no taller than half the screen, over a scrim that also dims the app bar. It lists current models first, then "Older versions" below a divider, with its own scroll; an older model in use opens scrolled to it. A model is older when another model of the same family, or a broader name containing its words, has a higher version (Opus 5 under Opus 5.5, GPT-5.5 under GPT-6-Astra). An unsent chat shows a Claude and Codex switch at the top; a saved chat lists only its own agent. One tap picks, applies and closes. Effort and permission pills open compact menus with a one-word header and a check on the current choice; permission items carry a one-line description.
+
+### Usage
+
+When the Mac reports plan limits, the Projects app bar shows a meter: a ring and the percentage of the limit closest to running out, coloured by severity (primary, amber near a limit, red when full). It opens a sheet that sizes to its content: per agent, the plan as a chip, each limit as a bar with its percentage and "Resets in 2h 24m" or "Resets Thu", and credits when present. Settings repeats the same groups. Any chat the Mac reports context for, Claude or Codex, shows its context window fill as a small ring and percentage beside its title; tapping it shows the token counts. Without usage data from the Mac, all of these stay hidden.
+
+### Images, sharing and alerts
+
+The image viewer covers every screen in black with light status icons: pinch or double tap to zoom, pan when zoomed, swipe between a prompt's images, and the back gesture shrinks it away. There is no close button.
+
+Images shared from another app open a "Send to" panel built like the model panel (28dp, hairline border, at most 60% of the screen, over a scrim): a header with the shared thumbnails, then Active chats, Recent chats with their project, and "New chat in <project>" rows in primary. A pick opens that chat with the images attached and uploading.
+
+Settings has one Alerts row with a switch ("Alerts when closed"); when on, one line under it suggests Samsung's Unrestricted battery setting. Notifications use the launcher's prompt glyph in teal: an ongoing "Working" notification naming the chat and what it's doing with a running clock (or a count of active chats), "Needs your answer" on a high-importance channel with Deny and Allow for permission requests, and Done, Failed or Stopped with the chat title and its last words. Each opens its chat.
 
 ### App updates
 
-Connection settings offer Check latest, then Download and Install for the public signed APK. Install uses Android's package-installer permission. That permission is separate from Mac pairing.
+Settings lists Claude Code and Codex as grouped rows with a trailing switch; the whole row toggles it on the Mac. An off agent's row reads "Off. New chats and usage skip it." A missing CLI shows Missing instead of a switch. The model panel and New chat offer only agents that are installed and on. A saved chat whose agent is off shows "<Agent> is off" with a Turn on text button above the composer and keeps Send disabled.
+
+Settings ends with an Updates row: the installed version and status, with Check, then Download and Install for the public signed APK. Install uses Android's package-installer permission. That permission is separate from Mac pairing.
 
 ### Mac controls
 
-Keep project registration and Connect phone in the browser client. Its messages retain the current labels and neutral user-message treatment; the phone's bubble arrangement does not redefine the Mac layout. Model and effort stay those of the selected chat. The browser keeps its existing mode control and layout. Browser buttons, inputs and expandable activity keep their existing hover and keyboard-focus treatments. Use `mac/public/style.css` as the source for those states.
+Keep project registration and Connect phone in the browser client. Its messages retain the current labels, named after the chat's agent, and neutral user-message treatment; the phone's bubble arrangement does not redefine the Mac layout. The composer is one rounded box with the prompt, native selects styled as pills for model (grouped by agent for unsent chats), effort and permission mode, and a round Send. Rename and Delete are icon buttons in the chat header. Browser buttons, inputs and expandable activity keep their existing hover and keyboard-focus treatments. Use `mac/public/style.css` as the source for those states.
 
 ## Do's and Don'ts
 
 ### Do:
 
-- **Do** reuse Theme.kt roles and the Material typography inherited by PocketTheme.
-- **Do** keep connection status separate from the state of Claude's task.
+- **Do** take colours, spacing, corners and motion from `Theme.kt`; add a named token before a new value.
+- **Do** keep connection status separate from the state of a chat's task.
 - **Do** keep the composer outside the scrolling transcript and respect keyboard and navigation insets.
 - **Do** preserve selectable replies, copyable code, labelled controls and native question selection.
 - **Do** keep Mac project registration and phone pairing controls in the Mac client.
-- **Do** keep filter, sort and chat-option choices on compact native menus.
+- **Do** keep filter, sort and chat-option choices on compact menus, in place where they apply.
+- **Do** rely on the system back gesture instead of back buttons.
+- **Do** check light, dark and 1.3x font scale.
 
 ### Don't:
 
 - **Don't** add Android role labels, a logo panel, dashboard cards or phone folder registration.
 - **Don't** use color alone to communicate a failure, pending answer or connection problem.
 - **Don't** replace native font scaling with fixed pixel text on Android.
-- **Don't** hide permission mode, model or effort, or treat an unconfirmed prompt as delivered.
+- **Don't** hide permission mode, model or effort behind another panel, offer "Default" as a model, or treat an unconfirmed prompt as delivered.
+- **Don't** open a full-height sheet for a short choice.
+- **Don't** explain what is already visible on screen.

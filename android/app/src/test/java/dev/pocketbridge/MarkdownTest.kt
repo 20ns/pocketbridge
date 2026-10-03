@@ -3,6 +3,7 @@ package dev.pocketbridge
 import androidx.compose.ui.text.LinkAnnotation
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.TextLinkStyles
+import androidx.compose.ui.text.font.FontFamily
 import org.junit.Assert.*
 import org.junit.Test
 
@@ -18,7 +19,7 @@ class MarkdownTest {
 
     @Test fun `streaming code fence and tables render without a closing line`() {
         assertEquals(listOf(Paragraph("Run:"), Code("", "./gradlew")), parseMarkdown("Run:\n```\n./gradlew"))
-        assertEquals(listOf(Table(listOf(listOf("Mode", "Asks"), listOf("Bypass", "Never")))), parseMarkdown("| Mode | Asks |\n|---|:-:|\n| Bypass | Never |"))
+        assertEquals(listOf(Table(listOf(listOf("Mode", "Asks"), listOf("Bypass", "Never")), listOf(ColumnAlign.Start, ColumnAlign.Center))), parseMarkdown("| Mode | Asks |\n|---|:-:|\n| Bypass | Never |"))
         assertEquals(listOf(Paragraph("a | b")), parseMarkdown("a | b"))
     }
 
@@ -46,6 +47,31 @@ class MarkdownTest {
     }
 
     @Test fun `table cells may contain escaped pipes`() {
-        assertEquals(listOf(Table(listOf(listOf("Flag", "Meaning"), listOf("a|b", "either")))), parseMarkdown("| Flag | Meaning |\n|---|---|\n| a\\|b | either |"))
+        assertEquals(listOf(Table(listOf(listOf("Flag", "Meaning"), listOf("a|b", "either")), listOf(ColumnAlign.Start, ColumnAlign.Start))), parseMarkdown("| Flag | Meaning |\n|---|---|\n| a\\|b | either |"))
+    }
+
+    @Test fun `table columns follow their divider alignment`() {
+        val table = parseMarkdown("| Name | Tests | Time |\n|:---|:---:|---:|\n| JVM | 59 | 4.2 s |").single() as Table
+        assertEquals(listOf(ColumnAlign.Start, ColumnAlign.Center, ColumnAlign.End), table.align)
+        assertEquals(listOf("JVM", "59", "4.2 s"), table.rows[1])
+    }
+
+    @Test fun `file links read as code and never become links`() {
+        val code = SpanStyle(fontFamily = FontFamily.Monospace)
+        val styles = InlineStyles(code, TextLinkStyles())
+        val text = inlineMarkdown("See [Api.kt](android/Api.kt:12) and [the guide](docs/guide)", styles)
+        assertEquals("See Api.kt and the guide", text.text)
+        assertTrue(text.getLinkAnnotations(0, text.length).isEmpty())
+        assertEquals(listOf(4 to 10), text.spanStyles.filter { it.item == code }.map { it.start to it.end })
+    }
+
+    @Test fun `spacing opens sections and keeps list items together`() {
+        assertEquals(0, blockGap(null, Paragraph("a")))
+        assertEquals(22, blockGap(Paragraph("a"), Heading(2, "b")))
+        assertEquals(18, blockGap(Paragraph("a"), Heading(3, "b")))
+        assertEquals(6, blockGap(Heading(2, "b"), Paragraph("c")))
+        assertEquals(6, blockGap(Bullet("•", "x", 0), Bullet("•", "y", 0)))
+        assertEquals(4, blockGap(Bullet("•", "x", 0), Bullet("•", "y", 1)))
+        assertEquals(12, blockGap(Bullet("•", "x", 0), Paragraph("z")))
     }
 }

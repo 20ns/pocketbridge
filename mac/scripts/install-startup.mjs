@@ -19,8 +19,10 @@ const configPath = join(data,'config.json');
 const existing = existsSync(configPath) ? JSON.parse(readFileSync(configPath,'utf8')) : {};
 const claude = process.env.POCKETBRIDGE_CLAUDE_PATH || existing.claudePath || spawnSync('/usr/bin/which',['claude'],{encoding:'utf8'}).stdout.trim() || join(homedir(),'.local/bin/claude');
 if (!existsSync(claude)) throw new Error('Claude Code was not found. Install and sign in to the official CLI first.');
+// Codex is optional. launchd has no shell PATH, so its absolute location is recorded too.
+const codex = process.env.POCKETBRIDGE_CODEX_PATH || existing.codexPath || spawnSync('/usr/bin/which',['codex'],{encoding:'utf8'}).stdout.trim();
 const temporary = `${configPath}.${process.pid}.tmp`;
-writeFileSync(temporary,JSON.stringify({...existing,claudePath:claude,keepAwake:existing.keepAwake ?? true},null,2)+'\n',{mode:0o600,flush:true});
+writeFileSync(temporary,JSON.stringify({...existing,claudePath:claude,...(codex && existsSync(codex) ? {codexPath:codex} : {}),keepAwake:existing.keepAwake ?? true},null,2)+'\n',{mode:0o600,flush:true});
 renameSync(temporary,configPath);
 const escape = value => String(value).replace(/[&<>"']/g, char => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&apos;'}[char]));
 const string = value => `<string>${escape(value)}</string>`;

@@ -1,15 +1,18 @@
 import http from 'node:http';
 import { DatabaseSync } from 'node:sqlite';
 import { randomUUID, randomBytes, timingSafeEqual } from 'node:crypto';
-import { mkdirSync, statSync, realpathSync, existsSync, readFileSync, chmodSync, readdirSync, openSync, readSync, closeSync } from 'node:fs';
+import { mkdirSync, statSync, realpathSync, existsSync, readFileSync, writeFileSync, rmSync, chmodSync, readdirSync, openSync, readSync, closeSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join, extname, resolve, basename, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawn, spawnSync } from 'node:child_process';
+import { gzipSync } from 'node:zlib';
 import QRCode from 'qrcode';
+import { agentIds, agentNames, agentModes, agentEnv, claudeCatalog, codexCatalog, checkModel, checkEffort, codexPolicy, codexAppConsumer, codexSessionFolders, claudeUsage, codexUsage, claudeContext, claudeUserMessage, gitStatus, claudeSessions, codexRequest, claudeCommands } from './agents.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
-const modes = ['bypassPermissions', 'auto', 'plan', 'acceptEdits', 'default'];
+// Legacy capability lists for clients before 0.5; agents[] carries each CLI's own catalog.
+const modes = agentModes.claude;
 const models = ['default', 'opus', 'sonnet', 'haiku'];
 const efforts = ['default', 'low', 'medium', 'high', 'xhigh', 'max'];
 const secret = () => randomBytes(32).toString('base64url');
@@ -33,8 +36,18 @@ const terminateGroup = async (pid, timeout) => {
     if (!groupAlive(pid)) return;
   }
 };
-const mode = value => { if (!modes.includes(value)) throw fail(400, 'Unsupported permission mode'); return value; };
+const mode = (value, agent = 'claude') => { if (!agentModes[agent].includes(value)) throw fail(400, 'Unsupported permission mode'); return value; };
 const listed = (value, allowed, label) => { if (typeof value !== 'string' || !allowed.includes(value)) throw fail(400, `Unsupported ${label}`); return value; };
+// Chat list previews read as plain text: Markdown markers, code blocks and link targets are dropped.
+const plainText = value => value.replace(/```[\s\S]*?(```|$)/g, ' ').replace(/`([^`\n]*)`/g, '$1').replace(/\*\*|__|~~/g, '')
+  .replace(/\[([^\]\n]*)\]\([^)\s]*\)/g, '$1').replace(/^\s{0,3}(#{1,6}|>|[-*+]|\d+[.)])\s+/gm, '').replace(/\s+/g, ' ').trim();
+const oneLine = (value, max = 4000) => typeof value === 'string' ? value.replace(/\s+/g, ' ').trim().slice(0, max) : '';
+/** A tool call in a few words, for a sub-agent's current activity. */
+const brief = input => {
+  if (!input || typeof input !== 'object') return '';
+  const value = ['description', 'command', 'file_path', 'pattern', 'path', 'url', 'query', 'prompt'].map(key => input[key]).find(item => typeof item === 'string' && item.trim());
+  return value ? oneLine(value.includes('/') && !value.includes(' ') ? value.split('/').filter(Boolean).pop() ?? value : value, 120) : '';
+};
 const uuid = value => /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
 
 export async function createService(options = {}) {
@@ -42,6 +55,8 @@ export async function createService(options = {}) {
   const defaultProjects = join(homedir(), '.claude', 'projects');
   const claudeProjectsDir = options.claudeProjectsDir ?? process.env.POCKETBRIDGE_CLAUDE_PROJECTS_DIR ?? defaultProjects;
   if (process.env.NODE_TEST_CONTEXT && resolve(claudeProjectsDir) === resolve(defaultProjects)) throw new Error('Tests must pass claudeProjectsDir and must not read Claude history');
+  const testing = Boolean(process.env.NODE_TEST_CONTEXT);
+  const codexSessionsDir = options.codexSessionsDir ?? process.env.POCKETBRIDGE_CODEX_SESSIONS_DIR ?? (testing ? null : join(homedir(), '.codex', 'sessions'));
   mkdirSync(dataDir, { recursive: true, mode: 0o700 });
   const dbPath = join(dataDir, 'data.sqlite');
   const db = new DatabaseSync(dbPath); chmodSync(dbPath, 0o600);
@@ -64,25 +79,88 @@ export async function createService(options = {}) {
   if (!columns('projects').includes('lastUsedAt')) db.exec('ALTER TABLE projects ADD COLUMN lastUsedAt INTEGER NOT NULL DEFAULT 0');
   if (!columns('chats').includes('model')) db.exec("ALTER TABLE chats ADD COLUMN model TEXT NOT NULL DEFAULT 'default'");
   if (!columns('chats').includes('effort')) db.exec("ALTER TABLE chats ADD COLUMN effort TEXT NOT NULL DEFAULT 'default'");
-  db.exec('CREATE TABLE IF NOT EXISTS deleted_chats (id TEXT PRIMARY KEY, deletedAt INTEGER NOT NULL)');
+  if (!columns('chats').includes('agent')) db.exec("ALTER TABLE chats ADD COLUMN agent TEXT NOT NULL DEFAULT 'claude'");
+  if (!columns('chats').includes('agentSession')) db.exec('ALTER TABLE chats ADD COLUMN agentSession TEXT');
+  if (!columns('prompts').includes('agent')) db.exec('ALTER TABLE prompts ADD COLUMN agent TEXT');
+  if (!columns('chats').includes('contextTokens')) db.exec('ALTER TABLE chats ADD COLUMN contextTokens INTEGER');
+  if (!columns('chats').includes('contextWindow')) db.exec('ALTER TABLE chats ADD COLUMN contextWindow INTEGER');
+  for (const [table, column, type] of [['prompts', 'attachments', 'TEXT'], ['prompts', 'delivery', 'TEXT'], ['prompts', 'startedAt', 'INTEGER'], ['prompts', 'endedAt', 'INTEGER'], ['messages', 'attachments', 'TEXT'], ['messages', 'kind', 'TEXT'], ['chats', 'forkFrom', 'TEXT'], ['chats', 'activity', 'TEXT']])
+    if (!columns(table).includes(column)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${type}`);
+  db.exec(`CREATE TABLE IF NOT EXISTS deleted_chats (id TEXT PRIMARY KEY, deletedAt INTEGER NOT NULL);
+    CREATE INDEX IF NOT EXISTS messages_chat ON messages(chatId);
+    CREATE INDEX IF NOT EXISTS approvals_chat ON approvals(chatId);
+    CREATE INDEX IF NOT EXISTS raw_events_chat ON raw_events(chatId);
+    CREATE TABLE IF NOT EXISTS hidden_sessions (id TEXT PRIMARY KEY);
+    CREATE TABLE IF NOT EXISTS uploads (id TEXT PRIMARY KEY, chatId TEXT, type TEXT NOT NULL, size INTEGER NOT NULL, createdAt INTEGER NOT NULL);
+    CREATE TABLE IF NOT EXISTS subagents (id TEXT NOT NULL, chatId TEXT NOT NULL, promptId TEXT, agent TEXT NOT NULL, title TEXT, kind TEXT, model TEXT, effort TEXT, status TEXT NOT NULL, activity TEXT, startedAt INTEGER NOT NULL, endedAt INTEGER, toolUses INTEGER, tokens INTEGER, PRIMARY KEY (chatId, id));`);
+  const uploadsDir = join(dataDir, 'uploads'); mkdirSync(uploadsDir, { recursive: true, mode: 0o700 });
+  const uploadTypes = { 'image/png': 'png', 'image/jpeg': 'jpg', 'image/webp': 'webp', 'image/gif': 'gif' };
+  const uploadPath = row => join(uploadsDir, `${row.id}.${uploadTypes[row.type]}`);
   const get = (sql, ...params) => db.prepare(sql).get(...params);
   const all = (sql, ...params) => db.prepare(sql).all(...params);
   const run = (sql, ...params) => db.prepare(sql).run(...params);
   const transaction = fn => { db.exec('BEGIN IMMEDIATE'); try { const result = fn(); db.exec('COMMIT'); return result; } catch (e) { db.exec('ROLLBACK'); throw e; } };
   const clients = new Set(), active = new Map(), waiting = new Map(), pairAttempts = new Map();
-  let closed = false, eventTimer, latestPair, localUrl, lastDiscovery = 0, sessionMeta = new Map();
+  let closed = false, eventTimer, latestPair, localUrl, lastDiscovery = 0, sessionMeta = new Map(), codexMeta = new Map();
   const internalToken = secret();
   let localToken = get('SELECT value FROM settings WHERE key=?', 'localToken')?.value;
   if (!localToken) { run('INSERT OR IGNORE INTO settings VALUES (?,?)', 'localToken', secret()); localToken = get('SELECT value FROM settings WHERE key=?', 'localToken').value; }
   const claudePath = options.claudePath ?? process.env.POCKETBRIDGE_CLAUDE_PATH ?? 'claude';
   const claudeAvailable = options.claudeAvailable ?? spawnSync(claudePath, ['--version'], { encoding: 'utf8', timeout: 3000 }).status === 0;
+  // Tests never touch the real Codex install; they pass a fake codexPath.
+  const codexPath = options.codexPath ?? process.env.POCKETBRIDGE_CODEX_PATH ?? (testing ? null : 'codex');
+  const codexAvailable = options.codexAvailable ?? (codexPath ? spawnSync(codexPath, ['--version'], { encoding: 'utf8', timeout: 3000 }).status === 0 : false);
+  const available = { claude: claudeAvailable, codex: codexAvailable };
+  // The owner's switch per agent, for when only one subscription is active. Off means no probes, no discovery, no new turns.
+  const enabled = Object.fromEntries(agentIds.map(agent => [agent, get('SELECT value FROM settings WHERE key=?', `agentEnabled:${agent}`)?.value !== '0']));
+  const paths = { claude: claudePath, codex: codexPath };
+  // Model catalogs come from each CLI's own picker. The last good one is kept for restarts and failed probes.
+  const catalogs = {}, catalogAt = {}, catalogProbe = {}, probes = new AbortController();
+  // Per project: Codex skills (kept with their paths so "/name" prompts can pass the skill itself) and "/" command lists.
+  const codexSkills = new Map(), commandLists = new Map();
+  for (const agent of agentIds) { try { catalogs[agent] = JSON.parse(get('SELECT value FROM settings WHERE key=?', `catalog:${agent}`)?.value ?? 'null'); } catch { catalogs[agent] = null; } }
+  const claudeSettingsPath = options.claudeSettingsPath ?? (testing ? null : join(homedir(), '.claude', 'settings.json'));
+  const refreshCatalog = (agent, force = false) => {
+    if (!available[agent] || !enabled[agent] || closed || options.catalogs === false) return Promise.resolve(catalogs[agent]);
+    if (catalogProbe[agent]) return catalogProbe[agent];
+    const age = Date.now() - (catalogAt[agent] ?? 0);
+    if (!force && age < (catalogs[agent] ? 30 * 60_000 : 60_000)) return Promise.resolve(catalogs[agent]);
+    catalogAt[agent] = Date.now();
+    const probe = { command: paths[agent], cwd: dataDir, env: agentEnv(agent), signal: probes.signal, timeoutMs: options.catalogTimeoutMs ?? 20_000 };
+    catalogProbe[agent] = (agent === 'claude' ? claudeCatalog({ ...probe, settingsPath: claudeSettingsPath }) : codexCatalog(probe)).catch(() => null).then(result => {
+      catalogProbe[agent] = null;
+      if (result && !closed && JSON.stringify(result) !== JSON.stringify(catalogs[agent])) {
+        catalogs[agent] = result; run('INSERT OR REPLACE INTO settings VALUES (?,?)', `catalog:${agent}`, JSON.stringify(result)); change('state');
+      }
+      return catalogs[agent];
+    });
+    return catalogProbe[agent];
+  };
+  // A first prompt may arrive before the startup probe answers. Validation waits briefly, well inside client
+  // timeouts, then falls back to the safe pattern checks while the probe finishes in the background.
+  const catalogFor = async agent => catalogs[agent] ?? await Promise.race([refreshCatalog(agent), pause(options.catalogWaitMs ?? 2500).then(() => catalogs[agent] ?? null)]);
+  // Plan usage, asked of each CLI at most once a minute and again after any turn ends.
+  const usage = {}, usageAt = {}, usageProbe = {};
+  const refreshUsage = agent => {
+    if (!available[agent] || !enabled[agent] || closed || options.usage === false) return Promise.resolve(usage[agent] ?? null);
+    if (usageProbe[agent]) return usageProbe[agent];
+    if (Date.now() - (usageAt[agent] ?? 0) < 60_000) return Promise.resolve(usage[agent] ?? null);
+    usageAt[agent] = Date.now();
+    const probe = { command: paths[agent], cwd: dataDir, env: agentEnv(agent), signal: probes.signal, timeoutMs: options.catalogTimeoutMs ?? 20_000 };
+    usageProbe[agent] = (agent === 'claude' ? claudeUsage(probe) : codexUsage(probe)).catch(() => null).then(result => {
+      usageProbe[agent] = null;
+      if (result) usage[agent] = { ...result, updatedAt: Date.now() };
+      return usage[agent] ?? null;
+    });
+    return usageProbe[agent];
+  };
   let publicUrl = options.publicUrl ?? process.env.POCKETBRIDGE_PUBLIC_URL;
   if (publicUrl) { const address = new URL(publicUrl); if (!['http:', 'https:'].includes(address.protocol) || address.username || address.password || address.search || address.hash || address.pathname !== '/') throw new Error('POCKETBRIDGE_PUBLIC_URL must be an HTTP(S) origin'); publicUrl = address.origin; }
   const lastSeq = () => Number(get('SELECT COALESCE(MAX(seq),0) AS n FROM events').n);
   const chat = id => {
-    const row = get('SELECT id,projectId,title,mode,model,effort,status,updatedAt,error FROM chats WHERE id=?', id);
+    const row = get('SELECT id,projectId,agent,title,mode,model,effort,status,updatedAt,error FROM chats WHERE id=?', id);
     if (!row) throw fail(404, 'Chat not found');
-    row.model ||= 'default'; row.effort ||= 'default'; if (!row.error) delete row.error; return row;
+    return chatRow(row);
   };
   const replay = client => {
     if (closed || client.replaying || client.response.destroyed || client.response.writableEnded) return;
@@ -91,6 +169,8 @@ export async function createService(options = {}) {
       if (closed || client.response.destroyed || client.response.writableEnded) return;
       const events = all('SELECT * FROM events WHERE seq>? ORDER BY seq LIMIT 128', client.seq);
       for (const event of events) {
+        // A status-only stream (background alerts) skips the many message events streaming text produces.
+        if (client.statusOnly && event.type === 'message') { client.seq = event.seq; continue; }
         const ready = client.response.write(`id: ${event.seq}\nevent: change\ndata: ${JSON.stringify(event)}\n\n`); client.seq = event.seq;
         if (!ready) { client.response.once('drain', batch); return; }
       }
@@ -104,11 +184,31 @@ export async function createService(options = {}) {
     // Durable rows precede notification; batch UI refreshes to avoid token-rate fetching.
     if (!eventTimer) eventTimer = setTimeout(() => { eventTimer = undefined; for (const client of clients) replay(client); }, 200);
   };
-  const state = () => ({
-    projects: all('SELECT id,name,path,lastUsedAt FROM projects ORDER BY name').map(row => ({ ...row, lastUsedAt: Number(row.lastUsedAt || 0) })),
-    chats: all('SELECT id,projectId,title,mode,model,effort,status,updatedAt,error FROM chats ORDER BY updatedAt DESC').map(row => { row.model ||= 'default'; row.effort ||= 'default'; if (!row.error) delete row.error; return row; }),
-    lastSeq: lastSeq(), capabilities: { modes, models, efforts }, server: { claudeAvailable, publicUrl },
-  });
+  const modelDisplay = (agent, value) => catalogs[agent]?.models.find(model => model.id === value || model.resolved === value)?.name ?? value;
+  const chatRow = row => {
+    row.agent ||= 'claude'; row.model ||= 'default'; row.effort ||= 'default';
+    if (row.contextTokens > 0 && row.contextWindow > 0) row.context = { used: row.contextTokens, window: row.contextWindow };
+    delete row.contextTokens; delete row.contextWindow;
+    if (!row.activity) delete row.activity;
+    if (!row.error) delete row.error;
+    if (row.preview === null) delete row.preview; else if (typeof row.preview === 'string') row.preview = plainText(row.preview).slice(0, 160);
+    return row;
+  };
+  const agentCatalog = agent => {
+    const catalog = catalogs[agent];
+    return { id: agent, name: agentNames[agent], available: available[agent], enabled: enabled[agent], modes: agentModes[agent], defaultModel: catalog?.defaultModel ?? 'default', defaultEffort: catalog?.defaultEffort ?? 'default', models: (catalog?.models ?? []).map(({ resolved, ...model }) => model) };
+  };
+  const state = () => {
+    for (const agent of agentIds) refreshCatalog(agent);
+    return {
+      projects: all('SELECT id,name,path,lastUsedAt FROM projects ORDER BY name').map(row => ({ ...row, lastUsedAt: Number(row.lastUsedAt || 0) })),
+      // The newest reply or prompt previews each chat; tool activity is left out.
+      chats: all(`SELECT id,projectId,agent,title,mode,model,effort,status,updatedAt,error,contextTokens,contextWindow,activity,
+        (SELECT substr(text,1,400) FROM messages m WHERE m.chatId=chats.id AND m.role!='activity' ORDER BY m.rowid DESC LIMIT 1) AS preview
+        FROM chats ORDER BY updatedAt DESC`).map(chatRow),
+      lastSeq: lastSeq(), capabilities: { modes, models, efforts, agents: agentIds.map(agentCatalog) }, server: { claudeAvailable, codexAvailable, publicUrl },
+    };
+  };
   const status = (id, value, error = null) => { run('UPDATE chats SET status=?,error=?,updatedAt=? WHERE id=?', value, error, Date.now(), id); change('state', id); };
   const startTime = processStamp(process.pid);
   if (!startTime) { db.close(); throw new Error('Could not verify the Mac service process identity'); }
@@ -189,8 +289,7 @@ export async function createService(options = {}) {
     finally { if (fd !== undefined) closeSync(fd); }
   };
   const discoverProjects = () => {
-    if (!existsSync(claudeProjectsDir)) return;
-    let entries; try { entries = readdirSync(claudeProjectsDir, { withFileTypes: true }); } catch { return; }
+    let entries = []; try { if (enabled.claude && existsSync(claudeProjectsDir)) entries = readdirSync(claudeProjectsDir, { withFileTypes: true }); } catch { /* unreadable Claude metadata */ }
     const found = new Map();
     const consider = (cwd, mtime) => {
       if (typeof cwd !== 'string' || ignoredCwd(cwd)) return;
@@ -217,6 +316,7 @@ export async function createService(options = {}) {
       sessionMeta.set(dir, { name: latest.name, mtimeMs: latest.mtime, size: latest.size, cwd });
       if (cwd) consider(cwd, latest.mtime);
     }
+    if (codexSessionsDir && enabled.codex) for (const session of codexSessionFolders(codexSessionsDir, codexMeta)) consider(session.cwd, session.mtime);
     const changed = transaction(() => {
       let wrote = false;
       for (const [path, lastUsedAt] of found) {
@@ -235,7 +335,26 @@ export async function createService(options = {}) {
     try { discoverProjects(); } catch (error) { console.error(`Project discovery failed: ${error.message}`); }
   };
   refreshDiscovery(true);
-  const message = (chatId, role, value, id = randomUUID()) => { run('INSERT INTO messages VALUES (?,?,?,?,?)', id, chatId, role, value, Date.now()); change('message', chatId); return id; };
+  const catalogsReady = Promise.all(agentIds.map(agent => refreshCatalog(agent, true)));
+  const message = (chatId, role, value, id = randomUUID(), extra = {}) => {
+    run('INSERT INTO messages (id,chatId,role,text,createdAt,attachments,kind) VALUES (?,?,?,?,?,?,?)', id, chatId, role, value, Date.now(), extra.attachments?.length ? JSON.stringify(extra.attachments) : null, extra.kind ?? null);
+    change('message', chatId); return id;
+  };
+  /** Sub-agents a turn started: created on first sight, then patched with whatever each later event adds. */
+  const subagent = (chatId, promptId, agent, patch) => {
+    const existing = get('SELECT * FROM subagents WHERE chatId=? AND id=?', chatId, patch.id), now = Date.now();
+    const done = patch.status && patch.status !== 'running';
+    if (!existing) run('INSERT INTO subagents (id,chatId,promptId,agent,title,kind,model,effort,status,activity,startedAt,endedAt,toolUses,tokens) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+      patch.id, chatId, promptId, agent, patch.title ?? 'Sub-agent', patch.kind ?? null, patch.model ?? null, patch.effort ?? null, patch.status ?? 'running', patch.activity ?? null, patch.startedAt ?? now, done ? (patch.endedAt ?? now) : null, patch.toolUses ?? null, patch.tokens ?? null);
+    else {
+      const next = { ...existing };
+      for (const key of ['title', 'kind', 'model', 'effort', 'activity', 'toolUses', 'tokens']) if (patch[key] !== undefined && patch[key] !== null) next[key] = patch[key];
+      if (patch.status && existing.status === 'running') { next.status = patch.status; if (done) next.endedAt = patch.endedAt ?? now; }
+      run('UPDATE subagents SET title=?,kind=?,model=?,effort=?,status=?,activity=?,endedAt=?,toolUses=?,tokens=? WHERE chatId=? AND id=?', next.title, next.kind, next.model, next.effort, next.status, next.activity, next.endedAt, next.toolUses, next.tokens, chatId, patch.id);
+    }
+    change('message', chatId);
+  };
+  const activityFor = (id, value) => { run('UPDATE chats SET activity=? WHERE id=?', value ? String(value).slice(0, 200) : null, id); change('state', id); };
   const cancelApprovals = id => {
     for (const [approvalId, entry] of waiting) if (entry.chatId === id) {
       run("UPDATE approvals SET status='deny' WHERE id=?", approvalId); entry.resolve({ behavior: 'deny', message: 'User stopped the task', interrupt: true }); waiting.delete(approvalId); change('approval', id);
@@ -244,89 +363,360 @@ export async function createService(options = {}) {
   const stop = id => {
     chat(id); const entry = active.get(id); if (!entry || entry.stopped) return;
     entry.stopped = true; status(id, 'stopping'); cancelApprovals(id);
-    entry.stopPromise = terminateGroup(entry.child.pid, options.stopTimeoutMs ?? 3000);
+    entry.stopPromise = terminateGroup(entry.child.pid, options.stopTimeoutMs ?? 3000).catch(error => console.error(`Stop ${id}: ${error.message}`));
   };
 
-  function start(id, prompt) {
+  /**
+   * Starts one CLI run for a chat. A run lives until its turns are done: steers join the running turn, an interrupt
+   * ends the turn and sends the next one into the same process, and Claude's background sub-agents can add turns.
+   * delivery: { promptId, text, attachments: [{ id, type, path }], kind: 'turn'|'steer'|'interrupt' }.
+   */
+  function start(id, delivery, later = []) {
     const row = get('SELECT * FROM chats WHERE id=?', id), project = get('SELECT * FROM projects WHERE id=?', row.projectId);
-    const bridgePath = join(here, 'approval-bridge.mjs');
+    const agent = row.agent || 'claude';
     const bridgeEnv = { POCKETBRIDGE_INTERNAL_URL: localUrl, POCKETBRIDGE_INTERNAL_TOKEN: internalToken, POCKETBRIDGE_CHAT_ID: id };
-    const settings = { hooks: { PreToolUse: [{ matcher: 'AskUserQuestion|ExitPlanMode', hooks: [{ type: 'command', command: `${shellQuote(process.execPath)} ${shellQuote(bridgePath)} --hook`, timeout: 86400 }] }] } };
-    const mcp = { mcpServers: { pocketbridge: { type: 'stdio', command: process.execPath, args: [bridgePath], env: bridgeEnv } } };
-    const args = ['-p', '--output-format', 'stream-json', '--verbose', '--include-partial-messages', '--permission-mode', row.mode === 'default' ? 'manual' : row.mode, row.sessionStarted ? '--resume' : '--session-id', id, '--settings', JSON.stringify(settings), '--mcp-config', JSON.stringify(mcp), '--permission-prompt-tool', 'mcp__pocketbridge__approve'];
-    if (row.mode === 'bypassPermissions') args.push('--dangerously-skip-permissions');
-    if (row.model && row.model !== 'default') args.push('--model', row.model);
-    if (row.effort && row.effort !== 'default') args.push('--effort', row.effort);
-    const env = { ...process.env, ...bridgeEnv };
-    // Subscription login stays inside the official binary; inherited API overrides must not change billing.
-    for (const key of ['ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN', 'ANTHROPIC_BASE_URL', 'CLAUDE_CODE_OAUTH_TOKEN', 'CLAUDE_CODE_USE_BEDROCK', 'CLAUDE_CODE_USE_VERTEX', 'CLAUDE_CODE_USE_FOUNDRY', 'CLAUDE_CODE_RESUME_INTERRUPTED_TURN', 'CLAUDE_CODE_SKIP_PROMPT_HISTORY', 'CLAUDE_CODE_SIMPLE']) delete env[key];
-    const child = spawn(claudePath, args, { cwd: project.path, env, detached: true, stdio: ['pipe', 'pipe', 'pipe'] });
-    const entry = { child, stopped: false, assistantId: null, buffer: '', stderr: '', result: null, parseError: null, sawText: false };
+    let args;
+    if (agent === 'codex') args = ['app-server'];
+    else {
+      const bridgePath = join(here, 'approval-bridge.mjs');
+      const settings = { hooks: { PreToolUse: [{ matcher: 'AskUserQuestion|ExitPlanMode', hooks: [{ type: 'command', command: `${shellQuote(process.execPath)} ${shellQuote(bridgePath)} --hook`, timeout: 86400 }] }] } };
+      const mcp = { mcpServers: { pocketbridge: { type: 'stdio', command: process.execPath, args: [bridgePath], env: bridgeEnv } } };
+      // A continued Terminal session is forked on its first turn so the original keeps its own history.
+      const session = row.sessionStarted ? ['--resume', id] : row.forkFrom ? ['--resume', row.forkFrom, '--fork-session', '--session-id', id] : ['--session-id', id];
+      args = ['-p', '--input-format', 'stream-json', '--output-format', 'stream-json', '--verbose', '--include-partial-messages', '--replay-user-messages', '--permission-mode', row.mode === 'default' ? 'manual' : row.mode, ...session, '--settings', JSON.stringify(settings), '--mcp-config', JSON.stringify(mcp), '--permission-prompt-tool', 'mcp__pocketbridge__approve'];
+      if (row.mode === 'bypassPermissions') args.push('--dangerously-skip-permissions');
+      if (row.model && row.model !== 'default') args.push('--model', row.model);
+      if (row.effort && row.effort !== 'default') args.push('--effort', row.effort);
+    }
+    // Subscription login stays inside each official binary; inherited API overrides must not change billing.
+    const env = { ...agentEnv(agent), ...(agent === 'claude' ? bridgeEnv : {}) };
+    const child = spawn(paths[agent], args, { cwd: project.path, env, detached: true, stdio: ['pipe', 'pipe', 'pipe'] });
+    const entry = { child, agent, stopped: false, assistantId: null, buffer: '', stderr: '', result: null, parseError: null, sawText: false, tools: new Map(), after: later, finishing: false, turnPrompt: null };
     active.set(id, entry);
     if (child.pid) run('INSERT OR REPLACE INTO runtimes VALUES (?,?,?)', id, child.pid, processStamp(child.pid) ?? '');
+    const turnStarted = promptId => { entry.turnPrompt = promptId; run('UPDATE prompts SET startedAt=COALESCE(startedAt,?) WHERE id=?', Date.now(), promptId); change('message', id); };
+    const turnEnded = () => { if (entry.turnPrompt) { run('UPDATE prompts SET endedAt=? WHERE id=?', Date.now(), entry.turnPrompt); change('message', id); } };
     const append = value => {
       if (!value) return; entry.sawText = true;
       if (!entry.assistantId) entry.assistantId = message(id, 'assistant', value);
       else { run('UPDATE messages SET text=text||? WHERE id=?', value, entry.assistantId); change('message', id); }
     };
-    const consume = line => {
-      if (!line.trim()) return; let event;
-      try { event = JSON.parse(line); } catch { entry.parseError = 'Claude returned malformed structured output.'; return; }
-      run('INSERT INTO raw_events (chatId,json) VALUES (?,?)', id, line);
-      const malformed = () => { entry.parseError = 'Claude returned malformed structured output.'; };
-      if (!event || typeof event !== 'object' || Array.isArray(event) || typeof event.type !== 'string') { malformed(); return; }
-      if (['assistant', 'user'].includes(event.type) && (!Array.isArray(event.message?.content) || event.message.content.some(block => !block || typeof block !== 'object' || typeof block.type !== 'string' || (block.type === 'text' && typeof block.text !== 'string')))) { malformed(); return; }
-      if (event.type === 'stream_event' && event.event?.delta?.type === 'text_delta' && typeof event.event.delta.text !== 'string') { malformed(); return; }
-      if (event.type === 'result' && ((event.result !== undefined && typeof event.result !== 'string') || (event.errors !== undefined && (!Array.isArray(event.errors) || event.errors.some(error => typeof error !== 'string'))))) { malformed(); return; }
-      if (event.type === 'system' && event.subtype === 'init') run('UPDATE chats SET sessionStarted=1 WHERE id=?', id);
-      if (event.type === 'stream_event') {
-        if (event.event?.type === 'message_start') entry.assistantId = null;
-        if (event.event?.type === 'content_block_delta' && event.event.delta?.type === 'text_delta') append(event.event.delta.text);
-      }
-      if (event.type === 'assistant') {
-        const blocks = event.message?.content ?? [], finalText = blocks.filter(b => b.type === 'text').map(b => b.text).join('\n');
-        if (finalText) {
-          if (!entry.assistantId) append(finalText);
-          else { run('UPDATE messages SET text=? WHERE id=?', finalText, entry.assistantId); change('message', id); }
+    let consume;
+    if (agent === 'claude') {
+      entry.written = new Map(); entry.background = 0; entry.turnOpen = false;
+      const write = next => { child.stdin.write(JSON.stringify(claudeUserMessage(next.promptId, next.text, next.attachments)) + '\n'); entry.written.set(next.promptId, next); };
+      // stdin closes once the last turn ended, no background sub-agent can add a turn, and every message was taken.
+      const settle = (force = false) => {
+        clearTimeout(entry.settleTimer);
+        if (entry.finishing || entry.turnOpen || entry.background > 0) return;
+        // A message the CLI never echoes (a local slash command, a discarded queued command) must not hold the run
+        // open: once the turn has ended, close after a short wait; the CLI still runs input it already took.
+        if (entry.written.size && !force) { entry.settleTimer = setTimeout(() => settle(true), options.writtenGraceMs ?? 10_000); return; }
+        entry.finishing = true; child.stdin.end();
+      };
+      entry.steer = next => { if (entry.finishing) entry.after.push(next); else write(next); };
+      entry.interrupt = next => {
+        if (entry.finishing) { entry.after.push(next); return; }
+        cancelApprovals(id);
+        if (get('SELECT status FROM chats WHERE id=?', id)?.status === 'waiting') status(id, 'running');
+        child.stdin.write(JSON.stringify({ type: 'control_request', request_id: `interrupt-${next.promptId}`, request: { subtype: 'interrupt' } }) + '\n');
+        write(next);
+      };
+      const routeSubagent = event => {
+        const parent = event.parent_tool_use_id;
+        if (event.type === 'assistant') for (const block of event.message?.content ?? []) {
+          if (block?.type === 'tool_use') { const known = get('SELECT toolUses FROM subagents WHERE chatId=? AND id=?', id, parent); subagent(id, entry.turnPrompt, agent, { id: parent, model: event.message?.model ?? null, activity: `${block.name} ${brief(block.input)}`.trim().slice(0, 200), toolUses: (known?.toolUses ?? 0) + 1 }); }
+          else if (event.message?.model) subagent(id, entry.turnPrompt, agent, { id: parent, model: event.message.model });
         }
-        for (const block of blocks) if (block.type === 'tool_use') message(id, 'activity', `${block.name}\n${JSON.stringify(block.input, null, 2)}`);
-        entry.assistantId = null;
-      }
-      if (event.type === 'user') for (const block of event.message?.content ?? []) if (block.type === 'tool_result') message(id, 'activity', `${block.is_error ? 'Tool failed' : 'Tool result'}\n${typeof block.content === 'string' ? block.content : JSON.stringify(block.content)}`);
-      if (event.type === 'system' && ['permission_denied', 'warning', 'error'].includes(event.subtype)) message(id, 'activity', typeof event.message === 'string' ? event.message : JSON.stringify(event));
-      if (event.type === 'result') { entry.result = event; run('UPDATE chats SET sessionStarted=1 WHERE id=?', id); if (event.result && !entry.sawText) append(event.result); }
+      };
+      consume = line => {
+        let event;
+        try { event = JSON.parse(line); } catch { entry.parseError = 'Claude returned malformed structured output.'; return; }
+        if (!(event?.type === 'stream_event')) run('INSERT INTO raw_events (chatId,json) VALUES (?,?)', id, line);
+        const malformed = () => { entry.parseError = 'Claude returned malformed structured output.'; };
+        if (!event || typeof event !== 'object' || Array.isArray(event) || typeof event.type !== 'string') { malformed(); return; }
+        if (['assistant', 'user'].includes(event.type) && (!Array.isArray(event.message?.content) || event.message.content.some(block => !block || typeof block !== 'object' || typeof block.type !== 'string' || (block.type === 'text' && typeof block.text !== 'string')))) { malformed(); return; }
+        if (event.type === 'stream_event' && event.event?.delta?.type === 'text_delta' && typeof event.event.delta.text !== 'string') { malformed(); return; }
+        if (event.type === 'result' && ((event.result !== undefined && typeof event.result !== 'string') || (event.errors !== undefined && (!Array.isArray(event.errors) || event.errors.some(error => typeof error !== 'string'))))) { malformed(); return; }
+        // A sub-agent's own messages describe that sub-agent; the chat shows them as its activity, not as replies.
+        if (typeof event.parent_tool_use_id === 'string') { routeSubagent(event); return; }
+        if (event.type === 'system' && event.subtype === 'init') { run('UPDATE chats SET sessionStarted=1 WHERE id=?', id); if (entry.turnPrompt || entry.written.size === 0) { entry.turnOpen = true; clearTimeout(entry.settleTimer); } }
+        if (event.type === 'command_lifecycle' && ['cancelled', 'discarded', 'refused'].includes(event.state ?? event.status)) {
+          for (const key of [event.uuid, event.command_uuid, event.message_uuid]) if (typeof key === 'string') entry.written.delete(key);
+          settle();
+        }
+        if (event.type === 'user' && !event.message.content.some(block => block.type === 'tool_result')) {
+          const said = event.message.content.filter(block => block.type === 'text').map(block => block.text).join('\n');
+          const taken = entry.written.get(event.uuid) ?? [...entry.written.values()].find(next => next.text === said);
+          if (taken) {
+            entry.written.delete(taken.promptId);
+            // A steer taken mid-turn joins it; anything taken between turns starts the next one.
+            if (taken.kind !== 'steer' || !entry.turnOpen) { turnStarted(taken.promptId); entry.assistantId = null; }
+            entry.turnOpen = true; clearTimeout(entry.settleTimer);
+          }
+        }
+        if (event.type === 'stream_event') {
+          if (event.event?.type === 'message_start') entry.assistantId = null;
+          if (event.event?.type === 'content_block_delta' && event.event.delta?.type === 'text_delta') append(event.event.delta.text);
+        }
+        if (event.type === 'assistant') {
+          const blocks = event.message?.content ?? [], finalText = blocks.filter(b => b.type === 'text').map(b => b.text).join('\n');
+          if (finalText) {
+            if (!entry.assistantId) append(finalText);
+            else { run('UPDATE messages SET text=? WHERE id=?', finalText, entry.assistantId); change('message', id); }
+          }
+          for (const block of blocks) if (block.type === 'tool_use') {
+            const toolMessage = message(id, 'activity', `${block.name}\n${JSON.stringify(block.input, null, 2)}`);
+            if (typeof block.id === 'string') entry.tools.set(block.id, toolMessage);
+            if (['Agent', 'Task'].includes(block.name) && typeof block.id === 'string') subagent(id, entry.turnPrompt, agent, { id: block.id, title: String(block.input?.description ?? 'Sub-agent').slice(0, 100), kind: block.input?.subagent_type ?? null, model: block.input?.model ?? null, effort: row.effort === 'default' ? null : row.effort, status: 'running' });
+          }
+          entry.assistantId = null;
+        }
+        // A result's message id names its tool message, so parallel calls pair exactly on every client.
+        if (event.type === 'user') for (const block of event.message?.content ?? []) if (block.type === 'tool_result') {
+          const toolMessage = entry.tools.get(block.tool_use_id); entry.tools.delete(block.tool_use_id);
+          message(id, 'activity', `${block.is_error ? 'Tool failed' : 'Tool result'}\n${typeof block.content === 'string' ? block.content : JSON.stringify(block.content)}`, toolMessage ? `${toolMessage}:result` : undefined);
+          // A sub-agent that ran in the foreground ends with its tool result; a backgrounded one reports through task events.
+          const sub = typeof block.tool_use_id === 'string' && get('SELECT status FROM subagents WHERE chatId=? AND id=?', id, block.tool_use_id);
+          if (sub && !entry.backgrounded?.has(block.tool_use_id)) subagent(id, entry.turnPrompt, agent, { id: block.tool_use_id, status: block.is_error ? 'failed' : 'completed' });
+        }
+        if (event.type === 'system') {
+          const task = typeof event.tool_use_id === 'string' && (event.task_type === 'local_agent' || event.subagent_type || get('SELECT id FROM subagents WHERE chatId=? AND id=?', id, event.tool_use_id));
+          if (event.subtype === 'task_started' && task) {
+            if (event.is_backgrounded) (entry.backgrounded ??= new Set()).add(event.tool_use_id);
+            subagent(id, entry.turnPrompt, agent, { id: event.tool_use_id, title: event.description ? String(event.description).slice(0, 100) : null, kind: event.subagent_type ?? null, status: 'running' });
+          }
+          if (event.subtype === 'task_progress' && task) subagent(id, entry.turnPrompt, agent, { id: event.tool_use_id, activity: event.description ? String(event.description).slice(0, 200) : null, tokens: event.usage?.total_tokens ?? null, toolUses: event.usage?.tool_uses ?? null });
+          if (event.subtype === 'task_notification' && task) subagent(id, entry.turnPrompt, agent, { id: event.tool_use_id, status: event.status === 'completed' ? 'completed' : event.status === 'failed' ? 'failed' : 'stopped', activity: event.summary ? String(event.summary).slice(0, 200) : null });
+          if (event.subtype === 'background_tasks_changed' && Array.isArray(event.tasks)) {
+            // Only sub-agents and workflows bring a follow-up turn; background shells and monitors don't hold the run open.
+            entry.background = event.tasks.filter(task => task && !task.ambient && ['local_agent', 'local_workflow'].includes(task.task_type)).length;
+            // The CLI usually starts a follow-up turn when the last background task ends; give it a moment before closing.
+            if (entry.background === 0 && !entry.turnOpen) { clearTimeout(entry.settleTimer); entry.settleTimer = setTimeout(settle, options.backgroundGraceMs ?? 15_000); }
+          }
+          if (event.subtype === 'task_summary') activityFor(id, typeof event.detail === 'string' ? event.detail : null);
+          if (['permission_denied', 'warning', 'error'].includes(event.subtype)) message(id, 'activity', typeof event.message === 'string' ? event.message : JSON.stringify(event));
+        }
+        if (event.type === 'result') {
+          entry.result = event; entry.turnOpen = false; run('UPDATE chats SET sessionStarted=1 WHERE id=?', id); if (event.result && !entry.sawText) append(event.result);
+          const context = claudeContext(event); if (context) run('UPDATE chats SET contextTokens=?,contextWindow=? WHERE id=?', context.used, context.window, id);
+          // With background sub-agents still running, the turn continues in the follow-up Claude starts for them.
+          if (entry.background === 0) turnEnded();
+          entry.sawText = false; entry.assistantId = null; settle();
+        }
+      };
+      write(delivery);
+    } else {
+      // Codex runs through its app-server: one thread per chat, one turn per prompt, steer and interrupt in place.
+      let nextId = 1;
+      const pending = new Map();
+      // The first turn is on its way from the start; steers and interrupts that arrive first wait for its id.
+      entry.queue = []; entry.early = []; entry.turnOpen = true; entry.turnId = null; entry.turnLive = false;
+      const writable = () => !child.stdin.destroyed && !child.stdin.writableEnded && child.exitCode === null;
+      const send = value => { if (writable()) child.stdin.write(JSON.stringify(value) + '\n'); };
+      const call = (method, params) => new Promise((resolveCall, rejectCall) => {
+        if (!writable()) { rejectCall(new Error('Codex is no longer running')); return; }
+        const callId = nextId++; pending.set(callId, { resolveCall, rejectCall }); send({ id: callId, method, params });
+      });
+      child.on('exit', () => { for (const waiter of pending.values()) waiter.rejectCall(new Error('Codex exited')); pending.clear(); });
+      const codex = codexAppConsumer({
+        say: (role, value, messageId) => message(id, role, value, messageId),
+        update: (messageId, value) => { run('UPDATE messages SET text=? WHERE id=?', value, messageId); change('message', id); },
+        append: (messageId, value) => { run('UPDATE messages SET text=text||? WHERE id=?', value, messageId); change('message', id); },
+        subagent: patch => subagent(id, entry.turnPrompt, agent, patch),
+        context: (used, window) => run('UPDATE chats SET contextTokens=?,contextWindow=? WHERE id=?', used, window, id),
+        activity: value => activityFor(id, value),
+      });
+      entry.codex = codex;
+      const settings = () => {
+        const current = get('SELECT mode,model,effort FROM chats WHERE id=?', id);
+        return { model: current.model !== 'default' ? current.model : null, effort: current.effort !== 'default' ? current.effort : null, ...codexPolicy(current.mode) };
+      };
+      const skills = codexSkills.get(project.id) ?? [];
+      const input = next => {
+        const named = /^\/([\w:.-]+)/.exec(next.text)?.[1], skill = named && skills.find(item => item.name === named);
+        return [...(skill ? [{ type: 'skill', name: skill.name, path: skill.path }] : []), { type: 'text', text: next.text, text_elements: [] }, ...next.attachments.map(item => ({ type: 'localImage', path: item.path }))];
+      };
+      const shutdown = () => {
+        if (entry.finishing) return; entry.finishing = true; child.stdin.end();
+        setTimeout(() => { if (active.get(id) === entry) terminateGroup(child.pid, options.stopTimeoutMs ?? 3000).catch(() => {}); }, 3000).unref();
+      };
+      const interruptNow = () => call('turn/interrupt', { threadId: entry.threadId, turnId: entry.turnId }).catch(() => {});
+      const steerNow = next => call('turn/steer', { threadId: entry.threadId, expectedTurnId: entry.turnId, input: input(next) }).catch(() => {
+        // The turn ended before the steer landed; it becomes the next turn instead.
+        if (entry.finishing) entry.after.push(next); else if (entry.turnOpen) entry.queue.push(next); else startTurn(next).catch(failRun);
+      });
+      // Codex accepts steer and interrupt only once it reports the turn started, not when turn/start returns.
+      const turnActive = id => {
+        if (id) entry.turnId = id;
+        if (!entry.turnId || entry.turnLive) return;
+        entry.turnLive = true;
+        for (const next of entry.early.splice(0)) steerNow(next);
+        if (entry.interruptPending) { entry.interruptPending = false; interruptNow(); }
+      };
+      const startTurn = async next => {
+        turnStarted(next.promptId); entry.turnOpen = true; entry.turnId = null; entry.turnLive = false;
+        const { model, effort } = settings();
+        const opened = await call('turn/start', { threadId: entry.threadId, input: input(next), ...(model ? { model } : {}), ...(effort ? { effort } : {}) });
+        if (!entry.turnLive) entry.turnId = opened?.turn?.id ?? entry.turnId;
+      };
+      const failRun = error => { entry.failure ??= error?.message ?? 'Codex could not start this turn.'; shutdown(); };
+      entry.steer = next => {
+        if (entry.finishing) entry.after.push(next);
+        else if (!entry.turnOpen) entry.queue.push(next);
+        else if (!entry.turnLive) entry.early.push(next);
+        else steerNow(next);
+      };
+      entry.interrupt = next => {
+        if (entry.finishing) { entry.after.push(next); return; }
+        entry.queue.unshift(next);
+        if (!entry.turnOpen) return;
+        if (entry.turnLive) interruptNow(); else entry.interruptPending = true;
+      };
+      const turnCompleted = turn => {
+        entry.turnOpen = false; entry.turnLive = false; turnEnded(); entry.lastTurn = turn;
+        // Steers that never reached a turn id run next, in order.
+        entry.queue.push(...entry.early.splice(0)); entry.interruptPending = false;
+        if (turn?.status === 'failed') entry.failure = oneLine(turn.error?.message) || codex.state.failure || 'Codex could not finish this turn.';
+        if (entry.queue.length && !entry.stopped) startTurn(entry.queue.shift()).catch(failRun);
+        else shutdown();
+      };
+      consume = line => {
+        let event; try { event = JSON.parse(line); } catch { return; }
+        if (!event || typeof event !== 'object') return;
+        if (event.method && !['item/agentMessage/delta', 'item/reasoning/textDelta', 'item/reasoning/summaryTextDelta', 'item/commandExecution/outputDelta'].includes(event.method)) run('INSERT INTO raw_events (chatId,json) VALUES (?,?)', id, line.slice(0, 200_000));
+        if (event.id !== undefined && !event.method) {
+          const waiter = pending.get(event.id); pending.delete(event.id);
+          if (waiter) { if (event.error) waiter.rejectCall(new Error(event.error.message ?? 'Codex rejected the request')); else waiter.resolveCall(event.result); }
+          return;
+        }
+        // Codex asks only when its policy allows asking; PocketBridge runs it with approvals off, so any request is declined.
+        if (event.id !== undefined && event.method) { send(event.method.endsWith('requestApproval') ? { id: event.id, result: { decision: 'decline' } } : { id: event.id, error: { code: -32601, message: 'Not supported by PocketBridge' } }); return; }
+        // Sub-agent threads report on their own thread ids: they only update that sub-agent's activity line.
+        const thread = event.params?.threadId;
+        if (thread && entry.threadId && thread !== entry.threadId) {
+          const item = event.params?.item;
+          if (event.method === 'item/started' && item && get('SELECT id FROM subagents WHERE chatId=? AND id=?', id, thread)) {
+            const doing = item.type === 'commandExecution' ? `Running ${oneLine(String(item.command ?? '').replace(/^\/bin\/(?:ba|z)?sh -lc /, ''), 120)}` : item.type === 'fileChange' ? 'Editing files' : item.type === 'mcpToolCall' ? `${item.server ?? ''}.${item.tool ?? ''}` : null;
+            if (doing) subagent(id, entry.turnPrompt, agent, { id: thread, activity: doing });
+          }
+          return;
+        }
+        if (event.method === 'turn/started') { turnActive(event.params?.turn?.id); return; }
+        if (event.method === 'turn/completed') { if (!entry.turnId || !event.params?.turn?.id || event.params.turn.id === entry.turnId) turnCompleted(event.params?.turn); return; }
+        codex.consume(event.method, event.params);
+      };
+      (async () => {
+        await call('initialize', { clientInfo: { name: 'pocketbridge', title: 'PocketBridge', version: '1' } });
+        send({ method: 'initialized' });
+        const { model, effort, approvalPolicy, sandbox } = settings();
+        const base = { cwd: project.path, approvalPolicy, sandbox, ...(model ? { model } : {}), ...(effort ? { config: { model_reasoning_effort: effort } } : {}) };
+        const opened = row.agentSession ? await call('thread/resume', { threadId: row.agentSession, ...base }) : row.forkFrom ? await call('thread/fork', { threadId: row.forkFrom, ...base }) : await call('thread/start', base);
+        entry.threadId = opened?.thread?.id;
+        if (!entry.threadId) throw new Error('Codex did not open a thread.');
+        run('UPDATE chats SET agentSession=?,sessionStarted=1 WHERE id=?', entry.threadId, id);
+        await startTurn(delivery);
+      })().catch(failRun);
+      entry.result = { get ok() { return entry.lastTurn?.status === 'completed' && !entry.failure; } };
+    }
+    // Unexpected CLI output fails this turn; it must never take the service and every other chat down with it.
+    const safely = line => {
+      try { consume(line); } catch (error) { entry.parseError ??= `PocketBridge could not read ${agentNames[agent]} output: ${error.message}`; console.error(`Chat ${id}: ${error.stack ?? error.message}`); }
     };
     child.stdout.setEncoding('utf8');
     child.stdout.on('data', chunk => {
       entry.buffer += chunk;
-      if (entry.buffer.length > 10_000_000) { entry.parseError = 'Claude output exceeded the structured event limit.'; stop(id); return; }
-      let newline; while ((newline = entry.buffer.indexOf('\n')) !== -1) { consume(entry.buffer.slice(0, newline)); entry.buffer = entry.buffer.slice(newline + 1); }
+      if (entry.buffer.length > 10_000_000) { entry.parseError = `${agentNames[agent]} output exceeded the structured event limit.`; stop(id); return; }
+      let newline; while ((newline = entry.buffer.indexOf('\n')) !== -1) { const line = entry.buffer.slice(0, newline); entry.buffer = entry.buffer.slice(newline + 1); if (line.trim()) safely(line); }
     });
     child.stderr.setEncoding('utf8'); child.stderr.on('data', chunk => { entry.stderr = (entry.stderr + chunk).slice(-16_000); });
-    child.stdin.on('error', () => {}); child.on('error', error => { entry.parseError = `Could not start Claude: ${error.message}`; });
-    child.on('close', async (code, signal) => {
-      if (entry.buffer.trim()) consume(entry.buffer);
+    child.stdin.on('error', () => {}); child.on('error', error => { entry.parseError = `Could not start ${agentNames[agent]}: ${error.message}`; });
+    // Once the process is gone, steers and interrupts wait for the next run instead of writing to a closed pipe.
+    child.on('exit', () => { entry.finishing = true; });
+    child.on('close', (code, signal) => finished(code, signal).catch(error => {
+      console.error(`Chat ${id} cleanup: ${error.stack ?? error.message}`);
+      active.delete(id);
+      try { status(id, 'error', `PocketBridge could not finish this turn: ${error.message}`); } catch { /* database already closed */ }
+    }));
+    const finished = async (code, signal) => {
+      entry.finishing = true;
+      if (entry.buffer.trim()) safely(entry.buffer);
+      clearTimeout(entry.settleTimer);
       // Tool processes can outlive the CLI even after a completed result.
-      await (entry.stopPromise ?? terminateGroup(child.pid, options.stopTimeoutMs ?? 3000));
-      active.delete(id); run('DELETE FROM runtimes WHERE chatId=?', id); cancelApprovals(id);
+      await (entry.stopPromise ?? terminateGroup(child.pid, options.stopTimeoutMs ?? 3000).catch(error => console.error(`Cleanup ${id}: ${error.message}`)));
+      active.delete(id); run('DELETE FROM runtimes WHERE chatId=?', id); cancelApprovals(id); usageAt[agent] = 0; gitCache.delete(project.id);
+      run("UPDATE subagents SET status='stopped',endedAt=? WHERE chatId=? AND status='running'", Date.now(), id);
+      if (entry.turnPrompt) run('UPDATE prompts SET endedAt=COALESCE(endedAt,?) WHERE id=?', Date.now(), entry.turnPrompt);
+      run('UPDATE chats SET activity=NULL WHERE id=?', id);
+      const codex = agent === 'codex';
+      // Messages sent while the run was closing start the next run rather than being lost.
+      if (!entry.stopped && entry.after.length) { start(id, entry.after.shift(), entry.after); return; }
       if (entry.stopped) status(id, 'interrupted', 'Stopped by you. Completed changes remain on disk.');
-      else if (entry.parseError || code !== 0 || entry.result?.is_error || !entry.result) status(id, 'error', entry.parseError ?? (entry.result?.errors?.join('\n') || entry.result?.result || entry.stderr.trim() || `Claude exited ${code ?? signal} without a completed result.`));
+      else if (codex && (entry.parseError || !entry.result.ok)) status(id, 'error', entry.parseError ?? entry.failure ?? entry.codex?.state.failure ?? (entry.stderr.trim().split('\n').slice(-12).join('\n') || `Codex exited ${code ?? signal} without a completed turn.`));
+      else if (!codex && (entry.parseError || code !== 0 || entry.result?.is_error || !entry.result)) status(id, 'error', entry.parseError ?? (entry.result?.errors?.join('\n') || entry.result?.result || entry.stderr.trim() || `Claude exited ${code ?? signal} without a completed result.`));
       else status(id, 'idle');
-    });
-    child.stdin.end(prompt);
+    };
   }
 
-  const json = (response, code, value) => { response.writeHead(code, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }); response.end(JSON.stringify(value)); };
+  /** Validates requested options against the agent's own catalog. Omitted values stay undefined. */
+  const chatOptions = async (agent, input, stored) => {
+    const chosenMode = input.mode === undefined ? undefined : mode(input.mode, agent);
+    if (input.model === undefined && input.effort === undefined) return { mode: chosenMode };
+    const catalog = await catalogFor(agent);
+    if (input.model !== undefined && !checkModel(agent, input.model, catalog)) throw fail(400, 'Unsupported model');
+    const model = input.model ?? stored?.model ?? 'default';
+    // Clients before 0.5 send no agent and only know the legacy effort list, so they keep its rules.
+    const effortCatalog = input.agent === undefined && efforts.includes(input.effort) ? null : catalog;
+    if (input.effort !== undefined && (typeof input.effort !== 'string' || !checkEffort(agent, model, input.effort, effortCatalog))) throw fail(400, 'Unsupported effort for this model');
+    return { mode: chosenMode, model: input.model, effort: input.effort };
+  };
+  // Transcripts are mostly text; gzip keeps phone refreshes small over Tailscale.
+  const json = (response, code, value) => {
+    const payload = JSON.stringify(value), compress = response.gzip && payload.length > 1400;
+    response.writeHead(code, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store', ...(compress ? { 'Content-Encoding': 'gzip', Vary: 'Accept-Encoding' } : {}) });
+    response.end(compress ? gzipSync(payload, { level: 4 }) : payload);
+  };
   const body = async request => {
     let value = '', size = 0; for await (const chunk of request) { size += chunk.length; if (size > 200_000) throw fail(413, 'Request too large'); value += chunk; }
     if (closed) throw fail(503, 'Mac service is shutting down');
     try { const result = JSON.parse(value); if (!result || typeof result !== 'object' || Array.isArray(result)) throw new Error(); return result; } catch { throw fail(400, 'Invalid JSON body'); }
+  };
+  const rawBody = async (request, max) => {
+    const chunks = []; let size = 0;
+    for await (const chunk of request) { size += chunk.length; if (size > max) throw fail(413, 'Image is too large; the limit is 5 MB'); chunks.push(chunk); }
+    if (closed) throw fail(503, 'Mac service is shutting down');
+    return Buffer.concat(chunks);
+  };
+  const imageType = data => data.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])) ? 'image/png' : data[0] === 0xff && data[1] === 0xd8 && data[2] === 0xff ? 'image/jpeg'
+    : data.subarray(0, 4).toString('latin1') === 'RIFF' && data.subarray(8, 12).toString('latin1') === 'WEBP' ? 'image/webp' : ['GIF87a', 'GIF89a'].includes(data.subarray(0, 6).toString('latin1')) ? 'image/gif' : null;
+  const project = id => { const row = get('SELECT * FROM projects WHERE id=?', id); if (!row) throw fail(404, 'Project not found'); return row; };
+  const gitCache = new Map();
+  /** Sessions in a project folder that PocketBridge didn't start, newest first, for continuing on the phone. */
+  const externalSessions = async folder => {
+    const managed = new Set(all('SELECT id FROM chats UNION SELECT agentSession FROM chats WHERE agentSession IS NOT NULL UNION SELECT forkFrom FROM chats WHERE forkFrom IS NOT NULL UNION SELECT id FROM deleted_chats UNION SELECT id FROM hidden_sessions').map(item => item.id));
+    const sessions = [];
+    if (available.claude && enabled.claude) {
+      const encoded = join(claudeProjectsDir, folder.path.replace(/[^a-zA-Z0-9]/g, '-'));
+      const dirs = new Set([encoded, ...[...sessionMeta].filter(([, meta]) => { try { return meta.cwd && realpathSync(meta.cwd) === folder.path; } catch { return false; } }).map(([dir]) => dir)]);
+      for (const dir of dirs) if (existsSync(dir)) sessions.push(...claudeSessions(dir).filter(session => { try { return !session.cwd || realpathSync(session.cwd) === folder.path; } catch { return false; } }));
+    }
+    if (available.codex && enabled.codex && options.codexSessions !== false) {
+      const listed = await codexRequest({ command: paths.codex, cwd: dataDir, env: agentEnv('codex'), signal: probes.signal, timeoutMs: options.catalogTimeoutMs ?? 20_000, method: 'thread/list', params: { cwd: folder.path, limit: 25 } });
+      const seen = new Set();
+      for (const thread of Array.isArray(listed?.data) ? listed.data : []) {
+        if (!thread?.id || seen.has(thread.id) || thread.ephemeral || thread.parentThreadId || (thread.threadSource && thread.threadSource !== 'user')) continue;
+        seen.add(thread.id);
+        sessions.push({ agent: 'codex', id: thread.id, title: oneLine(thread.name || thread.preview, 100) || 'Codex session', updatedAt: Number(thread.updatedAt) * 1000 || 0, lastPrompt: oneLine(thread.preview, 4000) || null, lastReply: null });
+      }
+    }
+    return sessions.filter(session => !managed.has(session.id)).sort((a, b) => b.updatedAt - a.updatedAt).slice(0, 30);
   };
   const pairing = () => {
     const code = randomBytes(5).toString('hex').toUpperCase();
     latestPair = { code, expiresAt: Date.now() + 600_000, url: publicUrl, link: `pocketbridge://pair?url=${encodeURIComponent(publicUrl)}&code=${code}` }; return latestPair;
   };
   const server = http.createServer(async (request, response) => {
+    response.gzip = /\bgzip\b/.test(request.headers['accept-encoding'] ?? '');
     try {
       if (closed) throw fail(503, 'Mac service is shutting down');
       const port = server.address().port;
@@ -365,9 +755,86 @@ export async function createService(options = {}) {
         if (!equal(bearer, localToken) && !(typeof bearer === 'string' && get('SELECT token FROM tokens WHERE token=?', bearer))) throw fail(401, 'Unauthorized');
         if (route === '/api/state' && request.method === 'GET') { refreshDiscovery(); return json(response, 200, state()); }
         if (route === '/api/pairing' && request.method === 'GET') return json(response, 200, pairing());
+        if (route === '/api/usage' && request.method === 'GET') {
+          const agents = await Promise.all(agentIds.map(async agent => ({ id: agent, name: agentNames[agent], available: available[agent], enabled: enabled[agent], ...(enabled[agent] ? (await refreshUsage(agent)) ?? { limits: [] } : { limits: [] }) })));
+          return json(response, 200, { agents });
+        }
+        const agentRoute = route.match(/^\/api\/agents\/([^/]+)$/);
+        if (agentRoute && request.method === 'POST') {
+          const agent = listed(agentRoute[1], agentIds, 'agent'), input = await body(request);
+          if (typeof input.enabled !== 'boolean') throw fail(400, 'enabled must be true or false');
+          enabled[agent] = input.enabled; run('INSERT OR REPLACE INTO settings VALUES (?,?)', `agentEnabled:${agent}`, input.enabled ? '1' : '0');
+          if (input.enabled) { usageAt[agent] = 0; refreshCatalog(agent, true); refreshDiscovery(true); }
+          change('state'); return json(response, 200, agentCatalog(agent));
+        }
         if (route === '/api/pairing/qr' && request.method === 'GET') {
           if (!latestPair || latestPair.expiresAt < Date.now() || (url.searchParams.has('code') && url.searchParams.get('code') !== latestPair.code)) throw fail(410, 'Request a new pairing code');
           response.writeHead(200, { 'Content-Type': 'image/svg+xml', 'Cache-Control': 'no-store' }); response.end(await QRCode.toString(latestPair.link, { type: 'svg', margin: 2, width: 256 })); return;
+        }
+        if (route === '/api/uploads' && request.method === 'POST') {
+          const data = await rawBody(request, 5 * 1024 * 1024), type = imageType(data);
+          // Images never used in a prompt are removed after a day.
+          for (const stale of all('SELECT * FROM uploads WHERE chatId IS NULL AND createdAt<?', Date.now() - 86_400_000)) { rmSync(uploadPath(stale), { force: true }); run('DELETE FROM uploads WHERE id=?', stale.id); }
+          if (!type) throw fail(415, 'Only PNG, JPEG, WebP and GIF images can be attached');
+          const upload = { id: randomUUID(), type, size: data.length };
+          writeFileSync(uploadPath(upload), data, { mode: 0o600 });
+          run('INSERT INTO uploads (id,chatId,type,size,createdAt) VALUES (?,?,?,?,?)', upload.id, null, type, data.length, Date.now());
+          return json(response, 201, upload);
+        }
+        const uploadRoute = route.match(/^\/api\/uploads\/([0-9a-f-]{36})$/);
+        if (uploadRoute && request.method === 'GET') {
+          const upload = get('SELECT * FROM uploads WHERE id=?', uploadRoute[1]); if (!upload || !existsSync(uploadPath(upload))) throw fail(404, 'Image not found');
+          response.writeHead(200, { 'Content-Type': upload.type, 'Cache-Control': 'private, max-age=31536000, immutable', 'X-Content-Type-Options': 'nosniff' }); response.end(readFileSync(uploadPath(upload))); return;
+        }
+        const projectRoute = route.match(/^\/api\/projects\/([^/]+)\/(git|commands|sessions)$/);
+        if (projectRoute && request.method === 'GET') {
+          const folder = project(projectRoute[1]);
+          if (projectRoute[2] === 'git') {
+            // Recomputed at most every few seconds; a turn ending clears it so the counts follow the agent's edits.
+            const cached = gitCache.get(folder.id);
+            if (!cached || Date.now() - cached.at > 4000) gitCache.set(folder.id, { at: Date.now(), value: gitStatus(folder.path) });
+            const git = await gitCache.get(folder.id).value;
+            return json(response, 200, git ? { repo: true, ...git } : { repo: false });
+          }
+          if (projectRoute[2] === 'commands') {
+            const agent = listed(url.searchParams.get('agent') ?? 'claude', agentIds, 'agent'), key = `${folder.id}:${agent}`;
+            if (!available[agent] || !enabled[agent]) return json(response, 200, { commands: [] });
+            const cached = commandLists.get(key);
+            if (!cached || Date.now() - cached.at > 10 * 60_000) {
+              const probe = { command: paths[agent], cwd: folder.path, env: agentEnv(agent), signal: probes.signal, timeoutMs: options.catalogTimeoutMs ?? 20_000 };
+              const value = agent === 'claude' ? claudeCommands(probe) : codexRequest({ ...probe, cwd: dataDir, method: 'skills/list', params: { cwds: [folder.path] } }).then(result => {
+                const skills = (result?.data ?? []).flatMap(item => Array.isArray(item?.skills) ? item.skills : []).filter(skill => skill?.enabled !== false && typeof skill?.name === 'string' && /^[\w:.-]{1,80}$/.test(skill.name) && typeof skill.path === 'string');
+                if (!result) return null;
+                codexSkills.set(folder.id, skills.map(skill => ({ name: skill.name, path: skill.path })));
+                return skills.map(skill => ({ name: skill.name, description: oneLine(skill.interface?.shortDescription || skill.shortDescription || skill.description, 160), hint: '' }));
+              });
+              commandLists.set(key, { at: Date.now(), value: value.then(list => { if (!list) commandLists.delete(key); return list ?? []; }) });
+            }
+            return json(response, 200, { commands: await commandLists.get(key).value });
+          }
+          return json(response, 200, { sessions: (await externalSessions(folder)).map(({ lastPrompt, lastReply, ...session }) => ({ ...session, preview: plainText(lastReply || lastPrompt || '').slice(0, 160) || null })) });
+        }
+        if (route === '/api/chats/continue' && request.method === 'POST') {
+          const input = await body(request), folder = project(text(input.projectId, 'project id', 128)), agent = listed(input.agent, agentIds, 'agent'), sessionId = text(input.sessionId, 'session id', 128);
+          if (!enabled[agent]) throw fail(409, `${agentNames[agent]} is turned off. Turn it on in Settings.`);
+          const waitingChat = get('SELECT id FROM chats WHERE forkFrom=? AND sessionStarted=0', sessionId);
+          if (waitingChat) return json(response, 200, chat(waitingChat.id));
+          const session = (await externalSessions(folder)).find(item => item.id === sessionId && item.agent === agent);
+          if (!session) throw fail(404, 'Session not found in this project');
+          if (closed) throw fail(503, 'Mac service is shutting down');
+          const created = transaction(() => {
+            // Another request for the same session may have created the chat while this one listed sessions.
+            const raced = get('SELECT id FROM chats WHERE forkFrom=? AND sessionStarted=0', sessionId);
+            if (raced) return raced.id;
+            const id = randomUUID(), defaults = catalogs[agent];
+            run('INSERT INTO chats (id,projectId,agent,title,mode,model,effort,status,updatedAt,forkFrom) VALUES (?,?,?,?,?,?,?,?,?,?)', id, folder.id, agent, oneLine(session.title, 160) || 'Continued session', 'bypassPermissions', defaults?.defaultModel ?? 'default', defaults?.defaultEffort ?? 'default', 'idle', Date.now(), sessionId);
+            // Only the last exchange comes along, as context; the full history stays in the session the agent resumes.
+            if (session.lastPrompt) message(id, 'user', session.lastPrompt, randomUUID(), { kind: 'imported' });
+            if (session.lastReply) message(id, 'assistant', session.lastReply, randomUUID(), { kind: 'imported' });
+            change('state', id);
+            return id;
+          });
+          return json(response, 201, chat(created));
         }
         if (route === '/api/projects' && request.method === 'POST') {
           if (!equal(bearer, localToken)) throw fail(403, 'Register projects on the Mac');
@@ -379,8 +846,11 @@ export async function createService(options = {}) {
         }
         if (route === '/api/chats' && request.method === 'POST') {
           const input = await body(request); text(input.projectId, 'project id', 128); if (!get('SELECT id FROM projects WHERE id=?', input.projectId)) throw fail(404, 'Project not found');
-          const id = randomUUID(), chosenModel = input.model === undefined ? 'default' : listed(input.model, models, 'model'), chosenEffort = input.effort === undefined ? 'default' : listed(input.effort, efforts, 'effort');
-          run('INSERT INTO chats (id,projectId,title,mode,model,effort,status,updatedAt) VALUES (?,?,?,?,?,?,?,?)', id, input.projectId, input.title ? text(input.title, 'title', 160) : 'New chat', mode(input.mode ?? 'bypassPermissions'), chosenModel, chosenEffort, 'idle', Date.now()); change('state', id); return json(response, 201, chat(id));
+          const agent = input.agent === undefined ? 'claude' : listed(input.agent, agentIds, 'agent'), options = await chatOptions(agent, input);
+          if (!enabled[agent]) throw fail(409, `${agentNames[agent]} is turned off. Turn it on in Settings.`);
+          if (closed) throw fail(503, 'Mac service is shutting down');
+          const id = randomUUID();
+          run('INSERT INTO chats (id,projectId,agent,title,mode,model,effort,status,updatedAt) VALUES (?,?,?,?,?,?,?,?,?)', id, input.projectId, agent, input.title ? text(input.title, 'title', 160) : 'New chat', options.mode ?? 'bypassPermissions', options.model ?? 'default', options.effort ?? 'default', 'idle', Date.now()); change('state', id); return json(response, 201, chat(id));
         }
         const chatRoute = route.match(/^\/api\/chats\/([^/]+)\/(messages|prompts|stop|delete|rename)$/);
         if (chatRoute) {
@@ -392,6 +862,11 @@ export async function createService(options = {}) {
             if (active.has(id) || ['running', 'stopping', 'waiting'].includes(row.status)) throw fail(409, 'Stop this chat before deleting it');
             transaction(() => {
               run('DELETE FROM messages WHERE chatId=?', id); run('DELETE FROM approvals WHERE chatId=?', id); run('DELETE FROM raw_events WHERE chatId=?', id); run('DELETE FROM runtimes WHERE chatId=?', id);
+              run('DELETE FROM subagents WHERE chatId=?', id);
+              for (const upload of all('SELECT * FROM uploads WHERE chatId=?', id)) rmSync(uploadPath(upload), { force: true });
+              run('DELETE FROM uploads WHERE chatId=?', id);
+              // A deleted Codex chat's thread stays out of "On this Mac" too.
+              const thread = get('SELECT agentSession FROM chats WHERE id=?', id)?.agentSession; if (thread) run('INSERT OR IGNORE INTO hidden_sessions VALUES (?)', thread);
               run('INSERT OR REPLACE INTO deleted_chats VALUES (?,?)', id, Date.now()); run('DELETE FROM chats WHERE id=?', id); change('state', id);
             });
             return json(response, 200, { ok: true });
@@ -399,42 +874,79 @@ export async function createService(options = {}) {
           if (action === 'prompts' && request.method === 'POST') {
             const input = await body(request);
             if (get('SELECT id FROM deleted_chats WHERE id=?', id)) throw fail(410, 'Chat was deleted');
-            const promptId = text(input.id, 'prompt id', 128), prompt = text(input.text, 'prompt');
-            const requestedMode = input.mode === undefined ? undefined : mode(input.mode);
-            const requestedModel = input.model === undefined ? undefined : listed(input.model, models, 'model');
-            const requestedEffort = input.effort === undefined ? undefined : listed(input.effort, efforts, 'effort');
-            const previous = get('SELECT * FROM prompts WHERE id=?', promptId);
-            if (previous) {
-              const same = previous.chatId === id && previous.text === prompt && (requestedMode === undefined || previous.mode === requestedMode) && (requestedModel === undefined || (previous.model ?? 'default') === requestedModel) && (requestedEffort === undefined || (previous.effort ?? 'default') === requestedEffort);
+            const attachmentIds = input.attachments === undefined ? [] : input.attachments;
+            if (!Array.isArray(attachmentIds) || attachmentIds.length > 8 || attachmentIds.some(item => typeof item !== 'string' || !uuid(item))) throw fail(400, 'Attachments must be up to 8 upload ids');
+            // A screenshot alone is a complete prompt; the agent gets a plain instruction to look at it.
+            const imageOnly = attachmentIds.length > 0 && typeof input.text === 'string' && !input.text.trim();
+            const promptId = text(input.id, 'prompt id', 128), prompt = imageOnly ? (attachmentIds.length === 1 ? 'Look at the attached image.' : 'Look at the attached images.') : text(input.text, 'prompt');
+            // A retry is judged on the recorded payload alone, so a later catalog change cannot turn it into a new turn.
+            const recorded = () => get('SELECT * FROM prompts WHERE id=?', promptId);
+            const duplicate = previous => {
+              const same = previous.chatId === id && previous.text === prompt && (previous.attachments ?? '[]') === JSON.stringify(attachmentIds) && (input.mode === undefined || previous.mode === input.mode) && (input.model === undefined || (previous.model ?? 'default') === input.model) && (input.effort === undefined || (previous.effort ?? 'default') === input.effort) && (input.agent === undefined || (previous.agent ?? 'claude') === input.agent);
               if (!same) throw fail(409, 'Prompt id was already used for different content');
               return json(response, 200, { accepted: true, duplicate: true });
-            }
-            const stored = get('SELECT * FROM chats WHERE id=?', id);
+            };
+            if (recorded()) return duplicate(recorded());
+            let stored = get('SELECT * FROM chats WHERE id=?', id);
+            const agent = stored?.agent || (input.agent === undefined ? 'claude' : listed(input.agent, agentIds, 'agent'));
+            if (stored && input.agent !== undefined && input.agent !== agent) throw fail(409, 'Chat already uses another agent');
+            const requested = await chatOptions(agent, input, stored);
+            // Validation may have waited for a model catalog: shutdown or a concurrent retry could have begun meanwhile.
+            if (closed) throw fail(503, 'Mac service is shutting down');
+            if (recorded()) return duplicate(recorded());
+            if (get('SELECT id FROM deleted_chats WHERE id=?', id)) throw fail(410, 'Chat was deleted');
+            stored = get('SELECT * FROM chats WHERE id=?', id);
+            if (stored && (stored.agent || 'claude') !== agent) throw fail(409, 'Chat already uses another agent');
             let project, next;
             if (!stored) {
               if (input.projectId === undefined) throw fail(404, 'Chat not found');
               if (!uuid(id)) throw fail(400, 'Invalid chat id');
               const projectId = text(input.projectId, 'project id', 128);
               project = get('SELECT * FROM projects WHERE id=?', projectId); if (!project) throw fail(404, 'Project not found');
-              next = { projectId, title: prompt.slice(0, 80), mode: requestedMode ?? 'bypassPermissions', model: requestedModel ?? 'default', effort: requestedEffort ?? 'default', status: 'idle' };
+              next = { projectId, title: imageOnly ? (attachmentIds.length === 1 ? 'Screenshot' : 'Screenshots') : prompt.slice(0, 80), mode: requested.mode ?? 'bypassPermissions', model: requested.model ?? 'default', effort: requested.effort ?? 'default', status: 'idle' };
             } else {
               if (input.projectId !== undefined && text(input.projectId, 'project id', 128) !== stored.projectId) throw fail(409, 'Chat already belongs to another project');
               project = get('SELECT * FROM projects WHERE id=?', stored.projectId);
-              next = { projectId: stored.projectId, title: stored.title === 'New chat' ? prompt.slice(0, 80) : stored.title, mode: requestedMode ?? stored.mode, model: requestedModel ?? stored.model ?? 'default', effort: requestedEffort ?? stored.effort ?? 'default', status: stored.status };
+              next = { projectId: stored.projectId, title: stored.title === 'New chat' ? (imageOnly ? (attachmentIds.length === 1 ? 'Screenshot' : 'Screenshots') : prompt.slice(0, 80)) : stored.title, mode: requested.mode ?? stored.mode, model: requested.model ?? stored.model ?? 'default', effort: requested.effort ?? stored.effort ?? 'default', status: stored.status };
             }
-            if (active.has(id) || ['running', 'stopping', 'waiting'].includes(next.status)) throw fail(409, 'Chat is busy; wait or stop it before sending another prompt');
+            // While a turn runs, a prompt can steer it (default for clients that ask) or interrupt it and go next.
+            const busy = active.has(id) || ['running', 'stopping', 'waiting'].includes(next.status);
+            const runner = active.get(id), delivery = busy ? input.delivery : 'turn';
+            if (busy && (!['steer', 'interrupt'].includes(delivery) || !runner || runner.stopped || next.status === 'stopping')) throw fail(409, 'Chat is busy; wait or stop it before sending another prompt');
+            const uploads = attachmentIds.map(uploadId => get('SELECT * FROM uploads WHERE id=?', uploadId));
+            if (uploads.some(upload => !upload || (upload.chatId && upload.chatId !== id) || !existsSync(uploadPath(upload)))) throw fail(400, 'Attachment not found');
             try { if (!statSync(project.path).isDirectory()) throw new Error(); } catch { throw fail(409, 'Project directory is missing'); }
-            if (!claudeAvailable) throw fail(503, 'Claude Code is not installed or could not be started');
+            if (!enabled[agent]) throw fail(409, `${agentNames[agent]} is turned off. Turn it on in Settings.`);
+            if (!available[agent]) throw fail(503, agent === 'codex' ? 'Codex is not installed or could not be started' : 'Claude Code is not installed or could not be started');
             transaction(() => {
-              if (!stored) run('INSERT INTO chats (id,projectId,title,mode,model,effort,status,updatedAt) VALUES (?,?,?,?,?,?,?,?)', id, next.projectId, next.title, next.mode, next.model, next.effort, 'running', Date.now());
+              if (!stored) run('INSERT INTO chats (id,projectId,agent,title,mode,model,effort,status,updatedAt) VALUES (?,?,?,?,?,?,?,?,?)', id, next.projectId, agent, next.title, next.mode, next.model, next.effort, 'running', Date.now());
+              else if (busy) run('UPDATE chats SET mode=?,model=?,effort=?,updatedAt=? WHERE id=?', next.mode, next.model, next.effort, Date.now(), id);
               else run('UPDATE chats SET mode=?,model=?,effort=?,title=?,status=?,error=NULL,updatedAt=? WHERE id=?', next.mode, next.model, next.effort, next.title, 'running', Date.now(), id);
-              run('INSERT INTO prompts (id,chatId,text,mode,model,effort) VALUES (?,?,?,?,?,?)', promptId, id, prompt, next.mode, next.model, next.effort);
-              message(id, 'user', prompt, promptId); change('state', id);
+              run('INSERT INTO prompts (id,chatId,text,mode,model,effort,agent,attachments,delivery) VALUES (?,?,?,?,?,?,?,?,?)', promptId, id, prompt, next.mode, next.model, next.effort, agent, JSON.stringify(attachmentIds), delivery);
+              for (const upload of uploads) run('UPDATE uploads SET chatId=? WHERE id=?', id, upload.id);
+              message(id, 'user', prompt, promptId, { attachments: uploads.map(upload => ({ id: upload.id, type: upload.type })), kind: delivery === 'turn' ? null : delivery }); change('state', id);
             });
-            start(id, prompt); return json(response, 202, { accepted: true, duplicate: false });
+            const handoff = { promptId, text: prompt, attachments: uploads.map(upload => ({ id: upload.id, type: upload.type, path: uploadPath(upload) })), kind: delivery };
+            try { if (busy) runner[delivery](handoff); else start(id, handoff); }
+            catch (error) {
+              // The prompt is recorded, so a retry stays a duplicate; the chat says why it didn't run.
+              console.error(`Chat ${id} start: ${error.stack ?? error.message}`);
+              if (!busy) { const failed = active.get(id); active.delete(id); if (failed?.child?.pid) terminateGroup(failed.child.pid, 1000).catch(() => {}); status(id, 'error', `Could not start ${agentNames[agent]}: ${error.message}`); }
+            }
+            return json(response, 202, { accepted: true, duplicate: false, delivery });
           }
-          const row = chat(id);
-          if (action === 'messages' && request.method === 'GET') return json(response, 200, { messages: all('SELECT * FROM messages WHERE chatId=? ORDER BY rowid', id), approvals: all('SELECT * FROM approvals WHERE chatId=? ORDER BY rowid', id).map(item => ({ ...item, input: JSON.parse(item.input) })) });
+          const row = { ...chat(id), activity: get('SELECT activity FROM chats WHERE id=?', id)?.activity };
+          if (action === 'messages' && request.method === 'GET') {
+            const messages = all('SELECT * FROM messages WHERE chatId=? ORDER BY rowid', id).map(item => {
+              const { attachments, kind, ...rest } = item;
+              return { ...rest, ...(attachments ? { attachments: JSON.parse(attachments) } : {}), ...(kind ? { kind } : {}) };
+            });
+            // Turn timing: each prompt that started a turn, with its end once the agent finished it.
+            const turns = all("SELECT id,startedAt,endedAt FROM prompts WHERE chatId=? AND startedAt IS NOT NULL ORDER BY startedAt", id);
+            const subagents = all('SELECT id,promptId,agent,title,kind,model,effort,status,activity,startedAt,endedAt,toolUses,tokens FROM subagents WHERE chatId=? ORDER BY startedAt', id)
+              .map(item => ({ ...item, model: item.model ? modelDisplay(item.agent, item.model) : null }));
+            return json(response, 200, { messages, approvals: all('SELECT * FROM approvals WHERE chatId=? ORDER BY rowid', id).map(item => ({ ...item, input: JSON.parse(item.input) })), turns, subagents, activity: row.activity ?? null });
+          }
           if (action === 'stop' && request.method === 'POST') { stop(id); return json(response, 200, { ok: true }); }
           if (action === 'rename' && request.method === 'POST') {
             const input = await body(request), title = text(input.title, 'title', 160);
@@ -455,7 +967,7 @@ export async function createService(options = {}) {
         if (route === '/api/events' && request.method === 'GET') {
           const after = Number(url.searchParams.get('after') ?? request.headers['last-event-id'] ?? 0); if (!Number.isSafeInteger(after) || after < 0) throw fail(400, 'Invalid event cursor');
           response.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', Connection: 'keep-alive', 'X-Accel-Buffering': 'no' }); response.write(': connected\n\n');
-          const client = { response, seq: Math.min(after, lastSeq()) }; clients.add(client); replay(client);
+          const client = { response, seq: Math.min(after, lastSeq()), statusOnly: url.searchParams.get('scope') === 'status' }; clients.add(client); replay(client);
           const heartbeat = setInterval(() => { if (!client.replaying) response.write(': keepalive\n\n'); }, 15_000); response.on('close', () => { clearInterval(heartbeat); clients.delete(client); }); return;
         }
         throw fail(404, 'Route not found');
@@ -469,11 +981,11 @@ export async function createService(options = {}) {
   server.requestTimeout = 30_000; server.headersTimeout = 20_000;
   try {
     await new Promise((resolveListening, reject) => { server.once('error', reject); server.listen(options.port ?? Number(process.env.POCKETBRIDGE_PORT ?? 8787), options.host ?? '127.0.0.1', resolveListening); });
-  } catch (error) { closed = true; clearTimeout(eventTimer); releaseOwner(); db.close(); throw error; }
+  } catch (error) { closed = true; probes.abort(); clearTimeout(eventTimer); releaseOwner(); db.close(); throw error; }
   localUrl = `http://127.0.0.1:${server.address().port}`; publicUrl ??= localUrl;
   let closePromise;
   const close = () => closePromise ??= (async () => {
-    closed = true; for (const id of active.keys()) stop(id);
+    closed = true; probes.abort(); for (const id of active.keys()) stop(id);
     while (active.size) await pause(20); clearTimeout(eventTimer);
     for (const client of clients) client.response.end();
     await new Promise(resolveClosed => {
@@ -482,7 +994,7 @@ export async function createService(options = {}) {
     });
     releaseOwner(); db.close();
   })();
-  return { server, url: localUrl, publicUrl, close, state };
+  return { server, url: localUrl, publicUrl, close, state, ready: catalogsReady };
 }
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const service = await createService(); console.log(`PocketBridge listening on ${service.url}`);

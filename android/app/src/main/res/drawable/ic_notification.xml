@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Status bar glyph: the launcher's prompt bubble, cropped to its own bounds. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android" android:width="24dp" android:height="24dp" android:viewportWidth="52" android:viewportHeight="52">
+    <group android:translateX="-28" android:translateY="-30.5">
+        <path android:strokeColor="#FFFFFF" android:strokeWidth="4" android:strokeLineJoin="round" android:pathData="M41,34h26a9,9 0,0 1,9 9v18a9,9 0,0 1,-9 9h-17l-9,9v-9a9,9 0,0 1,-9 -9v-18a9,9 0,0 1,9 -9z" />
+        <path android:strokeColor="#FFFFFF" android:strokeWidth="4.5" android:strokeLineCap="round" android:strokeLineJoin="round" android:pathData="M43,45l7,6l-7,6" />
+        <path android:strokeColor="#FFFFFF" android:strokeWidth="4.5" android:strokeLineCap="round" android:pathData="M56,57h10" />
+    </group>
+</vector>

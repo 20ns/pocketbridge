@@ -14,10 +14,13 @@
     <a class="brand" href="/" aria-label="PocketBridge home"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 17V7a3 3 0 0 1 3-3h4M20 7v10a3 3 0 0 1-3 3h-4M8 12h8m-3-3 3 3-3 3"/></svg><span>PocketBridge</span></a>
     <div class="header-actions">
       <span id="connection" class="connection" data-state="connecting" role="status"><span class="dot" aria-hidden="true"></span><span id="connection-text">Connecting to Mac…</span></span>
+      <button id="usage-toggle" class="quiet usage-toggle" popovertarget="usage-panel" aria-label="Plan usage" hidden><span class="usage-meter" aria-hidden="true"><span id="usage-fill"></span></span><span id="usage-summary">Usage</span></button>
       <button id="settings-toggle" class="quiet" aria-haspopup="dialog" aria-expanded="false" aria-controls="settings"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="7" y="3" width="10" height="18" rx="2.5"/><path d="M11 17.5h2"/></svg><span class="button-text">Connect phone</span></button>
     </div>
   </header>
   <div id="notice" class="notice" role="alert" hidden></div>
+  <div id="usage-panel" class="usage-panel" popover aria-label="Plan usage"></div>
+  <dialog id="viewer" class="viewer" aria-label="Image"><img id="viewer-image" alt=""></dialog>
 
   <dialog id="settings" class="settings" aria-labelledby="settings-title">
     <div class="settings-inner">
@@ -67,9 +70,15 @@
       <label class="sr-only" for="project-select">Project</label>
       <select id="project-select" disabled><option value="">Loading projects…</option></select>
       <button id="new-chat" class="new-chat" disabled><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>New chat</button>
+      <div id="sessions" class="sessions" hidden>
+        <div class="section-title sessions-heading"><h2>On this Mac</h2></div>
+        <div id="session-list" class="session-list"></div>
+      </div>
       <div class="section-title recent-heading"><h2>Recent chats</h2></div>
       <nav id="chat-list" class="chat-list" aria-label="Recent chats"><p class="muted">Loading chats…</p></nav>
       <p id="cli-status" class="sidebar-note" hidden></p>
+      <div class="section-title agents-heading"><h2>Agents</h2></div>
+      <div id="agent-switches" class="agent-switches"></div>
     </aside>
     <div id="scrim" class="scrim" hidden></div>
 
@@ -77,12 +86,12 @@
       <header class="chat-header">
         <div class="chat-heading">
           <h1 id="chat-title">Your Mac, from anywhere</h1>
+          <form id="rename-form" class="rename-form" hidden><label class="sr-only" for="rename-input">Chat name</label><input id="rename-input" maxlength="160" autocomplete="off"></form>
           <p id="chat-meta" class="chat-meta">Choose a project to start a chat.</p>
         </div>
-        <div class="mode-field">
-          <label for="mode">Mode</label>
-          <select id="mode" aria-describedby="mode-help"><option value="bypassPermissions">Bypass permissions</option></select>
-          <p id="mode-help" class="mode-help"></p>
+        <div class="chat-actions">
+          <button id="rename" class="quiet icon-button" type="button" aria-label="Rename chat" title="Rename" hidden><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20h4L18.5 9.5a2.1 2.1 0 0 0-4-4L4 16v4zM13.5 6.5l4 4"/></svg></button>
+          <button id="delete" class="quiet icon-button" type="button" aria-label="Delete chat" title="Delete" hidden><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 7h14M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/></svg></button>
         </div>
       </header>
       <p id="chat-live" class="sr-only" aria-live="polite"></p>
@@ -91,15 +100,28 @@
         <div id="approvals" class="approvals" role="region" aria-label="Claude needs your answer" hidden></div>
       </div>
       <form id="composer" class="composer">
-        <label class="sr-only" for="prompt">Message to Claude</label>
-        <textarea id="prompt" placeholder="Ask Claude to work on this project…" rows="2" disabled></textarea>
-        <div class="composer-footer">
-          <p id="composer-hint" class="composer-hint">Chats started here also appear on your phone.</p>
-          <div class="composer-actions">
-            <button id="stop" class="stop" type="button" hidden><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="7" y="7" width="10" height="10" rx="1.5"/></svg><span>Stop</span></button>
-            <button id="send" type="submit" disabled>Send message</button>
+        <div id="git-bar" class="git-bar" hidden></div>
+        <div id="slash" class="slash-menu" role="listbox" aria-label="Commands" hidden></div>
+        <div class="composer-box">
+          <div id="attachments" class="attachments" hidden></div>
+          <label class="sr-only" for="prompt">Message</label>
+          <textarea id="prompt" placeholder="Message Claude" rows="2" disabled></textarea>
+          <div class="composer-bar">
+            <div class="options">
+              <button id="attach" class="quiet icon-button attach" type="button" aria-label="Attach images" title="Attach images (or paste or drop them)" disabled><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="m3 16 5-5 4 4 3-3 6 6"/><circle cx="15.5" cy="9.5" r="1.5"/></svg></button>
+              <input id="file" type="file" accept="image/png,image/jpeg,image/webp,image/gif" multiple hidden>
+              <label class="sr-only" for="model">Model</label><select id="model" class="pill" disabled></select>
+              <label class="sr-only" for="effort">Effort</label><select id="effort" class="pill" disabled></select>
+              <label class="sr-only" for="mode">Permissions</label><select id="mode" class="pill" disabled></select>
+            </div>
+            <div class="composer-actions">
+              <button id="send-now" class="quiet small send-now" type="button" title="Stop the current step and send this next" hidden>Send now</button>
+              <button id="stop" class="stop" type="button" hidden><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="7" y="7" width="10" height="10" rx="1.5"/></svg><span>Stop</span></button>
+              <button id="send" class="send" type="submit" aria-label="Send" disabled><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 19V5M6 11l6-6 6 6"/></svg></button>
+            </div>
           </div>
         </div>
+        <p id="composer-hint" class="composer-hint">Chats started here also appear on your phone.</p>
       </form>
     </section>
   </main>

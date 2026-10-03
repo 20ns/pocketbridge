@@ -3,17 +3,26 @@ package dev.pocketbridge
 import org.json.JSONArray
 import org.json.JSONObject
 
-/** A saved chat message. Activity text is `Tool\n{json}`, `Tool result\n…`, `Tool failed\n…` or a plain Mac notice. */
-data class Said(val id: String, val role: String, val text: String)
+/**
+ * A saved chat message. Activity text is `Tool\n{json}`, `Tool result\n…`, `Tool failed\n…` or a plain Mac notice.
+ * [kind] is steer, interrupt or imported; [attachments] are image upload ids.
+ */
+data class Said(val id: String, val role: String, val text: String, val createdAt: Long = 0, val kind: String = "", val attachments: List<String> = emptyList())
+
+fun said(message: JSONObject) = Said(
+    message.optString("id"), message.optString("role"), message.optString("text"), message.optLong("createdAt"), message.optString("kind"),
+    message.optJSONArray("attachments")?.objects().orEmpty().mapNotNull { it.optString("id").takeIf(String::isNotBlank) },
+)
 
 /** One tool call paired with its result once that arrives. */
-data class Step(val id: String, val tool: String, val summary: String, val input: String, val result: String? = null, val failed: Boolean = false) {
+data class Step(val id: String, val tool: String, val summary: String, val input: String, val result: String? = null, val failed: Boolean = false, val at: Long = 0) {
     val isNote get() = tool == NOTE
 }
 
 sealed interface Entry { val key: String }
 data class Message(val said: Said) : Entry { override val key get() = said.id }
 data class Steps(val steps: List<Step>) : Entry { override val key get() = "steps:" + steps.first().id }
+data class Agents(val promptId: String, val agents: List<Subagent>) : Entry { override val key get() = "agents:$promptId" }
 
 private const val NOTE = "Note"
 private val summaryKeys = listOf("description", "command", "file_path", "notebook_path", "pattern", "path", "url", "query", "prompt", "skill")
@@ -28,13 +37,14 @@ fun transcript(messages: List<Said>): List<Entry> {
         val head = said.text.substringBefore('\n').trim()
         val body = said.text.substringAfter('\n', "").let { if (head == "Tool result" || head == "Tool failed") resultText(it) else it }
         val isResult = head == "Tool result" || head == "Tool failed"
-        // Parallel tool calls return results in call order, so pair with the oldest call still waiting.
-        val waiting = steps.indexOfFirst { it.result == null && !it.isNote }
+        // The Mac names a result's tool message in its id ("<tool id>:result"). Older transcripts pair in call order.
+        val waiting = if (said.id.endsWith(":result")) steps.indexOfFirst { it.id == said.id.removeSuffix(":result") && it.result == null }
+            else steps.indexOfFirst { it.result == null && !it.isNote }
         when {
             isResult && waiting >= 0 -> steps[waiting] = steps[waiting].copy(result = body, failed = head == "Tool failed")
-            isResult -> steps += Step(said.id, if (head == "Tool failed") "Failed" else "Result", firstLine(body), "", body, head == "Tool failed")
-            body.trimStart().startsWith("{") -> steps += Step(said.id, head, summarize(head, body), body)
-            else -> steps += Step(said.id, NOTE, firstLine(said.text), said.text)
+            isResult -> steps += Step(said.id, if (head == "Tool failed") "Failed" else "Result", firstLine(body), "", body, head == "Tool failed", said.createdAt)
+            body.trimStart().startsWith("{") -> steps += Step(said.id, head, summarize(head, body), body, at = said.createdAt)
+            else -> steps += Step(said.id, NOTE, firstLine(said.text), said.text, at = said.createdAt)
         }
     }
     flush()
@@ -114,4 +124,27 @@ fun decodeAnswers(saved: String): Answers {
         picks.keys().asSequence().associateWith { question -> picks.getJSONArray(question).let { list -> (0 until list.length()).map(list::getString).toSet() } },
         typed.keys().asSequence().associateWith(typed::getString),
     )
+}
+
+/** The tool call still running at the end of the transcript, if any. A sub-agents card placed last doesn't count. */
+fun liveStep(entries: List<Entry>): Step? = (entries.lastOrNull { it !is Agents } as? Steps)?.steps?.lastOrNull { it.result == null && !it.isNote }
+
+/** Keys of replies that close a turn: followed by the next prompt (a steer joins the turn instead), or last once work has stopped. */
+fun turnEnds(entries: List<Entry>, live: Boolean): Set<String> = entries.indices.mapNotNull { index ->
+    val entry = entries[index] as? Message ?: return@mapNotNull null
+    if (entry.said.role != "assistant" || entry.said.text.isBlank()) return@mapNotNull null
+    val next = entries.drop(index + 1).firstOrNull { it is Message && !(it.said.role == "user" && it.said.kind == STEER) }
+    when {
+        next != null -> entry.key.takeIf { (next as Message).said.role == "user" }
+        else -> entry.key.takeIf { !live }
+    }
+}.toSet()
+
+fun elapsedLabel(millis: Long): String {
+    val seconds = (millis / 1000).coerceAtLeast(0)
+    return when {
+        seconds < 60 -> "${seconds}s"
+        seconds < 3600 -> "${seconds / 60}m ${(seconds % 60).toString().padStart(2, '0')}s"
+        else -> "${seconds / 3600}h ${((seconds % 3600) / 60).toString().padStart(2, '0')}m"
+    }
 }

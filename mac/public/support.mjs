@@ -77,7 +77,8 @@ export function summariseInput(input = {}) {
   return {text:''};
 }
 
-// Consecutive activity messages become one group of steps; results attach to the tool use they follow.
+// Consecutive activity messages become one group of steps. The Mac gives a result the id "<tool message id>:result";
+// older transcripts pair each result with the oldest tool call still waiting, the order parallel calls return in.
 export function groupMessages(messages) {
   const items = [];
   let group = null;
@@ -85,11 +86,25 @@ export function groupMessages(messages) {
     if (message.role !== 'activity') { group = null; items.push({type:'message', message}); continue; }
     if (!group) { group = {type:'activity', id:message.id, steps:[]}; items.push(group); }
     const activity = parseActivity(message.text);
-    const last = group.steps.at(-1);
-    if (activity.kind === 'result' && last?.kind === 'tool' && !last.result) last.result = activity;
+    const named = typeof message.id === 'string' && message.id.endsWith(':result') ? message.id.slice(0, -7) : null;
+    const waiting = activity.kind === 'result' && group.steps.find(step => step.kind === 'tool' && !step.result && (named === null || step.id === named));
+    if (waiting) waiting.result = activity;
     else group.steps.push({id:message.id, ...activity, ...(activity.kind === 'tool' ? {summary:summariseInput(activity.input)} : {})});
   }
   return items;
+}
+
+/** The tool call still running at the end of a transcript, for the working line. */
+export function liveStep(items) {
+  const last = items.at(-1);
+  return last?.type === 'activity' ? last.steps.findLast(step => step.kind === 'tool' && !step.result) ?? null : null;
+}
+
+export function elapsedLabel(ms) {
+  const seconds = Math.max(0, Math.floor(ms / 1000));
+  if (seconds < 60) return `${seconds}s`;
+  if (seconds < 3600) return `${Math.floor(seconds / 60)}m ${String(seconds % 60).padStart(2, '0')}s`;
+  return `${Math.floor(seconds / 3600)}h ${String(Math.floor(seconds % 3600 / 60)).padStart(2, '0')}m`;
 }
 
 export function activitySummary(steps) {
@@ -98,6 +113,50 @@ export function activitySummary(steps) {
   const shown = names.length > 4 ? [...names.slice(0, 4), `+${names.length - 4} more`] : names;
   const count = `${steps.length} ${steps.length === 1 ? 'step' : 'steps'}`;
   return {text:[count, shown.join(', ')].filter(Boolean).join(' · '), failed};
+}
+
+// Lightweight highlighting for the languages agents write most. Tokens are plain text; the DOM layer adds classes.
+const words = list => new Set(list.split(' '));
+const keywordSets = {
+  kotlin: words('fun val var if else when for while do return class object interface data sealed private public protected internal override suspend import package try catch finally throw is in as by companion const lateinit enum open abstract inline reified typealias init get set this super null true false'),
+  js: words('const let var function return if else for while do switch case break continue new class extends implements interface type import export from default async await try catch finally throw typeof instanceof in of as readonly public private protected static yield this super null undefined true false void enum declare keyof'),
+  python: words('def class return if elif else for while in not and or is import from as with try except finally raise lambda yield async await pass break continue global nonlocal None True False self'),
+  bash: words('if then else elif fi for while do done case esac function in return export local set unset echo cd source exit'),
+  swift: words('func let var if else guard for while return class struct enum protocol extension import switch case default try catch throw throws async await self nil true false private public internal static override init'),
+  go: words('func package import var const type struct interface map chan go defer return if else for range switch case default break continue nil true false'),
+  rust: words('fn let mut pub struct enum impl trait use mod match if else for while loop return self Self crate super where async await move ref true false None Some Ok Err'),
+  json: words('true false null'),
+};
+const languageAliases = {kt:'kotlin', kts:'kotlin', kotlin:'kotlin', java:'kotlin', scala:'kotlin', ts:'js', tsx:'js', typescript:'js', js:'js', jsx:'js', mjs:'js', javascript:'js', json:'json', jsonc:'json', sh:'bash', bash:'bash', zsh:'bash', shell:'bash', console:'bash', py:'python', python:'python', swift:'swift', go:'go', golang:'go', rs:'rust', rust:'rust'};
+export function highlight(code, language = '') {
+  const lang = languageAliases[String(language).toLowerCase()];
+  if (!lang) return [{text: code, kind: ''}];
+  const hash = lang === 'bash' || lang === 'python';
+  const pattern = new RegExp([
+    hash ? '(#[^\n]*)' : '(\\/\\/[^\n]*|\\/\\*[\\s\\S]*?\\*\\/)',
+    '("(?:[^"\\\\\n]|\\\\.)*"|\'(?:[^\'\\\\\n]|\\\\.)*\'|`(?:[^`\\\\]|\\\\.)*`)',
+    '(\\b\\d[\\d_]*(?:\\.\\d+)?(?:[eE][+-]?\\d+)?\\b|\\b0x[\\da-fA-F]+\\b)',
+    '(@[A-Za-z_]\\w*|\\$\\{?[A-Za-z_]\\w*\\}?)',
+    '([A-Za-z_]\\w*)',
+  ].join('|'), 'g');
+  const tokens = [];
+  let offset = 0;
+  const push = (text, kind) => { if (!text) return; const last = tokens.at(-1); if (last && last.kind === kind) last.text += text; else tokens.push({text, kind}); };
+  for (const match of code.matchAll(pattern)) {
+    push(code.slice(offset, match.index), '');
+    const [token, comment, string, number, annotation, word] = match;
+    const kind = comment ? 'comment' : string ? (lang === 'json' && /^\s*:/.test(code.slice(match.index + token.length)) ? 'property' : 'string')
+      : number ? 'number' : annotation ? (lang === 'bash' ? 'variable' : 'annotation')
+      : keywordSets[lang].has(word) ? 'keyword' : /^[A-Z][A-Za-z0-9]*[a-z]/.test(word) && lang !== 'bash' ? 'type' : '';
+    push(token, kind); offset = match.index + token.length;
+  }
+  push(code.slice(offset), '');
+  return tokens;
+}
+
+/** Diff lines keep their text; additions, removals and hunk headers get a kind for line backgrounds. */
+export function diffLines(code) {
+  return code.split('\n').map(line => ({text: line, kind: line.startsWith('+++') || line.startsWith('---') ? 'meta' : line.startsWith('+') ? 'add' : line.startsWith('-') ? 'del' : line.startsWith('@@') ? 'hunk' : ''}));
 }
 
 export function markdown(text, doc = document) {
@@ -142,8 +201,11 @@ export function markdown(text, doc = document) {
       const head = make('div', undefined, 'code-head');
       const copy = make('button', 'Copy', 'copy-code'); copy.type = 'button';
       head.append(make('span', fence[1] || 'Code'), copy);
-      const pre = doc.createElement('pre'); pre.append(make('code', code.join('\n')));
-      block.append(head, pre); fragment.append(block);
+      const pre = doc.createElement('pre'), source = code.join('\n'), codeNode = make('code');
+      const language = fence[1].toLowerCase();
+      if (language === 'diff' || language === 'patch') for (const line of diffLines(source)) { codeNode.append(make('span', line.text + '\n', `diff-line${line.kind ? ` diff-${line.kind}` : ''}`)); }
+      else { const tokens = highlight(source, language); if (tokens.some(token => token.kind)) for (const token of tokens) codeNode.append(token.kind ? make('span', token.text, `tok-${token.kind}`) : doc.createTextNode(token.text)); else codeNode.textContent = source; }
+      pre.append(codeNode); block.append(head, pre); fragment.append(block);
     } else if (/^\s*([-*_])(\s*\1){2,}\s*$/.test(line)) {
       flush(); fragment.append(doc.createElement('hr'));
     } else if (/^#{1,6} /.test(line)) {
@@ -153,11 +215,13 @@ export function markdown(text, doc = document) {
       flush();
       const wrap = make('div', undefined, 'table-wrap'), table = doc.createElement('table');
       const head = doc.createElement('thead'), body = doc.createElement('tbody'), headRow = doc.createElement('tr');
-      for (const cell of cells(line)) { const th = doc.createElement('th'); inline(th, cell); headRow.append(th); }
+      // ":---:" centres a column and "---:" right-aligns it, which keeps numbers lined up.
+      const align = cells(lines[i + 1]).map(rule => rule.endsWith(':') ? (rule.startsWith(':') ? 'align-center' : 'align-right') : '');
+      cells(line).forEach((cell, column) => { const th = doc.createElement('th'); if (align[column]) th.className = align[column]; inline(th, cell); headRow.append(th); });
       head.append(headRow); i++;
       while (i + 1 < lines.length && lines[i + 1].includes('|') && lines[i + 1].trim()) {
         const row = doc.createElement('tr');
-        for (const cell of cells(lines[++i])) { const td = doc.createElement('td'); inline(td, cell); row.append(td); }
+        cells(lines[++i]).forEach((cell, column) => { const td = doc.createElement('td'); if (align[column]) td.className = align[column]; inline(td, cell); row.append(td); });
         body.append(row);
       }
       table.append(head, body); wrap.append(table); fragment.append(wrap);
@@ -185,27 +249,145 @@ export function markdown(text, doc = document) {
   return fragment;
 }
 
-// A delivery id is fixed once a send is attempted. Later option changes retry that same payload.
-export function editDraft(previous, text, mode) {
+// Agent catalogs come from the Mac. A Mac before 0.5 lists only Claude's aliases.
+export function agentsFrom(capabilities = {}) {
+  if (Array.isArray(capabilities.agents) && capabilities.agents.length) return capabilities.agents;
+  const efforts = (capabilities.efforts ?? []).filter(effort => effort !== 'default');
+  const models = (capabilities.models ?? []).filter(model => model !== 'default').map(id => {
+    const supported = id === 'haiku' ? [] : efforts;
+    return {id, name: id[0].toUpperCase() + id.slice(1), description: '', efforts: supported, defaultEffort: supported.includes('high') ? 'high' : supported.at(-1) ?? 'default'};
+  });
+  return [{id:'claude', name:'Claude', available:true, modes:capabilities.modes ?? ['bypassPermissions'], models, defaultModel:models[0]?.id ?? 'default', defaultEffort:'default'}];
+}
+export const findModel = (agent, id) => agent?.models.find(model => model.id === id) ?? (id === 'default' ? agent?.models.find(model => model.id === agent.defaultModel) : undefined);
+
+/** Concrete options: the wanted choice where the agent still offers it, otherwise its defaults. Same rules as Android. */
+export function resolveOptions(agent, wanted = {}) {
+  const model = wanted.model && wanted.model !== 'default' && (!agent.models.length || agent.models.some(item => item.id === wanted.model)) ? wanted.model : agent.defaultModel;
+  const info = findModel(agent, model);
+  const effort = !info ? wanted.effort ?? agent.defaultEffort
+    : !info.efforts.length ? 'default'
+    : info.efforts.includes(wanted.effort) ? wanted.effort
+    : model === agent.defaultModel && info.efforts.includes(agent.defaultEffort) ? agent.defaultEffort
+    : info.defaultEffort;
+  return {agent: agent.id, mode: equivalentMode(wanted.mode, agent.modes), model, effort};
+}
+
+// Moving a chat between agents never widens what it may do: Plan and Read only map to each other, Accept edits to
+// Auto, Manual to Read only, and anything else unknown to the most restrictive mode on offer.
+const sameIntent = {plan: 'readOnly', readOnly: 'plan', acceptEdits: 'auto', default: 'readOnly'};
+const strictest = ['readOnly', 'plan', 'default', 'acceptEdits', 'auto', 'bypassPermissions'];
+export function equivalentMode(mode, modes) {
+  if (!modes.length) return mode ?? 'bypassPermissions';
+  if (modes.includes(mode)) return mode;
+  if (mode === undefined) return modes.includes('bypassPermissions') ? 'bypassPermissions' : modes[0];
+  if (modes.includes(sameIntent[mode])) return sameIntent[mode];
+  return strictest.find(item => modes.includes(item)) ?? modes[0];
+}
+
+/** Saved options with an effort the model doesn't list (chats from older clients) send the model's own default. */
+export function supportedOptions(agent, options) {
+  const info = findModel(agent, options.model);
+  if (!info || options.effort === 'default' || info.efforts.includes(options.effort)) return options;
+  return {...options, effort: info.efforts.length ? info.defaultEffort : 'default'};
+}
+
+export const modeLabels = {bypassPermissions:'Bypass permissions', auto:'Auto', acceptEdits:'Accept edits', plan:'Plan', default:'Manual', readOnly:'Read only'};
+export const effortLabels = {default:'Auto', minimal:'Minimal', low:'Low', medium:'Medium', high:'High', xhigh:'Extra high', max:'Max', ultra:'Ultra'};
+export function modeHelp(agent, mode) {
+  return {
+    bypassPermissions: agent === 'codex' ? 'No sandbox and no prompts.' : 'Runs commands and edits files without asking.',
+    auto: agent === 'codex' ? 'Edits inside the project folder; nothing outside it.' : 'Works alone while a safety check blocks risky actions.',
+    acceptEdits: 'Edits files freely, asks before commands.',
+    plan: 'Explores and proposes a plan before changing anything.',
+    readOnly: 'Reads and answers. Changes nothing.',
+    default: 'Asks before every edit and command.',
+  }[mode] ?? '';
+}
+export const modelName = (agent, id) => findModel(agent, id)?.name ?? (id === 'default' ? 'Default' : id);
+export function effortName(agent, model, effort) {
+  if (effort !== 'default') return effortLabels[effort] ?? effort;
+  const info = findModel(agent, model);
+  if (!info?.efforts.length) return 'Auto';
+  if (info.efforts.includes(agent.defaultEffort)) return effortLabels[agent.defaultEffort] ?? agent.defaultEffort;
+  return effortLabels[info.defaultEffort] ?? 'Auto';
+}
+
+/** Installed and switched on. Catalogs from a Mac before the switch existed count as on. */
+export const usableAgent = agent => Boolean(agent?.available) && agent.enabled !== false;
+/** A new chat starts with the last agent used while it's on, else the first one on; null when none is. */
+export function newChatAgent(agents, last) {
+  if (!agents.length) return 'claude';
+  return agents.find(agent => agent.id === last && usableAgent(agent))?.id ?? agents.find(usableAgent)?.id ?? null;
+}
+
+// A delivery id is fixed once a send is attempted; that attempt keeps its options. Editing the text starts a new delivery.
+export function editDraft(previous, text) {
   if (previous?.attempted && previous.text === text) return previous;
-  if (previous?.attempted) return {text, id: crypto.randomUUID(), mode, model: previous.model || 'default', effort: previous.effort || 'default', attempted: false};
-  return {text, id: previous?.id ?? crypto.randomUUID(), mode, model: previous?.model || 'default', effort: previous?.effort || 'default', attempted: false};
+  if (previous?.attempted) return {text, id: crypto.randomUUID(), attempted: false, attachments: previous.attachments ?? [], ...(previous.projectId ? {projectId: previous.projectId} : {})};
+  return {...previous, text, id: previous?.id ?? crypto.randomUUID(), attempted: false};
+}
+
+/** The same draft with a new set of images; an attempted delivery keeps its own and starts a new one instead. */
+export function withAttachments(previous, attachments) {
+  if (previous?.attempted) return {text: previous.text, id: crypto.randomUUID(), attempted: false, attachments, ...(previous.projectId ? {projectId: previous.projectId} : {})};
+  return {text: '', ...previous, id: previous?.id ?? crypto.randomUUID(), attempted: false, attachments};
 }
 
 export function blankLocalDraft(draft) {
-  return !draft?.attempted && !String(draft?.text ?? '').trim();
+  return !draft?.attempted && !String(draft?.text ?? '').trim() && !draft?.attachments?.length;
 }
 
-export function prepareDelivery(draft, text, mode, chat) {
+export function prepareDelivery(draft, text, options = {}, delivery = null) {
   if (draft?.attempted && draft.text === text) return draft;
-  const model = chat?.model || draft?.model || 'default';
-  const effort = chat?.effort || draft?.effort || 'default';
-  if (draft && !draft.attempted) return {...draft, text, mode: mode ?? draft.mode, model, effort, attempted: true};
-  return {text, id: crypto.randomUUID(), mode, model, effort, attempted: true};
+  const id = draft && !draft.attempted ? draft.id : crypto.randomUUID();
+  const attachments = (draft?.attachments ?? []).filter(item => item.id).map(({id: uploadId, type}) => ({id: uploadId, type}));
+  return {...(draft?.projectId ? {projectId: draft.projectId} : {}), text, id, agent: options.agent ?? 'claude', mode: options.mode ?? 'bypassPermissions', model: options.model || 'default', effort: options.effort || 'default', attachments, ...(delivery ? {delivery} : {}), attempted: true};
 }
 
 export function promptPayload(draft, projectId) {
-  const body = {id: draft.id, text: String(draft.text ?? '').trim(), mode: draft.mode, model: draft.model || 'default', effort: draft.effort || 'default'};
+  const body = {id: draft.id, text: String(draft.text ?? '').trim(), agent: draft.agent ?? 'claude', mode: draft.mode, model: draft.model || 'default', effort: draft.effort || 'default'};
+  if (draft.attachments?.length) body.attachments = draft.attachments.map(item => item.id);
+  if (draft.delivery) body.delivery = draft.delivery;
   if (projectId) body.projectId = projectId;
   return body;
+}
+
+/** "/" commands that start with what's typed after the slash; name matches come before description matches. */
+export function slashMatches(commands, text) {
+  const typed = /^\/([^\s]*)$/.exec(text)?.[1];
+  if (typed === undefined) return [];
+  const query = typed.toLowerCase();
+  const starts = commands.filter(command => command.name.toLowerCase().startsWith(query));
+  const contains = commands.filter(command => !starts.includes(command) && (command.name.toLowerCase().includes(query) || command.description?.toLowerCase().includes(query)));
+  return [...starts, ...contains].slice(0, 12);
+}
+
+/**
+ * Where turn timing and sub-agents go in a transcript: for each message index that closes a finished turn, its
+ * duration; and for each turn, its sub-agents. A turn runs from its prompt to the next prompt that starts a turn.
+ */
+export function turnPlacement(messages, turns = [], subagents = []) {
+  const starts = new Map(turns.map(turn => [turn.id, turn]));
+  const ends = new Map(), agents = new Map();
+  let current = null, lastIndex = -1;
+  const close = () => { if (current) ends.set(lastIndex, current); };
+  messages.forEach((message, index) => {
+    if (message.role === 'user' && starts.has(message.id)) { close(); current = starts.get(message.id); }
+    lastIndex = index;
+  });
+  close();
+  for (const agent of subagents) { const list = agents.get(agent.promptId) ?? []; list.push(agent); agents.set(agent.promptId, list); }
+  return {ends, agents};
+}
+
+/** "in 2h 24m" within a day, otherwise the weekday and time, or the date beyond a week. */
+export function resetLabel(resetsAt, now = Date.now(), locale = undefined) {
+  if (!resetsAt) return '';
+  const minutes = Math.max(0, Math.round((resetsAt - now) / 60000));
+  if (minutes < 60) return `Resets in ${minutes}m`;
+  if (minutes < 24 * 60) return `Resets in ${Math.floor(minutes / 60)}h ${String(minutes % 60).padStart(2, '0')}m`;
+  const date = new Date(resetsAt);
+  const day = minutes < 7 * 24 * 60 ? date.toLocaleDateString(locale, {weekday:'short'}) : date.toLocaleDateString(locale, {month:'short', day:'numeric'});
+  return `Resets ${day} ${date.toLocaleTimeString(locale, {hour:'numeric', minute:'2-digit'})}`;
 }

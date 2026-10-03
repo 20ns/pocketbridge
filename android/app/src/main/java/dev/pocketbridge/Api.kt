@@ -14,6 +14,7 @@ import okhttp3.RequestBody
 import okio.BufferedSink
 import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.MediaType.Companion.toMediaType
+import org.json.JSONArray
 import org.json.JSONObject
 
 class ApiError(val status: Int, message: String) : IOException(message) {
@@ -62,12 +63,31 @@ class Api(val base: String, val token: String = "") {
             result ?: throw IOException("The Mac returned an unreadable response.")
         }
     }
-    suspend fun watch(after: Long, onLine: (String) -> Unit) = events(after).consume { response ->
+    /** One image as raw bytes. Single attempt like every mutation; an unowned upload left behind is harmless. */
+    suspend fun upload(bytes: ByteArray, type: String): JSONObject {
+        val request = Request.Builder().url("$base/api/uploads").header("Authorization", "Bearer $token").post(bytes.toRequestBody(type.toMediaType())).build()
+        return client.newCall(request).consume { response ->
+            val result = runCatching { JSONObject(response.body?.string().orEmpty()) }.getOrNull()
+            if (!response.isSuccessful) throw ApiError(response.code, result?.optString("error")?.takeIf { it.isNotBlank() } ?: "The Mac rejected the image (${response.code}).")
+            result?.takeIf { it.optString("id").isNotBlank() } ?: throw IOException("The Mac returned an unreadable response.")
+        }
+    }
+    /** Raw bytes of a GET, refused past [limit] so a wrong answer can't fill memory. */
+    suspend fun bytes(path: String, limit: Long = 12L * 1024 * 1024): ByteArray = readClient.newCall(Request.Builder().url(base + path).header("Authorization", "Bearer $token").build()).consume { response ->
+        if (!response.isSuccessful) throw ApiError(response.code, "The Mac couldn't send that image (${response.code}).")
+        val body = response.body ?: throw IOException("The Mac returned an empty image.")
+        if (body.contentLength() > limit) throw IOException("The image is too large.")
+        val source = body.source()
+        if (source.request(limit + 1)) throw IOException("The image is too large.")
+        source.buffer.readByteArray()
+    }
+    suspend fun watch(after: Long, scope: String = "", onLine: (String) -> Unit) = events(after, scope).consume { response ->
         if (!response.isSuccessful) throw ApiError(response.code, "Cannot stream changes (${response.code}).")
         val source = response.body?.source() ?: throw IOException("The Mac returned an empty stream.")
         while (!source.exhausted()) onLine(source.readUtf8Line() ?: break)
     }
-    fun events(after: Long) = streamClient.newCall(Request.Builder().url("$base/api/events?after=$after").header("Authorization", "Bearer $token").header("Accept", "text/event-stream").build())
+    /** [scope] "status" leaves streaming text out, for the background alerts connection. */
+    fun events(after: Long, scope: String = "") = streamClient.newCall(Request.Builder().url("$base/api/events?after=$after" + if (scope.isEmpty()) "" else "&scope=$scope").header("Authorization", "Bearer $token").header("Accept", "text/event-stream").build())
 }
 
 /** Cancellation closes both ordinary requests and the long-lived SSE response. */
@@ -88,8 +108,18 @@ data class PendingPrompt(
     val model: String = "default",
     val effort: String = "default",
     val projectId: String = "",
+    val agent: String = CLAUDE,
+    /** Upload ids, recorded with the delivery id so Retry sends exactly these images again. */
+    val attachments: List<String> = emptyList(),
+    /** "steer" or "interrupt" when written while a turn ran; null starts a turn. Retry keeps it. */
+    val delivery: String? = null,
 ) {
-    fun json() = JSONObject().put("id", id).put("text", text).put("mode", mode).put("model", model).put("effort", effort).apply { if (projectId.isNotBlank()) put("projectId", projectId) }
+    val options get() = ChatOptions(mode, model, effort, agent)
+    fun json() = JSONObject().put("id", id).put("text", text).put("agent", agent).put("mode", mode).put("model", model).put("effort", effort).apply {
+        if (projectId.isNotBlank()) put("projectId", projectId)
+        if (attachments.isNotEmpty()) put("attachments", JSONArray(attachments))
+        if (delivery != null) put("delivery", delivery)
+    }
     companion object {
         fun parse(value: String) = JSONObject(value).let {
             PendingPrompt(
@@ -99,10 +129,16 @@ data class PendingPrompt(
                 it.optString("model", "default"),
                 it.optString("effort", "default"),
                 it.optString("projectId"),
+                it.optString("agent", CLAUDE),
+                it.optJSONArray("attachments").strings(),
+                it.optString("delivery").takeIf { delivery -> delivery == STEER || delivery == INTERRUPT },
             )
         }
     }
 }
+
+const val STEER = "steer"
+const val INTERRUPT = "interrupt"
 
 /** SSE IDs are only committed after the snapshot has been successfully reconciled. */
 class EventCursor(var committed: Long = 0) {

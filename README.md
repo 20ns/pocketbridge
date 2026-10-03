@@ -1,7 +1,7 @@
 # PocketBridge
 
-A personal Android controller for Claude Code running on your MacBook.
-The Mac keeps the project, Claude login and chat history. Your phone sends prompts,
+A personal Android controller for Claude Code and Codex running on your MacBook.
+The Mac keeps the project, each CLI's login and chat history. Your phone sends prompts,
 reads streamed replies and activity, answers questions and stops a turn.
 
 Start with [START-HERE.txt](START-HERE.txt). Source structure and working rules are
@@ -40,6 +40,6 @@ cd android
 POCKETBRIDGE_SIGNING_KEY="$HOME/.android/debug.keystore" ./gradlew assembleRelease testDebugUnitTest lintRelease
 ```
 
-Claude and Tailscale can each require account renewal independently of saved
+Claude, Codex and Tailscale can each require account renewal independently of saved
 PocketBridge pairing. The Mac must be awake, online, plugged in and lid open.
 Actual phone/network verification is recorded separately in TEST-REPORT.txt.
