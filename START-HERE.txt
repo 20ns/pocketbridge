@@ -26,7 +26,8 @@ prompt, read streamed text/activity, answer questions and use Stop when needed.
 The Mac continues a turn while the app is closed. Reopening catches up.
 
 Latest shows recently used project folders; All includes older projects. Sort
-projects and chats as needed. New chat stays unsaved until you send a prompt.
+projects and chats as needed. Empty new chats stay unsaved. Typed drafts remain
+in Recent chats on the phone until sent.
 Hold a saved chat for Rename or Delete, or use its menu. Stop active work before
 deleting. Conversation options choose the model, effort and permission mode for
 the next prompt. Settings checks for APK updates; Android may ask you to allow

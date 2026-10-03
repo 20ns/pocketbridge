@@ -320,7 +320,7 @@ Question cards use a tonal fill, amber border and 16dp padding. Native radios or
 
 ### Lists and chat options
 
-New chat is an extended floating action. Long press or the overflow menu opens Rename and Delete in native dialogs. Delete stays unavailable while that chat is working. An empty chat with nothing sent remains a local draft. Options opens a native bottom sheet titled Next prompt. Permission, model and effort are compact menu chips: an assist chip at least 48dp tall shows the current value, and a dropdown lists the choices. Apply is a full-width filled button. Haiku keeps default effort, disables the effort chip and says it does not support effort levels. Pickers and Apply stay disabled while a prompt is unconfirmed or Claude is working.
+New chat is an extended floating action. Long press or the overflow menu opens Rename and Delete in native dialogs. Delete stays unavailable while that chat is working. An untouched blank chat stays out of Recent chats. Typed drafts use their prompt text as the preview and show Draft; they can be deleted locally while offline. Unconfirmed first prompts show Not confirmed and stay openable without a Delete action until delivery resolves. Server rows replace local rows with the same ID. Options opens a native bottom sheet titled Next prompt. Permission, model and effort are compact menu chips: an assist chip at least 48dp tall shows the current value, and a dropdown lists the choices. Apply is a full-width filled button. Haiku keeps default effort, disables the effort chip and says it does not support effort levels. Pickers and Apply stay disabled while a prompt is unconfirmed or Claude is working.
 
 ### App updates
 

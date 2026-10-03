@@ -1,3 +1,82 @@
+PocketBridge 0.4.1 repeated-use verification, 3 October 2026
+
+AUTOMATED CHECKS
+- Mac: pnpm test, 30 passed, zero failures.
+- Android: signed assembleRelease, testDebugUnitTest and lintRelease passed.
+  50 JVM tests, zero failures/errors.
+- New Mac regression: 60 first/resumed turns across ten chats, three simultaneous
+  requests per delivery. Exactly 60 acceptances, 120 duplicate acknowledgements,
+  60 CLI executions and 60 user messages. Conflicting retry options return 409;
+  ten deletions reject late first prompts with 410 and leave no managed chats.
+- A separate subagent stress harness repeated 180 requests / 60 turns using an
+  isolated fake CLI and temporary database. No duplicate executions occurred.
+- Android regressions cover multiple typed drafts, blank exclusion, pending
+  first-prompt visibility, project filtering/server deduplication and confirmed
+  deletion persistence. SharedPreferences failure tests model in-memory mutation
+  even when commit reports failure; no disk rollback guarantee is claimed.
+
+NATIVE AND REAL CLAUDE CHECKS
+Android 16 ARM64 emulator; isolated service on 8799 and the official Claude CLI
+2.1.285. The production service, pairing and chats were not used for test mutations.
+- Before the fix, a typed first-chat draft disappeared from Recent chats after
+  Back. The corrected APK recovered that existing 0.4 draft with its text intact.
+- Opening and leaving an untouched blank chat added no recent row or server chat.
+- Sonnet / Low / Bypass ran a command once after native Retry; the phone was
+  force-stopped while the Mac worked. The proof file contains exactly one line.
+- Haiku / Default / Bypass read the proof without editing it. The native options
+  survived application restart; Haiku did not retain an unsupported effort level.
+- Manual mode displayed the Bash approval. Allow started a delayed write; native
+  Stop interrupted it before the marker file was written.
+
+- Two typed drafts had distinct previews and survived Back/project navigation and
+  app restart. With the Mac unavailable, local deletion immediately removed its
+  row while retaining the sibling draft.
+- Two unconfirmed first prompts remained reachable from Recent chats. One was
+  force-stopped, reopened from the list with its original text and Retry, then
+  retried after the Mac had accepted it. Exactly one saved delivery and one user
+  message remained; the existing reply was not executed again.
+- A saved chat was deleted through the native confirmation dialog. After force-stop
+  and reopening, it remained absent and no pending Retry state returned.
+- After installing the final source fixture, another saved chat was deleted.
+  The Mac test service was paused before Android restarted; its cached list
+  kept that chat removed and retained the sibling draft without a fresh snapshot.
+- Recovery fixes were exercised in a versionCode4 fixture containing the 0.4.1
+  source, preserving the installed app's data for the later public upgrade test.
+
+INDEPENDENT REVIEW AND FIXES
+Cursor Grok subagents ran backend concurrency tests, reviewed Android recovery
+paths and implemented the draft/deletion fixes. Root review caught a missing
+Compose invalidation for offline deletion and misleading blank preview titles;
+these were corrected and verified with the expanded Android test suite.
+
+The final independent GPT-5.5 review found a stale cached-list deletion window.
+The fix serializes deletion with snapshot reconciliation and removes the cached
+row, matching selection and delivery state in one durable preferences commit.
+A regression checks committed state after reload, sibling preservation and
+malformed disposable-cache handling. GPT-5.5 verdict pass: disposition ship for
+the scored deletion fix, no introduced regressions found in its allowed scope.
+The earlier visual review matched typed/pending draft rows and dark/large text.
+A fresh Cursor Grok documenter checked the native source and design system;
+no additional system changes were needed. Existing tokens remained unchanged.
+PUBLIC DISTRIBUTION
+- GitHub push and signed-release workflows both passed on source fdd9c2b.
+  30 Mac tests, 50 Android tests, debug/release builds and lint passed.
+- Published v0.4.1 APK: dev.pocketbridge, versionCode5, target API36,
+  non-debuggable, original signing certificate retained. SHA256:
+  824c1463fb9918de3a9c18c09fdd86832cbbb0b6f6ce0036981f11f06bb41c0a
+- The Mac's APK was updated atomically to those exact GitHub bytes; its served
+  download has the same checksum. Production health is OK, 11 project folders
+  and three managed chats preserved; the production service was not restarted.
+- Native Settings found public version0.4.1 and downloaded it without GitHub login.
+  SHA256/package/signer verification passed. Android's native installer updated
+  the app to0.4.1. It reopened Connected with pairing retained, and Settings
+  reported the latest version. The recovered typed draft and deleted-chat state
+  also survived that public APK update. No uninstall/data clearing was used.
+
+The checks above used an emulator, not an attached physical S25 Ultra. Existing
+0.4 phone installs can use Settings or install the public APK in place. Never
+uninstall first. The full earlier0.4 verification remains below for context.
+
 PocketBridge 0.4.0 verification, 3 October 2026
 
 AUTOMATED CHECKS
