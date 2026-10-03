@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {EventDecoder, safeLink, markdown, parseActivity, summariseInput, groupMessages, activitySummary, statusLabel, relativeTime} from '../public/support.mjs';
+import {EventDecoder, safeLink, markdown, parseActivity, summariseInput, groupMessages, activitySummary, statusLabel, relativeTime, editDraft, prepareDelivery, promptPayload, blankLocalDraft} from '../public/support.mjs';
 
 // A tiny DOM records writes. No browser or dependency is needed to assert the trust boundary.
 const fakeDoc = () => ({
@@ -87,6 +87,46 @@ test('consecutive activity groups by first message id and attaches results', () 
   assert.deepEqual(group.steps[0].summary, {text:'Api.kt', title:'/a/Api.kt'});
   assert.deepEqual(activitySummary(group.steps), {text:'7 steps · Read, Bash, Grep, Edit, +2 more', failed:1});
   assert.deepEqual(activitySummary(tail.steps), {text:'1 step', failed:0});
+});
+
+test('draft delivery keeps an attempted id and sends the project only before the chat exists', () => {
+  const typed = editDraft(undefined, 'hello', 'plan');
+  const edited = editDraft(typed, 'hello!', 'bypassPermissions');
+  assert.equal(edited.id, typed.id);
+  assert.equal(edited.attempted, false);
+  const pending = prepareDelivery(edited, 'hello!', 'auto');
+  assert.equal(pending.id, typed.id);
+  assert.equal(pending.attempted, true);
+  assert.equal(pending.mode, 'auto');
+  assert.equal(pending.model, 'default');
+  assert.equal(pending.effort, 'default');
+  assert.equal(prepareDelivery(pending, 'hello!', 'plan'), pending);
+  const changed = prepareDelivery(pending, 'different', 'plan');
+  assert.notEqual(changed.id, pending.id);
+  assert.equal(changed.mode, 'plan');
+  assert.equal(changed.effort, 'default');
+  assert.deepEqual(promptPayload(pending, 'project-1'), {id: pending.id, text: 'hello!', mode: 'auto', model: 'default', effort: 'default', projectId: 'project-1'});
+  assert.equal('projectId' in promptPayload(pending), false);
+  assert.equal(blankLocalDraft(undefined), true);
+  assert.equal(blankLocalDraft({text:'  ', attempted:false}), true);
+  assert.equal(blankLocalDraft({text:'hello', attempted:false}), false);
+  assert.equal(blankLocalDraft({text:'', attempted:true}), false);
+});
+
+test('prepareDelivery keeps the open chat model and effort until that delivery is attempted', () => {
+  const typed = editDraft(undefined, 'hello', 'bypassPermissions');
+  const pending = prepareDelivery(typed, 'hello', 'bypassPermissions', {model:'opus', effort:'high'});
+  assert.equal(pending.id, typed.id);
+  assert.equal(pending.attempted, true);
+  assert.equal(pending.mode, 'bypassPermissions');
+  assert.equal(pending.model, 'opus');
+  assert.equal(pending.effort, 'high');
+  const retry = prepareDelivery(pending, 'hello', 'plan', {model:'sonnet', effort:'low'});
+  assert.equal(retry, pending);
+  assert.equal(retry.id, pending.id);
+  assert.equal(retry.mode, 'bypassPermissions');
+  assert.equal(retry.model, 'opus');
+  assert.equal(retry.effort, 'high');
 });
 
 test('status labels and relative times use plain language', () => {

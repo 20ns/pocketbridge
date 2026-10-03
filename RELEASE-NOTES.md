@@ -1,19 +1,17 @@
-PocketBridge 0.3.0 improves Android chat navigation and connection recovery.
+PocketBridge 0.4.0
 
-Choose a Mac project, start or reopen a chat, and send prompts from your phone.
-Replies and tool activity stream while the app is open. Reopening catches up
-with work that continued on the Mac.
+- Project folders are discovered from local Claude Code chats. Their old
+  conversations are not imported. Choose Latest or All and change the ordering.
+- New chat stays a draft until you send the first prompt.
+- Hold a chat, or use its menu, to rename or delete it. Stop active work first.
+- Conversation options select the model, effort and permission mode for the next prompt.
+- Settings checks public GitHub releases and downloads a signed APK. Android
+  confirms installation. Pairing and drafts remain when updating the existing app.
+- The phone interface uses quieter lists and a compact options sheet.
 
-Install the APK while signed into this private repository. Keep Tailscale running
-on both devices and finish the one-time pairing described in START-HERE.txt.
-This APK updates earlier PocketBridge builds in place using the same certificate.
+Install this APK over the existing PocketBridge app. Version 0.3.0 needs this one
+manual installation to gain the Settings updater. Keep Tailscale connected on
+both devices and the Mac awake, plugged in and lid open.
 
-Android 16 emulator verification is separate from testing on the physical S25 Ultra.
-
-The phone interface now uses project navigation, plain messaging bubbles and a fixed
-composer. Recovery preserves drafts, question answers and delivery IDs. Idle mutations
-use fresh connections and never silently resend. Mac ownership and tool cleanup
-prevent a second service from disturbing a running turn.
-
-Validation: 24 Mac tests and 33 Android tests passed, plus Android debug/release
-builds, lint and real-Claude checks from the Android 16 emulator.
+Source and releases: https://github.com/20ns/pocketbridge
+The Mac connection, Claude login and personal chat data remain private.

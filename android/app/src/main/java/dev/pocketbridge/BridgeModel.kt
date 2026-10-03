@@ -25,9 +25,28 @@ import org.json.JSONObject
 
 fun JSONArray.objects() = (0 until length()).map { getJSONObject(it) }
 
+data class DraftChat(val id: String, val projectId: String, val mode: String, val model: String = "default", val effort: String = "default") {
+    fun json() = JSONObject().put("id", id).put("projectId", projectId).put("mode", mode).put("model", model).put("effort", effort).put("title", "New chat").put("status", "idle").put("updatedAt", System.currentTimeMillis())
+    fun store() = JSONObject().put("projectId", projectId).put("mode", mode).put("model", model).put("effort", effort).toString()
+    companion object {
+        fun parse(id: String, value: String) = JSONObject(value).let { DraftChat(id, it.getString("projectId"), it.optString("mode", "bypassPermissions"), it.optString("model", "default"), it.optString("effort", "default")) }
+    }
+}
+
+data class ChatOptions(val mode: String, val model: String = "default", val effort: String = "default") {
+    fun store() = JSONObject().put("mode", mode).put("model", model).put("effort", effort).toString()
+    companion object {
+        fun parse(value: String) = JSONObject(value).let { chatOptions(it.optString("mode", "bypassPermissions"), it.optString("model", "default"), it.optString("effort", "default")) }
+    }
+}
+fun supportsEffort(model: String) = model != "haiku"
+fun effortForModel(model: String, effort: String) = if (supportsEffort(model)) effort else "default"
+fun chatOptions(mode: String, model: String, effort: String) = ChatOptions(mode, model, effortForModel(model, effort))
+
 @OptIn(FlowPreview::class)
 class BridgeModel(application: Application) : AndroidViewModel(application) {
     private val store = Store(application)
+    private val updater = Updater(application)
     private var api: Api? = null
     private var session: Job? = null
     private var actionJob: Job? = null
@@ -42,11 +61,15 @@ class BridgeModel(application: Application) : AndroidViewModel(application) {
     var connectionIssue by mutableStateOf(""); private set
     var revoked by mutableStateOf(false); private set
     var refreshing by mutableStateOf(false); private set
+    var updateBusy by mutableStateOf(false); private set
+    var updateStatus by mutableStateOf(UpdateStatus()); private set
     var projects by mutableStateOf<List<JSONObject>>(emptyList()); private set
     var chats by mutableStateOf<List<JSONObject>>(emptyList()); private set
     var messages by mutableStateOf<List<JSONObject>>(emptyList()); private set
     var approvals by mutableStateOf<List<JSONObject>>(emptyList()); private set
     var modes by mutableStateOf(listOf("bypassPermissions")); private set
+    var models by mutableStateOf(listOf("default")); private set
+    var efforts by mutableStateOf(listOf("default")); private set
     var claudeAvailable by mutableStateOf(true); private set
     var selected by mutableStateOf(store.get("selected")); private set
     var draft by mutableStateOf(store.get("draft:$selected")); private set
@@ -54,9 +77,11 @@ class BridgeModel(application: Application) : AndroidViewModel(application) {
     var pairUrl by mutableStateOf(store.get("base"))
     var pairCode by mutableStateOf("")
     var mode by mutableStateOf("bypassPermissions")
+    var model by mutableStateOf("default")
+    var effort by mutableStateOf("default")
     var foreground = false
         private set
-    val chat get() = chats.find { it.optString("id") == selected }
+    val chat get() = chats.find { it.optString("id") == selected } ?: draftChat(selected)?.json()
     var lastProject: String
         get() = store.get("lastProject")
         set(value) = store.put("lastProject", value)
@@ -65,7 +90,7 @@ class BridgeModel(application: Application) : AndroidViewModel(application) {
             val token = store.token()
             if (token.isNotEmpty()) { api = Api(normalizeServer(store.get("base")), token); paired = true }
             store.get("state").takeIf { it.isNotEmpty() }?.let { runCatching { applyState(JSONObject(it)) } }
-            mode = pending?.mode ?: chat?.optString("mode", "bypassPermissions") ?: "bypassPermissions"
+            applyOptionsFromSelection()
             loadMessages(selected)
         }.onFailure { error = "Saved pairing could not be read. Pair with your Mac again." }
     }
@@ -75,8 +100,32 @@ class BridgeModel(application: Application) : AndroidViewModel(application) {
     private fun applyState(state: JSONObject) {
         projects = state.getJSONArray("projects").objects()
         chats = state.getJSONArray("chats").objects().sortedByDescending { it.optLong("updatedAt") }
-        modes = state.optJSONObject("capabilities")?.optJSONArray("modes")?.let { (0 until it.length()).map(it::getString) } ?: listOf("bypassPermissions")
+        val capabilities = state.optJSONObject("capabilities")
+        modes = capabilities?.optJSONArray("modes")?.let { (0 until it.length()).map(it::getString) } ?: listOf("bypassPermissions")
+        models = capabilities?.optJSONArray("models")?.let { (0 until it.length()).map(it::getString) } ?: listOf("default")
+        efforts = capabilities?.optJSONArray("efforts")?.let { (0 until it.length()).map(it::getString) } ?: listOf("default")
         claudeAvailable = state.optJSONObject("server")?.optBoolean("claudeAvailable", true) ?: true
+    }
+    private fun draftChat(id: String) = store.get("draftChat:$id").takeIf { it.isNotEmpty() }?.let {
+        runCatching { DraftChat.parse(id, it) }.onFailure { store.remove("draftChat:$id") }.getOrNull()
+    }
+    private fun optionOverride(id: String) = store.get("options:$id").takeIf { it.isNotEmpty() }?.let {
+        runCatching { ChatOptions.parse(it) }.onFailure { store.remove("options:$id") }.getOrNull()
+    }
+    private fun optionsFrom(chat: JSONObject?) = chat?.let { chatOptions(it.optString("mode", "bypassPermissions"), it.optString("model", "default"), it.optString("effort", "default")) }
+    private fun setOptions(options: ChatOptions) { mode = options.mode; model = options.model; effort = options.effort }
+    private fun currentOptions() = chatOptions(mode, model, effort)
+    private fun applyOptionsFromSelection() {
+        val local = draftChat(selected)
+        val options = pending?.let { ChatOptions(it.mode, it.model, it.effort) }
+            ?: local?.let { chatOptions(it.mode, it.model, it.effort) }
+            ?: optionOverride(selected)
+            ?: optionsFrom(chat)
+            ?: ChatOptions("bypassPermissions")
+        setOptions(options)
+    }
+    private fun discardEmptyDraft(id: String) {
+        if (id.isNotEmpty() && draftChat(id) != null && loadPending(id) == null && store.get("draft:$id").isBlank()) store.removeChat(id)
     }
     private fun loadMessages(id: String) {
         messages = emptyList(); approvals = emptyList()
@@ -85,8 +134,9 @@ class BridgeModel(application: Application) : AndroidViewModel(application) {
         }
     }
     fun open(id: String) {
+        if (id != selected) discardEmptyDraft(selected)
         selected = id; store.put("selected", id)
-        draft = store.get("draft:$id"); pending = loadPending(id); mode = pending?.mode ?: chat?.optString("mode", "bypassPermissions") ?: "bypassPermissions"; loadMessages(id)
+        draft = store.get("draft:$id"); pending = loadPending(id); applyOptionsFromSelection(); loadMessages(id)
         refresh()
     }
     fun editDraft(text: String) { draft = text; store.put("draft:$selected", text) }
@@ -105,11 +155,20 @@ class BridgeModel(application: Application) : AndroidViewModel(application) {
             Api(base).request("/api/pair", JSONObject().put("code", code)).getString("token").also { store.savePair(base, it, pairingSession) }
         }
         api = Api(base, token); paired = true; pairCode = ""; cursor.committed = 0; connectionIssue = ""; revoked = false
-        projects = emptyList(); chats = emptyList(); messages = emptyList(); approvals = emptyList(); selected = ""; draft = ""; pending = null
+        projects = emptyList(); chats = emptyList(); messages = emptyList(); approvals = emptyList(); selected = ""; draft = ""; pending = null; model = "default"; effort = "default"
         if (foreground) start()
     }
     fun disconnect() {
         actionJob?.cancel(); stopConnection(); store.clear(); api = null; paired = false; online = false; selected = ""; messages = emptyList(); chats = emptyList(); projects = emptyList(); draft = ""; pending = null; error = ""; connectionIssue = ""; revoked = false
+    }
+    fun checkUpdate() = updateAction { updateStatus = withContext(Dispatchers.IO) { updater.check() } }
+    fun downloadUpdate() = updateAction {
+        val release = updateStatus.release ?: error("Check for an update first.")
+        updateStatus = withContext(Dispatchers.IO) { updater.download(release) }
+    }
+    fun installUpdate() = updateAction { updateStatus = updater.install(updateStatus) }
+    fun resumeUpdateInstall() {
+        if (updateStatus.waitingForPermission && !updateBusy && getApplication<Application>().packageManager.canRequestPackageInstalls()) installUpdate()
     }
     fun foreground(active: Boolean) { foreground = active; if (active && paired) start() else if (!active) stopConnection() }
     private fun stopConnection() { session?.cancel(); session = null; online = false }
@@ -140,10 +199,16 @@ class BridgeModel(application: Application) : AndroidViewModel(application) {
         val id = selected
         val (state, stateCache) = withContext(Dispatchers.IO) { currentApi.request("/api/state").let { it to it.toString() } }
         if (api !== currentApi) return@withLock
-        val previousMode = chat?.optString("mode")
-        val followMode = pending == null && (previousMode == null || mode == previousMode)
+        val previous = chat
+        val followOptions = pending == null && draftChat(id) == null && optionOverride(id) == null && (previous == null || currentOptions() == optionsFrom(previous))
         applyState(state); store.put("state", stateCache)
-        if (followMode) chat?.optString("mode")?.let { mode = it }
+        val server = chats.find { it.optString("id") == id }
+        if (pending == null && optionOverride(id) != null && optionOverride(id) == optionsFrom(server)) store.remove("options:$id")
+        if (id.isNotEmpty() && chats.none { it.optString("id") == id } && draftChat(id) == null && pending == null) {
+            open("")
+            return@withLock
+        }
+        if (followOptions) applyOptionsFromSelection()
         if (id.isNotEmpty() && chats.any { it.optString("id") == id }) {
             val (result, messageCache) = withContext(Dispatchers.IO) { currentApi.request("/api/chats/$id/messages").let { it to it.toString() } }
             if (api !== currentApi) return@withLock
@@ -192,11 +257,31 @@ class BridgeModel(application: Application) : AndroidViewModel(application) {
             finally { busy = false }
         }
     }
-    fun newChat(projectId: String, selectedMode: String) = action {
-        val currentApi = api ?: return@action
-        val result = withContext(Dispatchers.IO) { currentApi.request("/api/chats", JSONObject().put("projectId", projectId).put("mode", selectedMode)) }
-        if (api !== currentApi) return@action
-        sync(); open(result.getString("id"))
+    private fun updateAction(block: suspend () -> Unit) {
+        if (updateBusy) return
+        updateBusy = true
+        viewModelScope.launch {
+            try { block() } catch (cancelled: CancellationException) { throw cancelled }
+            catch (failure: Exception) { updateStatus = updateStatus.copy(message = reason(failure)) }
+            finally { updateBusy = false }
+        }
+    }
+    fun newChat(projectId: String, selectedMode: String, selectedModel: String = "default", selectedEffort: String = "default") {
+        val id = UUID.randomUUID().toString()
+        val options = chatOptions(selectedMode, selectedModel, selectedEffort)
+        store.put("draftChat:$id", DraftChat(id, projectId, options.mode, options.model, options.effort).store())
+        lastProject = projectId
+        open(id)
+    }
+    fun updateOptions(nextMode: String, nextModel: String, nextEffort: String) {
+        if (pending != null || isWorking(chat?.optString("status")) || busy) return
+        val next = chatOptions(nextMode, nextModel, nextEffort)
+        setOptions(next)
+        val local = draftChat(selected)
+        if (local != null) store.put("draftChat:$selected", local.copy(mode = next.mode, model = next.model, effort = next.effort).store())
+        else if (selected.isNotEmpty() && chat != null) {
+            if (next == optionsFrom(chat)) store.remove("options:$selected") else store.put("options:$selected", next.store())
+        }
     }
     fun send() = action {
         val currentApi = api ?: return@action
@@ -204,7 +289,8 @@ class BridgeModel(application: Application) : AndroidViewModel(application) {
         require(id.isNotEmpty()) { "Open a chat first." }
         require(pending != null || store.get("pending:$id").isEmpty()) { "Saved delivery state could not be read. Check this chat on your Mac before sending again." }
         val deliverySession = store.session()
-        val prompt = pending ?: PendingPrompt(UUID.randomUUID().toString(), draft.trim(), mode)
+        val local = draftChat(id)
+        val prompt = pending ?: PendingPrompt(UUID.randomUUID().toString(), draft.trim(), mode, model, effort, local?.projectId.orEmpty())
         require(prompt.text.isNotEmpty()) { "Write a prompt first." }
         if (selected == id) pending = prompt
         withContext(Dispatchers.IO) { store.commit("pending:$id", prompt.json().toString(), deliverySession) }
@@ -224,6 +310,10 @@ class BridgeModel(application: Application) : AndroidViewModel(application) {
             if (failure.definitiveRejection) {
                 withContext(Dispatchers.IO) { store.completePrompt(id, prompt, deliverySession, accepted = false) }
                 if (selected == id) pending = null
+                if (failure.status == 410 && local != null) {
+                    store.remove("draftChat:$id")
+                    if (selected == id) open("")
+                }
             }
             throw failure
         }
@@ -237,6 +327,21 @@ class BridgeModel(application: Application) : AndroidViewModel(application) {
     fun decide(id: String, allow: Boolean, answers: JSONObject) = action {
         val currentApi = api ?: return@action
         withContext(Dispatchers.IO) { currentApi.request("/api/approvals/$id", JSONObject().put("decision", if (allow) "allow" else "deny").apply { if (answers.length() > 0) put("answers", answers) }) }; sync()
+    }
+    fun rename(id: String, title: String) = action {
+        val currentApi = api ?: return@action
+        require(title.trim().isNotEmpty()) { "Name the chat first." }
+        withContext(Dispatchers.IO) { currentApi.request("/api/chats/$id/rename", JSONObject().put("title", title.trim())) }
+        sync()
+    }
+    fun delete(id: String) = action {
+        val currentApi = api ?: return@action
+        val chat = chats.find { it.optString("id") == id }
+        require(!isWorking(chat?.optString("status"))) { "Stop this chat before deleting it." }
+        withContext(Dispatchers.IO) { currentApi.request("/api/chats/$id/delete", JSONObject()) }
+        store.removeChat(id)
+        if (selected == id) open("")
+        sync()
     }
     fun clearError() { error = "" }
 }

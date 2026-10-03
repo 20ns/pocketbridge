@@ -266,7 +266,7 @@ Android uses the platform sans-serif through Material 3. Monospace is reserved f
 - `body-large` carries messages, option labels and the main input.
 - `body-medium` carries notices, tables and step summaries.
 - `body-small` carries supporting descriptions and tool output.
-- `label-large` carries button labels, mode selection and step group titles.
+- `label-large` carries button labels, compact menu labels and step group titles.
 - `label-medium` carries timestamps, connection subtitles and delivery status.
 - `code` uses the body-small size with a 1.5em line height in fenced blocks. Inline code uses 0.9em of its surrounding text.
 
@@ -278,7 +278,7 @@ The Mac uses its existing system font stack with a 15px root. Conversation text 
 
 Android is a single-column stack inside a Material `Scaffold`. The app bar and persistent connection banner sit above content. The composer is the bottom bar, with navigation and keyboard insets. The transcript scrolls independently and anchors the newest content at the bottom. Its outer padding is 12dp and gaps are 10dp. User rows leave 48dp at the opposite edge; reply rows leave 24dp.
 
-Projects and recent chats use native `ListItem` rows and pull to refresh. Recent chats leave 96dp below the last row for New chat. Pairing uses 24dp horizontal padding and a scrollable form. Interactive question rows and explicit text actions have a 48dp minimum height; Send, Stop and the composer field are 52dp. At font scales above 1.3, Back keeps the arrow and accessible destination name while hiding its visible text label.
+Projects and recent chats use native `ListItem` rows and pull to refresh. Projects filter with Latest (activity in the last 7 days) or All, and sort Newest, Oldest or Name. Recent chats sort Newest or Oldest. Those choices are compact menu chips. Recent chats leave 96dp below the last row for the New chat floating action. Pairing uses 24dp horizontal padding and a scrollable form. Interactive question rows and explicit text actions have a 48dp minimum height; Send, Stop and the composer field are 52dp. At font scales above 1.3, Back keeps the arrow and accessible destination name while hiding its visible text label. The chat options sheet scrolls at that scale.
 
 The Mac keeps a 300px sidebar beside a flexible conversation. Messages have a 46rem maximum measure. Below 760px the sidebar becomes a drawer and header controls stack. At 560px and below, connection text becomes an accessible compact icon treatment, pairing details stack and composer controls wrap. Browser controls use their existing 40px baseline; principal conversation actions and navigation use the 44px target token.
 
@@ -300,11 +300,11 @@ The Mac retains its 6px small corners, 8px control corners and 12px container co
 
 ### Buttons
 
-Use native filled buttons for confirmation, tonal buttons for reconnect and text buttons for Back, mode selection and secondary decisions. Send is a circular filled icon button. While Claude is working, the same position holds a tonal Stop button using error-container colors. Material owns interaction and disabled treatments. Native icons carry accessible descriptions where the visible label is absent.
+Use native filled buttons for confirmation, tonal buttons for reconnect and text buttons for Back, Options and secondary decisions. Send is a circular filled icon button. While Claude is working, the same position holds a tonal Stop button using error-container colors. Material owns interaction and disabled treatments. Native icons carry accessible descriptions where the visible label is absent.
 
 ### Inputs / Fields
 
-Pairing and question answers use native outlined fields. The composer uses a filled field without an underline, rounded corners and up to six visible lines. Its mode menu sits directly above the input. The pending-delivery state locks the input and shows the outgoing prompt in the conversation with its confirmation status. Offline state preserves editable drafts while disabling Send and Stop.
+Pairing and question answers use native outlined fields. The composer uses a filled field without an underline, rounded corners and up to six visible lines. An Options text button, in supporting text color, sits above the input. The pending-delivery state locks the input and shows the outgoing prompt in the conversation with its confirmation status. Offline state preserves editable drafts while disabling Send and Stop.
 
 ### Navigation
 
@@ -318,9 +318,17 @@ User text is selectable inside the teal bubble, with 16dp horizontal and 10dp ve
 
 Question cards use a tonal fill, amber border and 16dp padding. Native radios or checkboxes make the whole option row selectable. Free-text answers use outlined fields. Confirm is enabled only when every question has an answer and the Mac is connected. Question drafts survive activity recreation. Persistent connection banners report connection failures; action failures use snackbars. An empty offline transcript says it is waiting for the Mac rather than claiming the chat has no history.
 
+### Lists and chat options
+
+New chat is an extended floating action. Long press or the overflow menu opens Rename and Delete in native dialogs. Delete stays unavailable while that chat is working. An empty chat with nothing sent remains a local draft. Options opens a native bottom sheet titled Next prompt. Permission, model and effort are compact menu chips: an assist chip at least 48dp tall shows the current value, and a dropdown lists the choices. Apply is a full-width filled button. Haiku keeps default effort, disables the effort chip and says it does not support effort levels. Pickers and Apply stay disabled while a prompt is unconfirmed or Claude is working.
+
+### App updates
+
+Connection settings offer Check latest, then Download and Install for the public signed APK. Install uses Android's package-installer permission. That permission is separate from Mac pairing.
+
 ### Mac controls
 
-Keep project registration and Connect phone in the browser client. Its messages retain the current labels and neutral user-message treatment; the phone's bubble arrangement does not redefine the Mac layout. Browser buttons, inputs and expandable activity keep their existing hover and keyboard-focus treatments. Use `mac/public/style.css` as the source for those states.
+Keep project registration and Connect phone in the browser client. Its messages retain the current labels and neutral user-message treatment; the phone's bubble arrangement does not redefine the Mac layout. Model and effort stay those of the selected chat. The browser keeps its existing mode control and layout. Browser buttons, inputs and expandable activity keep their existing hover and keyboard-focus treatments. Use `mac/public/style.css` as the source for those states.
 
 ## Do's and Don'ts
 
@@ -331,10 +339,11 @@ Keep project registration and Connect phone in the browser client. Its messages 
 - **Do** keep the composer outside the scrolling transcript and respect keyboard and navigation insets.
 - **Do** preserve selectable replies, copyable code, labelled controls and native question selection.
 - **Do** keep Mac project registration and phone pairing controls in the Mac client.
+- **Do** keep filter, sort and chat-option choices on compact native menus.
 
 ### Don't:
 
 - **Don't** add Android role labels, a logo panel, dashboard cards or phone folder registration.
 - **Don't** use color alone to communicate a failure, pending answer or connection problem.
 - **Don't** replace native font scaling with fixed pixel text on Android.
-- **Don't** hide the permission mode or treat an unconfirmed prompt as delivered.
+- **Don't** hide permission mode, model or effort, or treat an unconfirmed prompt as delivered.

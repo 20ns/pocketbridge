@@ -982,7 +982,7 @@
       "name": "Composer field",
       "kind": "input",
       "refersTo": "composer-field",
-      "description": "Rounded filled message input, without an underline.",
+      "description": "Rounded filled message input, without an underline. Options sits above it.",
       "html": "<textarea class=\"ds-field\" rows=\"1\" aria-label=\"Message Claude\" placeholder=\"Message Claude\"></textarea>",
       "css": ".ds-field{font:16px/24px sans-serif;letter-spacing:.5px;min-height:52px;padding:14px 16px;border:0;border-radius:26px;background:#E3E3DE;color:#1B1C1A;resize:vertical;caret-color:#006A60;}.ds-field::placeholder{color:#474B47;}.ds-field:hover{background:#E3E3DE;}.ds-primary:focus-visible,.ds-tonal:focus-visible,.ds-text:focus-visible,.ds-field:focus-visible,.ds-back:focus-visible,.ds-step summary:focus-visible{outline:2px solid #006A60;outline-offset:2px;}"
     },
@@ -1058,13 +1058,14 @@
       "Do keep connection status separate from the state of Claude's task.",
       "Do keep the composer outside the scrolling transcript and respect keyboard and navigation insets.",
       "Do preserve selectable replies, copyable code, labelled controls and native question selection.",
-      "Do keep Mac project registration and phone pairing controls in the Mac client."
+      "Do keep Mac project registration and phone pairing controls in the Mac client.",
+      "Do keep filter, sort and chat-option choices on compact native menus."
     ],
     "donts": [
       "Don't add Android role labels, a logo panel, dashboard cards or phone folder registration.",
       "Don't use color alone to communicate a failure, pending answer or connection problem.",
       "Don't replace native font scaling with fixed pixel text on Android.",
-      "Don't hide the permission mode or treat an unconfirmed prompt as delivered."
+      "Don't hide permission mode, model or effort, or treat an unconfirmed prompt as delivered."
     ]
   }
 }

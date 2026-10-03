@@ -26,7 +26,7 @@ the Mac's saved history and preserves unsent drafts.
 
 FIRST VIEWPORT: Projects is the opening screen. Conversation has a compact header,
 left assistant messages and right user bubbles. Its bottom composer holds text,
-mode and send or Stop. Back leads to Recent chats for the current project.
+an Options sheet for permission/model/effort and send or Stop. Back leads to Recent chats for the current project.
 
 FORM: User-pinned familiar messaging layout. The brief fixes the navigation and
 bubble arrangement; no concept seed replaces those choices. Use system appearance

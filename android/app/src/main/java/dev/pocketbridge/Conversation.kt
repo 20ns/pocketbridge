@@ -29,8 +29,6 @@ import androidx.compose.foundation.text.selection.TextSelectionColors
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Send
-import androidx.compose.material.icons.filled.ArrowDropDown
-import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -339,16 +337,23 @@ private val AnswersSaver = Saver<Answers, String>(save = { encodeAnswers(it) }, 
 }
 
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable fun Composer(model: BridgeModel) {
     val status = model.chat?.optString("status")
     val working = isWorking(status)
     val pending = model.pending
     val colors = MaterialTheme.colorScheme
     val connection = when { model.online -> ""; model.connectionIssue.isEmpty() -> "Connecting…"; else -> "Offline" }
+    var options by rememberSaveable { mutableStateOf(false) }
     Surface(color = colors.surfaceContainer) {
         Column(Modifier.fillMaxWidth().navigationBarsPadding().imePadding().padding(start = 8.dp, end = 12.dp, top = 4.dp, bottom = 10.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                ModeMenu(model.mode, model.modes, enabled = !working && pending == null && !model.busy) { model.mode = it }
+                TextButton(
+                    onClick = { options = true },
+                    modifier = Modifier.heightIn(min = 48.dp).semantics { contentDescription = "Chat options" },
+                    contentPadding = PaddingValues(start = 12.dp, end = 12.dp),
+                    colors = ButtonDefaults.textButtonColors(contentColor = colors.onSurfaceVariant),
+                ) { Text("Options", style = MaterialTheme.typography.labelLarge) }
                 Spacer(Modifier.weight(1f))
                 if (connection.isNotEmpty()) Text(connection, Modifier.semantics { liveRegion = LiveRegionMode.Polite }, style = MaterialTheme.typography.labelMedium, color = colors.onSurfaceVariant)
             }
@@ -377,28 +382,39 @@ private val AnswersSaver = Saver<Answers, String>(save = { encodeAnswers(it) }, 
             }
         }
     }
+    if (options) ChatOptionsSheet(model, enabled = pending == null && !working && !model.busy, onDismiss = { options = false })
 }
 
-@Composable private fun ModeMenu(value: String, modes: List<String>, enabled: Boolean, onChange: (String) -> Unit) {
-    var expanded by remember { mutableStateOf(false) }
-    Box {
-        TextButton(
-            onClick = { expanded = true }, enabled = enabled,
-            modifier = Modifier.heightIn(min = 48.dp).semantics { contentDescription = "Permission mode: ${modeLabel(value)}" },
-            contentPadding = PaddingValues(start = 12.dp, end = 4.dp),
-            colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.onSurfaceVariant),
-        ) {
-            Text(modeLabel(value), style = MaterialTheme.typography.labelLarge)
-            Icon(Icons.Default.ArrowDropDown, null)
-        }
-        DropdownMenu(expanded, { expanded = false }) {
-            modes.forEach { mode ->
-                DropdownMenuItem(
-                    text = { Column(Modifier.padding(vertical = 6.dp)) { Text(modeLabel(mode), style = MaterialTheme.typography.bodyLarge); Text(modeHelp(mode), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) } },
-                    leadingIcon = { Box(Modifier.size(24.dp)) { if (mode == value) Icon(Icons.Default.Check, null) } },
-                    onClick = { onChange(mode); expanded = false },
-                )
-            }
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable private fun ChatOptionsSheet(model: BridgeModel, enabled: Boolean, onDismiss: () -> Unit) {
+    var mode by rememberSaveable(model.mode) { mutableStateOf(model.mode) }
+    var selectedModel by rememberSaveable(model.model) { mutableStateOf(model.model) }
+    var effort by rememberSaveable(model.effort) { mutableStateOf(model.effort) }
+    ModalBottomSheet(onDismissRequest = onDismiss) {
+        Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).navigationBarsPadding().padding(start = 20.dp, end = 20.dp, bottom = 20.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
+            Text("Next prompt", style = MaterialTheme.typography.titleLarge)
+            OptionGroup("Permission", optionValues(model.modes, mode), mode, enabled, { mode = it }, ::modeLabel)
+            OptionGroup("Model", optionValues(model.models, selectedModel), selectedModel, enabled, {
+                selectedModel = it
+                if (!supportsEffort(it)) effort = "default"
+            }, ::modelLabel)
+            OptionGroup("Effort", optionValues(model.efforts, effort), effort, enabled && supportsEffort(selectedModel), { effort = it }, ::effortLabel)
+            if (!supportsEffort(selectedModel)) Text("Haiku doesn't support effort levels.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Button(
+                onClick = { model.updateOptions(mode, selectedModel, effortForModel(selectedModel, effort)); onDismiss() },
+                enabled = enabled,
+                modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp),
+            ) { Text("Apply") }
         }
     }
 }
+
+@Composable private fun OptionGroup(title: String, values: List<String>, selected: String, enabled: Boolean, onPick: (String) -> Unit, label: (String) -> String) {
+    MenuButton(title, label(selected), enabled) { close ->
+        values.forEach { value ->
+            DropdownMenuItem(text = { Text(label(value)) }, onClick = { onPick(value); close() }, enabled = enabled)
+        }
+    }
+}
+
+private fun optionValues(values: List<String>, selected: String) = (values.ifEmpty { listOf("default") } + selected).distinct()

@@ -10,9 +10,10 @@ browser client and launchers are in `mac/`.
 
 ## Downloads and updates
 
-APK downloads live in this private repository's [Releases](https://github.com/20ns/pocketbridge/releases).
-Sign into GitHub in your phone browser to download. Install newer APKs over the
-existing app to preserve pairing and drafts. You can also download the current
+Source and signed APK downloads are public in [Releases](https://github.com/20ns/pocketbridge/releases).
+From version 0.4.0, Settings can check for, download and install newer releases through
+Android's installer. Install APKs over the existing app to preserve pairing and drafts.
+Do not uninstall first. You can also download the current
 Mac-hosted APK at your private Tailscale address followed by `/PocketBridge.apk`.
 
 Every push runs Mac tests and Android build, unit tests and lint. To publish an
@@ -26,6 +27,11 @@ so updates preserve the installed app's certificate. The local copy remains at
 personal debug certificate for compatibility, while release APKs disable debugging.
 This distribution is for personal sideloading. A Play Store release would need
 its own signing and publication setup.
+
+The public repository contains no personal runtime data. The Mac service remains
+private behind Tailscale; its database, pairing tokens, Claude login and signing
+key are never published. Project discovery reads folder metadata from local Claude
+sessions without importing those conversations.
 
 Local release build:
 

@@ -81,9 +81,27 @@ internal suspend fun <T> Call.consume(block: (Response) -> T): T = suspendCancel
     })
 }
 
-data class PendingPrompt(val id: String, val text: String, val mode: String = "bypassPermissions") {
-    fun json() = JSONObject().put("id", id).put("text", text).put("mode", mode)
-    companion object { fun parse(value: String) = JSONObject(value).let { PendingPrompt(it.getString("id"), it.getString("text"), it.optString("mode", "bypassPermissions")) } }
+data class PendingPrompt(
+    val id: String,
+    val text: String,
+    val mode: String = "bypassPermissions",
+    val model: String = "default",
+    val effort: String = "default",
+    val projectId: String = "",
+) {
+    fun json() = JSONObject().put("id", id).put("text", text).put("mode", mode).put("model", model).put("effort", effort).apply { if (projectId.isNotBlank()) put("projectId", projectId) }
+    companion object {
+        fun parse(value: String) = JSONObject(value).let {
+            PendingPrompt(
+                it.getString("id"),
+                it.getString("text"),
+                it.optString("mode", "bypassPermissions"),
+                it.optString("model", "default"),
+                it.optString("effort", "default"),
+                it.optString("projectId"),
+            )
+        }
+    }
 }
 
 /** SSE IDs are only committed after the snapshot has been successfully reconciled. */

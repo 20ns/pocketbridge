@@ -65,11 +65,9 @@ fun defaultMode(modes: List<String>) = if ("bypassPermissions" in modes || modes
 fun modeLabel(mode: String) = when (mode) {
     "bypassPermissions" -> "Bypass permissions"; "auto" -> "Auto"; "acceptEdits" -> "Accept edits"; "plan" -> "Plan"; else -> "Manual"
 }
-fun modeHelp(mode: String) = when (mode) {
-    // Same wording as the Mac client.
-    "bypassPermissions" -> "Claude can run commands and edit files without asking."
-    "auto" -> "Claude works on its own while a safety check blocks risky actions."
-    "acceptEdits" -> "Claude edits files freely and asks before running commands."
-    "plan" -> "Claude explores and proposes a plan before changing anything."
-    else -> "Claude asks before editing files or running commands."
+fun modelLabel(model: String) = when (model) {
+    "default" -> "Default"; "opus" -> "Opus"; "sonnet" -> "Sonnet"; "haiku" -> "Haiku"; else -> model
+}
+fun effortLabel(effort: String) = when (effort) {
+    "default" -> "Default"; "low" -> "Low"; "medium" -> "Medium"; "high" -> "High"; "xhigh" -> "Extra high"; "max" -> "Max"; else -> effort
 }

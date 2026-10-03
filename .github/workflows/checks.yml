@@ -44,7 +44,7 @@ jobs:
           POCKETBRIDGE_SIGNING_KEY: ${{ runner.temp }}/pocketbridge.keystore
         run: ./gradlew assembleRelease lintRelease
         working-directory: android
-      - name: Publish private APK release
+      - name: Publish signed APK release
         if: github.event_name == 'workflow_dispatch'
         env:
           GH_TOKEN: ${{ github.token }}

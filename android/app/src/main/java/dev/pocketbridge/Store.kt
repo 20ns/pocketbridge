@@ -18,6 +18,7 @@ class Store internal constructor(private val prefs: SharedPreferences) {
     @Synchronized fun session() = generation
     fun get(key: String) = prefs.getString(key, "").orEmpty()
     fun put(key: String, value: String) { prefs.edit().putString(key, value).apply() }
+    fun remove(key: String) { prefs.edit().remove(key).apply() }
     @Synchronized fun commit(key: String, value: String, session: Int) {
         requireSession(session)
         check(prefs.edit().putString(key, value).commit()) { "Could not save prompt delivery state." }
@@ -26,7 +27,18 @@ class Store internal constructor(private val prefs: SharedPreferences) {
         requireSession(session)
         val edit = prefs.edit().remove("pending:$id")
         if (accepted && get("draft:$id").trim() == prompt.text) edit.remove("draft:$id")
+        if (accepted) edit.remove("draftChat:$id")
+        if (accepted) edit.remove("options:$id")
         check(edit.commit()) { "Could not save prompt delivery state." }
+    }
+    @Synchronized fun removeChat(id: String) {
+        prefs.edit()
+            .remove("messages:$id")
+            .remove("draft:$id")
+            .remove("pending:$id")
+            .remove("draftChat:$id")
+            .remove("options:$id")
+            .apply()
     }
     private fun requireSession(session: Int) {
         if (session != generation) throw CancellationException("Pairing changed.")

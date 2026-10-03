@@ -1,4 +1,4 @@
-import {EventDecoder, markdown, statusLabel, relativeTime, groupMessages, activitySummary} from './support.mjs';
+import {EventDecoder, markdown, statusLabel, relativeTime, groupMessages, activitySummary, editDraft, prepareDelivery, promptPayload, blankLocalDraft} from './support.mjs';
 
 const $ = id => document.getElementById(id);
 const el = (tag, className, text) => { const node = document.createElement(tag); if (className) node.className = className; if (text !== undefined) node.textContent = text; return node; };
@@ -16,7 +16,18 @@ let pendingRefresh = false, refreshing = false, messagesGeneration = 0;
 let draftMode = null, approvalsSignature = null, modesKey = null, announced = {};
 const saved = (key, fallback) => { try { return JSON.parse(localStorage.getItem(key)) ?? fallback; } catch { return fallback; } };
 const persist = (key, value) => { try { localStorage.setItem(key, JSON.stringify(value)); } catch { /* Storage may be disabled; the live session still works. */ } };
+function persistLocalChats() {
+  const stored = {};
+  for (const [id, chat] of Object.entries(localChats)) if (!blankLocalDraft(drafts[id])) stored[id] = chat;
+  persist('pocketbridge.localChats', stored);
+}
+function discardBlankLocal(id) {
+  if (!id || !localChats[id] || !blankLocalDraft(drafts[id])) return;
+  delete localChats[id]; delete drafts[id];
+  persistLocalChats(); persist('pocketbridge.drafts', drafts);
+}
 let drafts = saved('pocketbridge.drafts', {});
+let localChats = saved('pocketbridge.localChats', {});
 let preferredProject = saved('pocketbridge.project', '');
 let preferredMode = saved('pocketbridge.mode', 'bypassPermissions');
 selected = saved('pocketbridge.chat', null);
@@ -37,10 +48,10 @@ async function api(path, body) {
   // A rotated local token (for example after resetting the Mac's data) is re-fetched by the reconnect loop.
   if (response.status === 401) token = null;
   const result = await response.json();
-  if (!response.ok) throw new Error(result.error || `Mac returned ${response.status}`);
+  if (!response.ok) throw Object.assign(new Error(result.error || `Mac returned ${response.status}`), {status: response.status});
   return result;
 }
-function currentChat() { return state?.chats.find(chat => chat.id === selected); }
+function currentChat() { return state?.chats.find(chat => chat.id === selected) ?? localChats[selected]; }
 function projectName(chat) { return state?.projects.find(p => p.id === chat.projectId)?.name ?? 'Project'; }
 function busy(chat = currentChat()) { return ['running','stopping','waiting'].includes(chat?.status); }
 function statusBadge(status) {
@@ -71,7 +82,7 @@ function renderChatList() {
   const list = $('chat-list');
   const focused = list.contains(document.activeElement) ? document.activeElement.dataset.chatId : null;
   list.replaceChildren();
-  const chats = [...state.chats].sort((a,b) => b.updatedAt - a.updatedAt);
+  const chats = [...state.chats, ...Object.values(localChats).filter(chat => !state.chats.some(item => item.id === chat.id) && !blankLocalDraft(drafts[chat.id]))].sort((a,b) => b.updatedAt - a.updatedAt);
   if (!chats.length) list.append(el('p', 'muted', 'New chats will appear here. They stay on this Mac.'));
   for (const chat of chats) {
     const button = el('button', 'chat-item'); button.type = 'button'; button.dataset.chatId = chat.id;
@@ -129,6 +140,7 @@ function renderState() {
   controls();
 }
 async function selectChat(id) {
+  if (id !== selected) discardBlankLocal(selected);
   selected = id; draftMode = drafts[id]?.mode ?? null; approvalsSignature = null; persist('pocketbridge.chat', id);
   $('prompt').value = drafts[id]?.text ?? ''; autosize();
   $('log').replaceChildren(); $('approvals').replaceChildren(); $('approvals').hidden = true;
@@ -187,9 +199,15 @@ function renderStatusNote(chat, hasApprovals) {
   }
   return null;
 }
+function showPendingChat() {
+  const empty = el('div', 'empty');
+  empty.append(el('h2', '', 'What should Claude do?'), el('p', '', 'Send a task or ask a question about this project. Work continues if you leave the app.'));
+  $('log').replaceChildren(empty); $('approvals').replaceChildren(); $('approvals').hidden = true; approvalsSignature = null;
+}
 async function loadMessages() {
   const id = selected;
   if (!id || !currentChat()) return;
+  if (!state?.chats.some(chat => chat.id === id)) { showPendingChat(); return; }
   const generation = ++messagesGeneration;
   const result = await api(`/chats/${encodeURIComponent(id)}/messages`);
   if (id !== selected || generation !== messagesGeneration) return;
@@ -293,7 +311,12 @@ async function refresh() {
   refreshing = true;
   try {
     state = await api('/state'); seq = Math.max(seq, state.lastSeq);
-    if (selected && !state.chats.some(chat => chat.id === selected)) { selected = null; $('prompt').value = ''; autosize(); }
+    let droppedLocal = false;
+    for (const id of Object.keys(localChats)) if (state.chats.some(chat => chat.id === id)) { delete localChats[id]; droppedLocal = true; }
+    for (const id of Object.keys(localChats)) if (id !== selected && blankLocalDraft(drafts[id])) { delete localChats[id]; delete drafts[id]; droppedLocal = true; }
+    persistLocalChats();
+    if (droppedLocal) persist('pocketbridge.drafts', drafts);
+    if (selected && !currentChat()) { selected = null; $('prompt').value = ''; autosize(); }
     renderState(); await loadMessages();
   } finally {
     refreshing = false;
@@ -359,6 +382,7 @@ $('mode').onchange = () => {
   draftMode = preferredMode = $('mode').value; persist('pocketbridge.mode', preferredMode);
   $('mode-help').textContent = modeHelp[draftMode] ?? '';
   if (drafts[selected] && !drafts[selected].attempted) { drafts[selected].mode = draftMode; persist('pocketbridge.drafts',drafts); }
+  if (localChats[selected] && !drafts[selected]?.attempted) { localChats[selected].mode = draftMode; persistLocalChats(); }
 };
 function toggleProjectForm(show = $('project-form').hidden) { $('project-form').hidden = !show; $('add-project').setAttribute('aria-expanded', String(show)); if (show) $('project-path').focus(); }
 $('add-project').onclick = () => toggleProjectForm();
@@ -368,29 +392,47 @@ $('project-form').onsubmit = async event => {
   catch (error) { notice(error.message); } finally { button.disabled = false; }
 };
 $('new-chat').onclick = async () => {
+  const projectId = $('project-select').value;
+  if (!projectId) return;
   $('new-chat').disabled = true;
-  try { const chat = await api('/chats', {projectId:$('project-select').value,mode:$('mode').value}); await refresh(); await selectChat(chat.id); notice(); $('prompt').focus(); }
-  catch (error) { notice(error.message); } finally { controls(); }
+  const id = crypto.randomUUID();
+  localChats[id] = {id, projectId, title:'New chat', mode:$('mode').value, model:'default', effort:'default', status:'idle', updatedAt:Date.now()};
+  try { await selectChat(id); notice(); $('prompt').focus(); }
+  finally { controls(); }
 };
 $('prompt').oninput = () => {
   autosize();
   if (!selected) return;
-  drafts[selected] = {text:$('prompt').value,id:crypto.randomUUID(),mode:$('mode').value,attempted:false}; persist('pocketbridge.drafts',drafts); controls();
+  const wasBlank = blankLocalDraft(drafts[selected]);
+  const next = editDraft(drafts[selected], $('prompt').value, $('mode').value);
+  if (next !== drafts[selected]) {
+    if (localChats[selected]?.projectId) next.projectId = localChats[selected].projectId;
+    drafts[selected] = next; persist('pocketbridge.drafts', drafts);
+    if (localChats[selected]) persistLocalChats();
+    if (wasBlank !== blankLocalDraft(next)) renderChatList();
+  }
+  controls();
 };
 $('prompt').onkeydown = event => { if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) { event.preventDefault(); if (!$('send').disabled) $('composer').requestSubmit(); } };
 $('composer').onsubmit = async event => {
   event.preventDefault(); if ($('send').disabled) return;
   const chatId = selected;
-  const draft = drafts[chatId] ?? {text:$('prompt').value,id:crypto.randomUUID(),mode:$('mode').value};
-  draft.mode ??= $('mode').value;
-  draft.attempted = true; drafts[chatId] = draft; persist('pocketbridge.drafts',drafts); sending = true; controls();
+  const draft = prepareDelivery(drafts[chatId], $('prompt').value, $('mode').value, currentChat());
+  if (localChats[chatId]?.projectId) draft.projectId ??= localChats[chatId].projectId;
+  drafts[chatId] = draft; persist('pocketbridge.drafts', drafts); if (localChats[chatId]) persistLocalChats(); sending = true; controls();
+  const projectId = state?.chats.some(chat => chat.id === chatId) ? undefined : (localChats[chatId]?.projectId ?? draft.projectId);
   try {
-    await api(`/chats/${encodeURIComponent(chatId)}/prompts`, {id:draft.id,text:draft.text.trim(),mode:draft.mode});
+    await api(`/chats/${encodeURIComponent(chatId)}/prompts`, promptPayload(draft, projectId));
     draftMode = null;
-    if (drafts[chatId]?.id === draft.id) { delete drafts[chatId]; persist('pocketbridge.drafts',drafts); if (selected === chatId) { $('prompt').value = ''; autosize(); } }
+    if (drafts[chatId]?.id === draft.id) { delete drafts[chatId]; persist('pocketbridge.drafts', drafts); if (selected === chatId) { $('prompt').value = ''; autosize(); } }
     notice(); await refresh();
   } catch (error) {
-    if (drafts[chatId]?.id === draft.id) notice(`${error.message}. Your message is saved. Retry will use the same delivery ID.`);
+    if (error.status === 410) {
+      delete drafts[chatId]; delete localChats[chatId];
+      persist('pocketbridge.drafts', drafts); persistLocalChats();
+      if (selected === chatId) { selected = null; persist('pocketbridge.chat', null); $('prompt').value = ''; autosize(); }
+      notice(error.message); renderState();
+    } else if (drafts[chatId]?.id === draft.id) notice(`${error.message}. Your message is saved. Retry will use the same delivery ID.`);
     else notice();
   }
   finally { sending = false; controls(); }

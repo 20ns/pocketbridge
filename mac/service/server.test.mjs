@@ -1,7 +1,7 @@
 import test from 'node:test';
 import http from 'node:http';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, rmSync, readFileSync, existsSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, rmSync, readFileSync, existsSync, writeFileSync, utimesSync, statSync, realpathSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -17,7 +17,9 @@ const wait = async predicate => {
 async function fixture(t) {
   const dir = mkdtempSync(join(tmpdir(), 'pocketbridge-'));
   const projectPath = join(dir, 'project'); mkdirSync(projectPath);
-  let service = await createService({ port: 0, dataDir: join(dir, 'data'), claudePath: join(here, 'fake-claude.mjs'), stopTimeoutMs: 50 });
+  const claudeProjectsDir = join(dir, 'claude-projects'); mkdirSync(claudeProjectsDir);
+  const options = () => ({ port: 0, dataDir: join(dir, 'data'), claudePath: join(here, 'fake-claude.mjs'), stopTimeoutMs: 50, claudeProjectsDir, discoverIntervalMs: 60_000 });
+  let service = await createService(options());
   t.after(async () => { await service.close(); rmSync(dir, { recursive: true, force: true }); });
   let token = (await (await fetch(service.url + '/api/local-session')).json()).token;
   const request = async (route, data, headers = {}) => {
@@ -31,7 +33,7 @@ async function fixture(t) {
   const createChat = async () => (await request('/api/chats', { projectId: project.id })).data;
   const send = (chat, prompt, id = randomUUID()) => request(`/api/chats/${chat.id}/prompts`, { id, text: prompt });
   const finished = chat => wait(async () => (await request('/api/state')).data.chats.find(c => c.id === chat.id && !['running', 'stopping', 'waiting'].includes(c.status)));
-  return { dir, projectPath, request, createChat, send, finished, get service() { return service; }, get token() { return token; }, async restart() { await service.close(); service = await createService({ port: 0, dataDir: join(dir, 'data'), claudePath: join(here, 'fake-claude.mjs'), stopTimeoutMs: 50 }); } };
+  return { dir, projectPath, claudeProjectsDir, request, createChat, send, finished, get service() { return service; }, get token() { return token; }, async restart() { await service.close(); service = await createService(options()); } };
 }
 
 test('prompt delivery is durable and idempotent; stream chunks reconcile with final message; resume uses same session', async t => {
@@ -105,7 +107,7 @@ test('a second service cannot interrupt a live task in the same data folder', as
   const f = await fixture(t), chat = await f.createChat();
   await f.send(chat, 'hang'); await wait(() => existsSync(join(f.projectPath, 'child.pid')));
   const pid = Number(readFileSync(join(f.projectPath, 'child.pid'), 'utf8'));
-  await assert.rejects(createService({ port: 0, dataDir: join(f.dir, 'data'), claudePath: join(here, 'fake-claude.mjs') }), /already running/);
+  await assert.rejects(createService({ port: 0, dataDir: join(f.dir, 'data'), claudePath: join(here, 'fake-claude.mjs'), claudeProjectsDir: f.claudeProjectsDir }), /already running/);
   assert.doesNotThrow(() => process.kill(pid, 0));
   assert.equal((await f.request('/api/state')).data.chats.find(c => c.id === chat.id).status, 'running');
 });
@@ -120,8 +122,8 @@ test('completed turns clean up tool processes left behind by the CLI', async t =
 
 test('failed startup releases ownership so the data folder can be reopened', async t => {
   const f = await fixture(t), dataDir = join(f.dir, 'other-data');
-  await assert.rejects(createService({ port: f.service.server.address().port, dataDir, claudeAvailable: false }), { code: 'EADDRINUSE' });
-  const service = await createService({ port: 0, dataDir, claudeAvailable: false });
+  await assert.rejects(createService({ port: f.service.server.address().port, dataDir, claudeAvailable: false, claudeProjectsDir: f.claudeProjectsDir }), { code: 'EADDRINUSE' });
+  const service = await createService({ port: 0, dataDir, claudeAvailable: false, claudeProjectsDir: f.claudeProjectsDir });
   await service.close();
 });
 
@@ -193,8 +195,8 @@ test('restart marks durable in-flight task interrupted and never reexecutes acce
 
 test('crash recovery terminates the same orphan CLI before permitting another turn', async t => {
   const { spawn } = await import('node:child_process');
-  const dir = mkdtempSync(join(tmpdir(), 'pocketbridge-crash-')), projectPath = join(dir, 'project'), dataDir = join(dir, 'data'); mkdirSync(projectPath);
-  const processService = spawn(process.execPath, [join(here, 'server.mjs')], { env: { ...process.env, POCKETBRIDGE_PORT: '0', POCKETBRIDGE_DATA_DIR: dataDir, POCKETBRIDGE_CLAUDE_PATH: join(here, 'fake-claude.mjs') }, stdio: ['ignore', 'pipe', 'ignore'] });
+  const dir = mkdtempSync(join(tmpdir(), 'pocketbridge-crash-')), projectPath = join(dir, 'project'), dataDir = join(dir, 'data'), claudeProjectsDir = join(dir, 'claude-projects'); mkdirSync(projectPath); mkdirSync(claudeProjectsDir);
+  const processService = spawn(process.execPath, [join(here, 'server.mjs')], { env: { ...process.env, POCKETBRIDGE_PORT: '0', POCKETBRIDGE_DATA_DIR: dataDir, POCKETBRIDGE_CLAUDE_PATH: join(here, 'fake-claude.mjs'), POCKETBRIDGE_CLAUDE_PROJECTS_DIR: claudeProjectsDir }, stdio: ['ignore', 'pipe', 'ignore'] });
   let startup = ''; processService.stdout.on('data', chunk => startup += chunk);
   let recovery;
   t.after(async () => { if (recovery) await recovery.close(); try { processService.kill('SIGKILL'); } catch {} rmSync(dir, { recursive: true, force: true }); });
@@ -207,7 +209,7 @@ test('crash recovery terminates the same orphan CLI before permitting another tu
   const childPid = Number(readFileSync(join(projectPath, 'child.pid'), 'utf8'));
   const exited = new Promise(resolveExited => processService.once('exit', resolveExited)); processService.kill('SIGKILL'); await exited;
   assert.doesNotThrow(() => process.kill(runtime.pid, 0));
-  recovery = await createService({ port: 0, dataDir, claudePath: join(here, 'fake-claude.mjs'), stopTimeoutMs: 50 });
+  recovery = await createService({ port: 0, dataDir, claudePath: join(here, 'fake-claude.mjs'), stopTimeoutMs: 50, claudeProjectsDir });
   assert.equal(recovery.state().chats.find(c => c.id === chat.id).status, 'interrupted');
   await wait(() => { try { process.kill(runtime.pid, 0); return false; } catch { return true; } });
   await wait(() => { try { process.kill(childPid, 0); return false; } catch { return true; } });
@@ -230,6 +232,182 @@ test('shutdown rejects a prompt whose body finishes after shutdown begins', asyn
   assert.equal(await response, 503);
   await closing;
   assert.equal(existsSync(join(f.projectPath, 'calls.ndjson')), false);
+});
+
+test('discovered folders come from session cwd metadata, keep manual names, and survive bad metadata', async t => {
+  const dir = mkdtempSync(join(tmpdir(), 'pocketbridge-discover-'));
+  const projectsDir = join(dir, 'claude'), dataDir = join(dir, 'data'), marker = 'SESSION-PROMPT-MARKER-DO-NOT-STORE';
+  const kept = join(dir, 'kept'), broken = join(dir, 'Broken Meta'), nested = join(dir, 'Broken Meta', 'nested'), agent = join(dir, 'agent-only');
+  const indexed = join(dir, 'from-index'), ignored = join(dir, 'ignored-cwd'), late = join(dir, 'late'), gone = join(dir, 'gone');
+  const worktree = join(broken, '.claude', 'worktrees', 'agent-x'), sideWorktree = join(broken, '.claude', 'worktrees', 'side-agent');
+  const scratchNamed = join(dir, 'scratchpad'), scratchpad = join(dir, 'Library', 'Application Support', 'Claude', 'scratch-workspaces', 'session');
+  const stale = join(dir, 'stale-index'), newer = join(dir, 'newer-jsonl'), busy = join(dir, 'busy'), quiet = join(dir, 'quiet'), agentMeta = join(dir, 'agent-meta');
+  for (const path of [kept, broken, nested, agent, indexed, ignored, late, gone, worktree, sideWorktree, scratchNamed, scratchpad, stale, newer, busy, quiet, agentMeta]) mkdirSync(path, { recursive: true });
+  rmSync(gone, { recursive: true });
+  const session = (folder, cwd, { extra, sidechain = false, mtime } = {}) => {
+    const folderDir = join(projectsDir, folder); mkdirSync(folderDir, { recursive: true });
+    const file = join(folderDir, `${randomUUID()}.jsonl`);
+    const lines = ['not-json', JSON.stringify({ type: 'user', cwd, isSidechain: sidechain, timestamp: '2020-01-01T00:00:00.000Z' })];
+    if (extra) lines.push(JSON.stringify({ type: 'user', cwd: extra, timestamp: '2024-01-01T00:00:00.000Z' }));
+    writeFileSync(file, `${lines.join('\n')}\n`); if (mtime) utimesSync(file, mtime, mtime); return file;
+  };
+  session('zzz-not-the-cwd', broken, { extra: nested });
+  session('side-only', agent, { sidechain: true });
+  session('worktree-folder', worktree);
+  session('side-worktree', sideWorktree, { sidechain: true });
+  session('scratch-name', scratchNamed);
+  session('scratchpad-folder', scratchpad);
+  session('gone-folder', gone);
+  writeFileSync(join(projectsDir, 'zzz-not-the-cwd', 'sessions-index.json'), '{');
+  mkdirSync(join(projectsDir, 'zzz-not-the-cwd', 'subagents'), { recursive: true });
+  writeFileSync(join(projectsDir, 'zzz-not-the-cwd', 'subagents', 'agent-1.jsonl'), `${JSON.stringify({ type: 'user', isSidechain: true, cwd: agent })}\n`);
+  const indexDir = join(projectsDir, 'indexed-folder'); mkdirSync(indexDir, { recursive: true });
+  writeFileSync(join(indexDir, 'sessions-index.json'), JSON.stringify({ version: 1, entries: [
+    { sessionId: randomUUID(), projectPath: indexed, modified: 1893456000000, firstPrompt: marker },
+    { cwd: agent, isSidechain: true, modified: 1893456000000, firstPrompt: marker },
+    { cwd: agent, agentId: 'agent-1', projectPath: agent, firstPrompt: marker },
+  ] }));
+  writeFileSync(join(indexDir, `${randomUUID()}.jsonl`), `${JSON.stringify({ type: 'user', cwd: ignored })}\n`);
+  const staleWhen = Date.parse('2020-01-01T00:00:00.000Z'), newerWhen = new Date('2026-06-01T00:00:00.000Z');
+  const staleDir = join(projectsDir, 'stale-indexed'); mkdirSync(staleDir);
+  writeFileSync(join(staleDir, 'sessions-index.json'), JSON.stringify({ entries: [{ projectPath: stale, modified: staleWhen }] }));
+  const newerFile = join(staleDir, `${randomUUID()}.jsonl`);
+  writeFileSync(newerFile, `${JSON.stringify({ type: 'user', cwd: newer, isSidechain: false })}\n`);
+  utimesSync(newerFile, newerWhen, newerWhen);
+  const busyDir = join(projectsDir, 'busy-slug'); mkdirSync(busyDir);
+  let newestBusy;
+  for (let i = 0; i < 401; i++) {
+    newestBusy = join(busyDir, `${String(i).padStart(4, '0')}.jsonl`);
+    writeFileSync(newestBusy, `${JSON.stringify({ type: 'user', cwd: busy })}\n`);
+  }
+  const quietDir = join(projectsDir, 'quiet-slug'); mkdirSync(quietDir);
+  const quietFile = join(quietDir, `${randomUUID()}.jsonl`);
+  writeFileSync(quietFile, `${JSON.stringify({ type: 'user', cwd: quiet })}\n`);
+  utimesSync(quietFile, new Date(staleWhen), new Date(staleWhen));
+  const agentDir = join(projectsDir, 'agent-meta-sessions'); mkdirSync(agentDir);
+  writeFileSync(join(agentDir, `${randomUUID()}.jsonl`), `${JSON.stringify({ type: 'user', cwd: agentMeta, agentId: 'agent-1' })}\n`);
+  const base = { claudePath: join(here, 'fake-claude.mjs'), claudeProjectsDir: projectsDir, stopTimeoutMs: 50 };
+  let service = await createService({ ...base, port: 0, dataDir, discoverIntervalMs: 60_000 });
+  t.after(async () => { await service.close(); rmSync(dir, { recursive: true, force: true }); });
+  const absent = await createService({ ...base, port: 0, dataDir: join(dir, 'absent'), claudeProjectsDir: join(dir, 'missing-claude'), claudeAvailable: false });
+  t.after(() => absent.close());
+  const token = (await (await fetch(service.url + '/api/local-session')).json()).token;
+  const request = async (route, data) => fetch(service.url + route, { method: data === undefined ? 'GET' : 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, ...(data === undefined ? {} : { body: JSON.stringify(data) }) }).then(async response => ({ status: response.status, data: await response.json() }));
+  const paths = snapshot => new Set(snapshot.projects.map(project => project.path));
+  let state = (await request('/api/state')).data;
+  assert.equal(state.chats.length, 0);
+  assert.deepEqual(paths(state), new Set([realpathSync(broken), realpathSync(indexed), realpathSync(ignored), realpathSync(worktree), realpathSync(scratchNamed), realpathSync(stale), realpathSync(newer), realpathSync(busy), realpathSync(quiet)]));
+  assert.equal(paths(state).has(realpathSync(scratchpad)), false);
+  assert.equal(paths(state).has(realpathSync(sideWorktree)), false);
+  assert.equal(paths(state).has(realpathSync(agentMeta)), false);
+  assert.equal(state.projects.find(project => project.path === realpathSync(broken)).name, 'Broken Meta');
+  assert.equal(state.projects.find(project => project.path === realpathSync(indexed)).lastUsedAt, 1893456000000);
+  assert.equal(state.projects.find(project => project.path === realpathSync(stale)).lastUsedAt, staleWhen);
+  assert.equal(state.projects.find(project => project.path === realpathSync(newer)).lastUsedAt, Math.floor(statSync(newerFile).mtimeMs));
+  assert.equal(state.projects.find(project => project.path === realpathSync(quiet)).lastUsedAt, staleWhen);
+  assert.equal(state.projects.find(project => project.path === realpathSync(busy)).lastUsedAt, Math.floor(statSync(newestBusy).mtimeMs));
+  assert.equal(readFileSync(join(dataDir, 'data.sqlite')).includes(marker), false);
+  const registered = await request('/api/projects', { path: kept, name: 'Kept' });
+  assert.equal(registered.status, 201);
+  const keptSession = session('kept-folder', kept, { mtime: new Date('2026-12-01T00:00:00.000Z') });
+  session('late-folder', late);
+  state = (await request('/api/state')).data;
+  assert.equal(paths(state).has(realpathSync(late)), false);
+  assert.equal(state.projects.find(project => project.id === registered.data.id).name, 'Kept');
+  assert.ok(state.projects.find(project => project.id === registered.data.id).lastUsedAt < Date.parse('2026-11-01T00:00:00.000Z'));
+  await service.close();
+  service = await createService({ ...base, port: 0, dataDir, discoverIntervalMs: 0 });
+  state = service.state();
+  const keptProject = state.projects.find(project => project.id === registered.data.id);
+  assert.equal(keptProject.name, 'Kept');
+  assert.equal(keptProject.lastUsedAt, Math.floor(statSync(keptSession).mtimeMs));
+  assert.equal(state.projects.some(project => project.path === realpathSync(late)), true);
+  assert.equal(state.chats.length, 0);
+  const absentToken = (await (await fetch(absent.url + '/api/local-session')).json()).token;
+  assert.equal((await fetch(absent.url + '/api/state', { headers: { Authorization: `Bearer ${absentToken}` } })).status, 200);
+});
+
+test('first prompt creates a chat atomically and retries keep the recorded model and effort', async t => {
+  const f = await fixture(t), project = (await f.request('/api/state')).data.projects[0];
+  assert.deepEqual((await f.request('/api/state')).data.capabilities.models, ['default', 'opus', 'sonnet', 'haiku']);
+  assert.deepEqual((await f.request('/api/state')).data.capabilities.efforts, ['default', 'low', 'medium', 'high', 'xhigh', 'max']);
+  const legacy = await f.createChat();
+  await f.send(legacy, 'hello'); await f.finished(legacy);
+  const calls = () => readFileSync(join(f.projectPath, 'calls.ndjson'), 'utf8').trim().split('\n').filter(Boolean).map(JSON.parse);
+  const legacyArgs = calls().find(call => call.args.includes(legacy.id)).args;
+  assert.equal(legacyArgs.includes('--model'), false);
+  assert.equal(legacyArgs.includes('--effort'), false);
+  assert.equal(legacyArgs.includes('--bare'), false);
+  assert.equal((await f.request(`/api/chats/${legacy.id}/prompts`, { id: randomUUID(), text: 'legacy-manual', mode: 'default' })).status, 202);
+  await f.finished(legacy);
+  const manualArgs = calls().find(call => call.prompt === 'legacy-manual').args;
+  assert.equal(manualArgs[manualArgs.indexOf('--permission-mode') + 1], 'manual');
+  const chatId = randomUUID(), promptId = randomUUID();
+  assert.equal((await f.request(`/api/chats/${chatId}/prompts`, { id: promptId, text: 'hello', model: 'gpt', projectId: project.id })).status, 400);
+  assert.equal((await f.request('/api/state')).data.chats.some(chat => chat.id === chatId), false);
+  const created = await f.request(`/api/chats/${chatId}/prompts`, { id: promptId, text: 'hello', mode: 'plan', model: 'opus', effort: 'max', projectId: project.id });
+  assert.equal(created.status, 202);
+  assert.equal((await f.request(`/api/chats/${chatId}/prompts`, { id: promptId, text: 'hello', mode: 'plan', model: 'sonnet', effort: 'low', projectId: project.id })).status, 409);
+  assert.equal((await f.request(`/api/chats/${chatId}/prompts`, { id: promptId, text: 'hello', mode: 'plan', model: 'opus', effort: 'max', projectId: project.id })).data.duplicate, true);
+  const chat = await f.finished({ id: chatId });
+  assert.equal(chat.status, 'idle');
+  assert.equal(chat.model, 'opus'); assert.equal(chat.effort, 'max'); assert.equal(chat.mode, 'plan'); assert.equal(chat.projectId, project.id);
+  const createdArgs = calls().find(call => call.args.includes(chatId)).args;
+  assert.equal(createdArgs[createdArgs.indexOf('--model') + 1], 'opus');
+  assert.equal(createdArgs[createdArgs.indexOf('--effort') + 1], 'max');
+  assert.equal(calls().filter(call => call.args.includes(chatId)).length, 1);
+  const otherDir = join(f.dir, 'other'); mkdirSync(otherDir);
+  const other = (await f.request('/api/projects', { path: otherDir, name: 'Other' })).data;
+  assert.equal((await f.request(`/api/chats/${legacy.id}/prompts`, { id: randomUUID(), text: 'switch', projectId: other.id })).status, 409);
+  assert.equal((await f.request('/api/state')).data.chats.find(item => item.id === legacy.id).projectId, project.id);
+  assert.equal(calls().filter(call => call.args.includes(legacy.id)).length, 2);
+  rmSync(otherDir, { recursive: true });
+  const missingId = randomUUID(), missingPrompt = randomUUID();
+  assert.equal((await f.request(`/api/chats/${missingId}/prompts`, { id: missingPrompt, text: 'hello', projectId: other.id })).status, 409);
+  assert.equal((await f.request('/api/state')).data.chats.some(item => item.id === missingId), false);
+  mkdirSync(otherDir);
+  assert.equal((await f.request(`/api/chats/${missingId}/prompts`, { id: missingPrompt, text: 'hello', projectId: other.id })).status, 202);
+  await f.finished({ id: missingId });
+  const offline = await createService({ port: 0, dataDir: join(f.dir, 'offline'), claudeAvailable: false, claudeProjectsDir: f.claudeProjectsDir, claudePath: join(here, 'fake-claude.mjs') });
+  t.after(() => offline.close());
+  const offlineToken = (await (await fetch(offline.url + '/api/local-session')).json()).token;
+  const offlineProject = await (await fetch(offline.url + '/api/projects', { method: 'POST', headers: { Authorization: `Bearer ${offlineToken}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ path: f.projectPath }) })).json();
+  const offlineChat = randomUUID();
+  const rejected = await fetch(offline.url + `/api/chats/${offlineChat}/prompts`, { method: 'POST', headers: { Authorization: `Bearer ${offlineToken}`, 'Content-Type': 'application/json' }, body: JSON.stringify({ id: randomUUID(), text: 'hello', projectId: offlineProject.id }) });
+  assert.equal(rejected.status, 503);
+  assert.equal(offline.state().chats.some(item => item.id === offlineChat), false);
+});
+
+test('delete blocks active work and a later prompt cannot recreate it; rename stays available', async t => {
+  const f = await fixture(t), chat = await f.createChat(), project = (await f.request('/api/state')).data.projects.find(item => item.id === chat.projectId);
+  assert.equal((await f.request(`/api/chats/${chat.id}/rename`, { title: '   ' })).status, 400);
+  assert.equal((await f.request(`/api/chats/${chat.id}/rename`, { title: 'x'.repeat(161) })).status, 400);
+  const db = new DatabaseSync(join(f.dir, 'data/data.sqlite'));
+  db.prepare('UPDATE chats SET updatedAt=1 WHERE id=?').run(chat.id); db.close();
+  const renamed = await f.request(`/api/chats/${chat.id}/rename`, { title: 'Renamed chat' });
+  assert.equal(renamed.status, 200); assert.equal(renamed.data.title, 'Renamed chat'); assert.ok(renamed.data.updatedAt > 1);
+  const promptId = randomUUID();
+  await f.send(chat, 'hang', promptId); await wait(() => existsSync(join(f.projectPath, 'child.pid')));
+  assert.equal((await f.request(`/api/chats/${chat.id}/delete`, {})).status, 409);
+  const running = await f.request(`/api/chats/${chat.id}/rename`, { title: 'Still running' });
+  assert.equal(running.data.title, 'Still running'); assert.equal(running.data.status, 'running');
+  assert.equal((await f.request(`/api/chats/${chat.id}/stop`, {})).status, 200);
+  assert.equal((await f.finished(chat)).status, 'interrupted');
+  const before = (await f.request('/api/state')).data.lastSeq;
+  assert.equal((await f.request(`/api/chats/${chat.id}/delete`, {})).status, 200);
+  assert.equal((await f.request(`/api/chats/${chat.id}/delete`, {})).status, 200);
+  assert.equal((await f.request(`/api/chats/${randomUUID()}/delete`, {})).status, 404);
+  assert.equal((await f.request(`/api/chats/${chat.id}/messages`)).status, 404);
+  assert.equal((await f.request(`/api/chats/${chat.id}/prompts`, { id: promptId, text: 'hang', projectId: project.id })).status, 410);
+  assert.equal((await f.request(`/api/chats/${chat.id}/prompts`, { id: randomUUID(), text: 'again', projectId: project.id })).status, 410);
+  assert.equal((await f.request('/api/state')).data.chats.some(item => item.id === chat.id), false);
+  assert.equal(readFileSync(join(f.projectPath, 'calls.ndjson'), 'utf8').trim().split('\n').length, 1);
+  const ledger = new DatabaseSync(join(f.dir, 'data/data.sqlite'));
+  assert.equal(ledger.prepare('SELECT text,model,effort FROM prompts WHERE id=?').get(promptId).text, 'hang');
+  assert.ok(ledger.prepare('SELECT id FROM deleted_chats WHERE id=?').get(chat.id));
+  assert.equal(ledger.prepare('SELECT COUNT(*) AS n FROM messages WHERE chatId=?').get(chat.id).n, 0);
+  assert.ok(ledger.prepare('SELECT seq FROM events WHERE seq>? AND type=? AND chatId=?').get(before, 'state', chat.id));
+  ledger.close();
 });
 
 test('shutdown finishes even when a request never finishes uploading', async t => {

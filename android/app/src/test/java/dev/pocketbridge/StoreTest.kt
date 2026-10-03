@@ -12,11 +12,15 @@ class StoreTest {
         val store = Store(prefs.value)
         val prompt = PendingPrompt("delivery", "hello")
         store.put("draft:chat", " hello ")
+        store.put("draftChat:chat", DraftChat("chat", "project", "auto").store())
+        store.put("options:chat", ChatOptions("auto", "sonnet", "high").store())
         store.commit("pending:chat", prompt.json().toString(), store.session())
         store.completePrompt("chat", prompt, store.session(), accepted = true)
         assertEquals(2, prefs.commits.size)
         assertFalse(prefs.commits.last().containsKey("pending:chat"))
         assertFalse(prefs.commits.last().containsKey("draft:chat"))
+        assertFalse(prefs.commits.last().containsKey("draftChat:chat"))
+        assertFalse(prefs.commits.last().containsKey("options:chat"))
     }
 
     @Test fun `acknowledgement preserves edits and rejection preserves the original draft`() {
@@ -26,8 +30,10 @@ class StoreTest {
         store.completePrompt("chat", prompt, store.session(), accepted = true)
         assertEquals("next prompt", store.get("draft:chat"))
         store.put("draft:chat", "hello")
+        store.put("options:chat", ChatOptions("auto", "sonnet", "high").store())
         store.completePrompt("chat", prompt, store.session(), accepted = false)
         assertEquals("hello", store.get("draft:chat"))
+        assertNotEquals("", store.get("options:chat"))
     }
 
     @Test fun `old requests cannot write delivery state after disconnect`() {

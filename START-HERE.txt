@@ -2,7 +2,8 @@ PocketBridge is built and running on this Mac.
 
 Open http://127.0.0.1:8787 for the Mac client. The service starts at login and
 keeps the Mac awake on AC power with the lid open. PocketBridge is already
-registered as a project; use Add folder to register your other project paths.
+registered as a project. Other folders are discovered from local Claude Code chats;
+use Add folder on the Mac for projects Claude has not used yet.
 
 ONE-TIME PHONE SETUP
 1. Open Tailscale on the Mac, sign in and approve its macOS VPN/network extension.
@@ -10,9 +11,9 @@ ONE-TIME PHONE SETUP
 2. Double-click mac/launcher/Setup private connection.command in this folder.
    It configures private HTTPS Serve, saves the address and restarts PocketBridge.
    If it prints a Tailscale HTTPS enablement link, complete that step and rerun it.
-3. Sign into GitHub on your phone and download the latest PocketBridge APK from
+3. Download the latest PocketBridge APK from
    https://github.com/20ns/pocketbridge/releases/latest . Install it over the old app.
-   The local releases folder also contains PocketBridge-0.3.0.apk.
+   The local releases folder also contains PocketBridge-0.4.0.apk.
    Alternatively, open the private address from step 2 followed by /PocketBridge.apk
    in Chrome on your phone. Android will ask for the usual APK installation approval.
 4. In the Mac client choose Connect phone, then Create pairing code.
@@ -23,6 +24,13 @@ After pairing, open the app, choose a project and make a chat. Bypass permission
 is the default; Auto is also available. The mode is remembered per chat. Send a
 prompt, read streamed text/activity, answer questions and use Stop when needed.
 The Mac continues a turn while the app is closed. Reopening catches up.
+
+Latest shows recently used project folders; All includes older projects. Sort
+projects and chats as needed. New chat stays unsaved until you send a prompt.
+Hold a saved chat for Rename or Delete, or use its menu. Stop active work before
+deleting. Conversation options choose the model, effort and permission mode for
+the next prompt. Settings checks for APK updates; Android may ask you to allow
+PocketBridge to install apps once. Accept the system update without uninstalling.
 
 Pairing stays saved across app/service restarts. Keep Tailscale connected on both
 devices. Claude sign-in and Tailscale device keys can independently require renewal;

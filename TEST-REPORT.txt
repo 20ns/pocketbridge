@@ -1,66 +1,51 @@
-PocketBridge 0.3.0 verification, 3 October 2026
-
-READY FOR A PHYSICAL PHONE TRIAL
-The signed personal APK targets Android 16. It updates earlier PocketBridge builds
-with the same certificate. The production Mac service is running under its login
-LaunchAgent. Physical S25 Ultra and private Tailscale networking remain untested.
+PocketBridge 0.4.0 verification, 3 October 2026
 
 AUTOMATED CHECKS
-- Mac: pnpm test, 24 passed, zero failures.
-- Android: assembleRelease, assembleDebug, testDebugUnitTest, lintRelease and
-  lintDebug passed. 33 JVM tests, zero failures/errors. Lint has zero errors and
-  ten dependency/KTX suggestions per variant.
-- API checks include real HTTP/SSE cancellation, stale GET recovery, fresh idle
-  mutation connections, no POST replay after lost responses or 503 Retry-After,
-  address boundaries and cursor reconciliation.
-- Store checks cover durable prompt ID/text/mode, matching-draft completion,
-  disconnect generations and a late pairing response after disconnect.
-- Formatting checks cover message/tool grouping, common Markdown, fenced code,
-  nested lists, tables, link safety and saved unfinished question answers.
-- Mac recovery checks cover duplicate service ownership, durable delivery IDs,
-  whole process-group interruption, cleanup after normal CLI completion, crash
-  recovery, bounded 15,000-event SSE replay and hanging uploads during shutdown.
+- Mac: pnpm test, 29 passed, zero failures.
+- Android: signed assembleRelease, testDebugUnitTest and lintRelease passed.
+  44 JVM tests, zero failures/errors. Debug build/lint also passed during development.
+- New checks cover project metadata discovery (no conversation import), busy/older
+  folders, malformed indexes, stable registration, atomic first prompt, immutable
+  model/effort options, rename, active deletion rejection and deleted-chat tombstones.
+- Android checks cover pending-prompt compatibility, project ordering and Latest's
+  seven-day window, release selection, update host boundaries and bounded streaming.
+- Existing delivery, HTTP/SSE cancellation, single-attempt mutations, reconnect,
+  shutdown/crash recovery, question state and Markdown checks remain passing.
 
-REAL CLAUDE AND NATIVE ANDROID CHECKS THIS PASS
-Official Claude CLI 2.1.285, authenticated subscription on this Mac. Native signed
-release APK on Android 16 ARM64 emulator; isolated service/data on port 8799.
-- Existing pairing survived emulator reboot and signed APK updates.
-- A prompt sent from Android invoked Bash on the Mac, wrote BRIDGEV3 to a scratch
-  file, and returned headings, nested bullets, inline/fenced code and a table.
-  File contents were checked on disk. Retrying its delivery ID was a duplicate
-  acknowledgement, with no second execution.
-- Native AskUserQuestion controls returned CHOSEN Green. A later question's
-  Something else choice and typed Copper survived night-mode and font-size
-  recreation; Android XML asserted both. Native Send answer returned CHOSEN Copper.
-- An idle connection spoiled the first Stop request during QA. The final fix gives
-  mutations separate fresh connections. In the final signed APK, one native Stop
-  tap interrupted a foreground Python 90-second task; its marker file was never
-  written. Status became Interrupted. Earlier completed edits remained.
-- With the phone app force-stopped, Claude wrote PHONE_CLOSED_OK to a second scratch
-  file and finished. Reopening restored the reply and saved connection.
-- Stopping the isolated Mac service showed an offline banner. An uncached chat
-  showed Waiting for your Mac without claiming saved messages. Restarting the
-  service reconnected automatically, without tapping Retry or pairing again.
-- An original VIEW pairing intent was retained through theme/font recreation;
-  after dismissing its initial Already paired message, recreation produced no
-  duplicate snackbar and retained Connected to your Mac.
-- Projects, Recent chats, conversation, keyboard composer, questions and offline
-  reading inspected at native phone resolution. Dark at 1.3 font scale inspected.
-- Production SQLite backed up before an idle graceful LaunchAgent restart. Its
-  project/chat data and local health survived. No production data was cleared.
+NATIVE AND REAL CLAUDE CHECKS THIS PASS
+Android 16 ARM64 phone emulator, native signed release source. Isolated service on
+port 8799, separate test data; official Claude CLI 2.1.285 with subscription login.
+- Pairing survived signed APK updates. No data clearing or uninstall was used.
+- Latest showed the current folder; All also showed an old and unused folder.
+  Newest/Oldest sorting was exercised. Older Claude conversations were not imported.
+- Opening and leaving an empty new chat left the server's chat count unchanged.
+- Compact Options selectors applied Opus, High effort and Bypass permissions;
+  values survived system dark-mode/font-scale recreation. Haiku resets effort.
+- A prompt sent from Android created its first saved chat, invoked Opus 5.5 on
+  the Mac and wrote POCKETBRIDGE_V4 to proof-v4.txt. Contents were checked on disk.
+  Native streamed replies rendered bullets, fenced code and a scrollable table.
+- Long press opened Rename/Delete; renaming updated the native list. Delete required
+  confirmation. Late sends to deleted chats are rejected rather than recreated.
+- Phone captures checked light appearance and dark at 1.3 font scale, with IME.
+  The fixed composer and all option selectors/Apply remained visible and usable.
+- Public GitHub update check worked without a GitHub account.
+- A copy of the production SQLite database migrated successfully, preserving all
+  three managed chats, paired tokens and messages. Discovery added folders only.
+- End-to-end installation of the newly published APK is checked after publication.
 
-DESIGN AND REVIEW
-Claude Code Opus 5.5 High implemented the Android redesign using Impeccable 4.5.0.
-GPT-6.1 Sol High workers/reviewers checked backend and Android reliability. A fresh
-native finish reviewer scored the three material UI fixes resolved, disposition
-ship. DESIGN.md and .impeccable/design.json were extracted by a separate documenter.
-The named Impeccable roles were unavailable; fresh independent agents used their
-supplied fallback role instructions. No HTML/CSS detector ran on native Kotlin.
+INDEPENDENT REVIEW
+GPT-5.5 High implemented the Android extension. Cursor Grok reviewed/implemented
+Mac changes. A separate fresh Grok backend review found no material defects.
+Fresh GPT-5.5 native Impeccable finish review: ship, no material fixes.
+Native source/lint/captures were used; no HTML/CSS detector ran on Kotlin. A separate
+fresh documenter reconciled the existing design documentation with the new controls.
 
-EARLIER REAL-CLI CHECKS RETAINED
-The 0.1.0 pass verified session resume/recall, Auto without falling back to Bypass,
-Claude authentication from launchd, paired-token persistence over launchd restart,
-and a real native Stop. Those unchanged behaviours were not all repeated here.
+EARLIER CHECKS RETAINED
+The 0.3 pass exercised real Claude Stop, phone-closed execution, question answers,
+uncertain delivery, duplicate acknowledgement and automatic reconnect. These
+unchanged paths retain their automated checks; the full real-provider exercise was
+not repeated. The user reported pairing and sign-in working on their physical S25
+Ultra with 0.3. This 0.4 pass uses an emulator, not an attached physical Samsung.
 
 REPRODUCE
 Mac: cd mac && pnpm test
@@ -69,27 +54,17 @@ Signed release: POCKETBRIDGE_SIGNING_KEY="$HOME/.android/debug.keystore" \
   ./gradlew assembleRelease lintRelease
 Use Android Studio's JDK 21 and Android SDK platform/build tools 36.
 
-Native recreation check on a paired emulator:
-1. Open a pocketbridge://pair link, dismiss the expected Already paired message.
-2. adb shell cmd uimode night yes
-3. adb shell settings put system font_scale 1.3
-4. adb shell uiautomator dump /sdcard/window.xml
-5. Inspect the dump: Connected to your Mac; no repeated Already paired message.
-For a pending question, choose Something else and type an answer before steps 2-4;
-its selected option and text must remain. Restore night no and font_scale 1.0.
-
 DISTRIBUTION AND LIMITS
-Private source and signed releases: https://github.com/20ns/pocketbridge
-Release assets include their SHA256 file. The same persistent key signs updates;
-no credentials, chat database or signing key are stored in source control.
-The local release APK is non-debuggable despite retaining the earlier personal
-certificate. It is for personal sideloading, not Play Store distribution.
+Public source and signed APKs: https://github.com/20ns/pocketbridge
+Release assets include SHA256. Updates retain the original persistent certificate
+and package name. Credentials, databases, signing keys and private captures remain
+ignored. The APK is non-debuggable and intended for personal sideloading.
 
-Still awaiting your phone: Tailscale login/VPN approval and private HTTPS transport,
-Samsung camera QR handoff, real Wi-Fi roaming and physical-device performance.
-Mac logout/FileVault, closed lid and battery-only sleep were not simulated. Keep
-this Mac logged in, awake, plugged in and lid open as agreed.
-Common Markdown is supported; this parser is not a complete CommonMark engine.
-Stop cleans processes in the turn's group; explicitly detached groups are outside
-that cleanup. Questions have a 24-hour hook waiting ceiling. Provider authentication,
-subscription availability and usage limits remain independent of saved pairing.
+Keep the Mac logged in, awake, plugged in and lid open. Android update installation
+requires the system's confirmation. Real Samsung roaming/performance and physical
+0.4 installation still need the user's phone trial. Mac logout/FileVault, closed
+lid and battery-only sleep are outside the agreed operating setup. Markdown is a
+practical subset, not a complete CommonMark engine. Stop cannot undo edits or stop
+explicitly detached process groups. Questions have a 24-hour waiting ceiling.
+Provider login, model availability, subscription limits and Tailscale renewal are
+independent of saved PocketBridge pairing; no account-ban guarantee is claimed.

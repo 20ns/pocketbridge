@@ -184,3 +184,28 @@ export function markdown(text, doc = document) {
   flush();
   return fragment;
 }
+
+// A delivery id is fixed once a send is attempted. Later option changes retry that same payload.
+export function editDraft(previous, text, mode) {
+  if (previous?.attempted && previous.text === text) return previous;
+  if (previous?.attempted) return {text, id: crypto.randomUUID(), mode, model: previous.model || 'default', effort: previous.effort || 'default', attempted: false};
+  return {text, id: previous?.id ?? crypto.randomUUID(), mode, model: previous?.model || 'default', effort: previous?.effort || 'default', attempted: false};
+}
+
+export function blankLocalDraft(draft) {
+  return !draft?.attempted && !String(draft?.text ?? '').trim();
+}
+
+export function prepareDelivery(draft, text, mode, chat) {
+  if (draft?.attempted && draft.text === text) return draft;
+  const model = chat?.model || draft?.model || 'default';
+  const effort = chat?.effort || draft?.effort || 'default';
+  if (draft && !draft.attempted) return {...draft, text, mode: mode ?? draft.mode, model, effort, attempted: true};
+  return {text, id: crypto.randomUUID(), mode, model, effort, attempted: true};
+}
+
+export function promptPayload(draft, projectId) {
+  const body = {id: draft.id, text: String(draft.text ?? '').trim(), mode: draft.mode, model: draft.model || 'default', effort: draft.effort || 'default'};
+  if (projectId) body.projectId = projectId;
+  return body;
+}

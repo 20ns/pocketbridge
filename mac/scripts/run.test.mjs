@@ -12,7 +12,7 @@ test('startup wrapper applies saved settings, listens and closes cleanly', {time
   const data = mkdtempSync(join(tmpdir(),'pocketbridge-startup-'));
   writeFileSync(join(data,'config.json'),JSON.stringify({keepAwake:false,publicUrl:'https://test.private.ts.net',port:1}));
   const child = spawn(process.execPath,[new URL('./run.mjs',import.meta.url).pathname], {
-    env:{...process.env,POCKETBRIDGE_DATA_DIR:data,POCKETBRIDGE_PORT:'0',POCKETBRIDGE_PUBLIC_URL:'https://override.private.ts.net'},
+    env:{...process.env,POCKETBRIDGE_DATA_DIR:data,POCKETBRIDGE_PORT:'0',POCKETBRIDGE_PUBLIC_URL:'https://override.private.ts.net',POCKETBRIDGE_CLAUDE_PROJECTS_DIR:join(data,'claude-projects')},
     stdio:['ignore','pipe','pipe'],
   });
   const exited = once(child,'exit');
@@ -34,7 +34,7 @@ test('startup wrapper applies saved settings, listens and closes cleanly', {time
     // Simulate upgrading a wrapper that predates the durable service-owner setting.
     const db = new DatabaseSync(join(data,'data.sqlite'));
     db.prepare('DELETE FROM settings WHERE key=?').run('serviceOwner'); db.close();
-    await assert.rejects(createService({port:0,dataDir:data,claudeAvailable:false}),/Stop the older service/);
+    await assert.rejects(createService({port:0,dataDir:data,claudeAvailable:false,claudeProjectsDir:join(data,'claude-projects')}),/Stop the older service/);
     assert.equal((await fetch(`${url}/api/health`)).status,200);
     child.kill('SIGTERM');
     assert.deepEqual(await exited,[0,null]);

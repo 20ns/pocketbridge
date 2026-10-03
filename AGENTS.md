@@ -1,7 +1,7 @@
 # PocketBridge
 
 Build a reliable personal Android controller for Claude Code running on the user's
-MacBook. The phone should open recent chats, start chats in registered Mac projects,
+MacBook. The phone should open recent chats, start chats in discovered or registered Mac projects,
 send prompts, show streamed replies and tool activity, answer questions and stop work.
 Pairing should persist. The Mac keeps working when the phone disconnects or closes.
 
@@ -23,7 +23,11 @@ Pairing should persist. The Mac keeps working when the phone disconnects or clos
 - Bypass permissions is the preferred mode. Offer Auto and never silently switch modes.
 - Claude login stays inside the unmodified official CLI. Never extract subscription
   credentials or replace its authentication with direct API calls.
-- Use private Tailscale access. No public exposure, cloud database or old-chat import.
+- Keep the Mac service private through Tailscale. Source and signed APK releases
+  are public; credentials, runtime data and signing keys stay private and ignored.
+- Discover project folders from Claude session metadata; do not import old chats.
+- New chats stay local drafts until their first prompt. Preserve model, effort and
+  permission mode with the immutable delivery ID. Deleted chats cannot be recreated by a retry.
 - Keep this a simple chat controller. Code review and IDE features are outside scope.
 
 ## Working here

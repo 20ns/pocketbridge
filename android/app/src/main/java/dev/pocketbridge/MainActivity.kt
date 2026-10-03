@@ -47,6 +47,7 @@ class MainActivity : ComponentActivity() {
         setContent { PocketTheme { BridgeApp(model) } }
     }
     override fun onNewIntent(intent: Intent) { super.onNewIntent(intent); model.handleLink(intent.data) }
+    override fun onResume() { super.onResume(); model.resumeUpdateInstall() }
 }
 
 /** Depth drives the slide direction: deeper screens enter from the end, Back reverses it. */
@@ -173,21 +174,19 @@ private enum class Screen(val depth: Int) { Pair(0), Projects(0), Chats(1), Sett
 
 @Composable private fun NewChatButton(model: BridgeModel, project: String, snackbar: SnackbarHostState) {
     val scope = rememberCoroutineScope()
-    var starting by remember { mutableStateOf(false) }
-    LaunchedEffect(model.busy) { if (!model.busy) starting = false }
     ExtendedFloatingActionButton(
+        modifier = Modifier.semantics { contentDescription = "New chat" },
         onClick = {
             val blocked = when {
-                !model.online -> "Your Mac isn't connected yet."
                 !model.claudeAvailable -> "Claude Code isn't available on your Mac."
                 model.projects.none { it.optString("id") == project } -> "This project was removed on your Mac."
                 else -> null
             }
             if (blocked != null) scope.launch { snackbar.currentSnackbarData?.dismiss(); snackbar.showSnackbar(blocked) }
-            else if (!model.busy) { starting = true; model.lastProject = project; model.newChat(project, defaultMode(model.modes)) }
+            else model.newChat(project, defaultMode(model.modes))
         },
-        icon = { if (starting) CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp, color = LocalContentColor.current) else Icon(Icons.Default.Add, null) },
-        text = { Text(if (starting) "Starting…" else "New chat") },
+        icon = { Icon(Icons.Default.Add, null) },
+        text = { Text("New chat") },
     )
 }
 

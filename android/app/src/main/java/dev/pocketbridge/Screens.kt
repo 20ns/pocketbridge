@@ -1,7 +1,10 @@
 package dev.pocketbridge
 
 import android.text.format.DateUtils
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -13,10 +16,12 @@ import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Info
+import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.*
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalFocusManager
@@ -94,11 +99,12 @@ import org.json.JSONObject
             "Work continues on the Mac when you close this app or lose signal. Keep the Mac awake, plugged in and on Tailscale.",
             Modifier.padding(horizontal = 16.dp, vertical = 12.dp), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
+        HorizontalDivider(Modifier.padding(vertical = 4.dp))
+        UpdateSettings(model)
         Row(Modifier.padding(horizontal = 16.dp, vertical = 8.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             FilledTonalButton(onClick = model::retry, enabled = !model.refreshing, modifier = Modifier.heightIn(min = 48.dp)) { Text(if (model.refreshing) "Reconnecting…" else "Reconnect") }
             OutlinedButton(onClick = { confirm = true }, enabled = !model.busy, modifier = Modifier.heightIn(min = 48.dp), colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.error)) { Text("Disconnect") }
         }
-        Text("PocketBridge ${BuildConfig.VERSION_NAME}", Modifier.padding(16.dp), style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
     }
     if (confirm) AlertDialog(
         onDismissRequest = { confirm = false },
@@ -107,6 +113,20 @@ import org.json.JSONObject
         confirmButton = { TextButton(onClick = { model.disconnect(); confirm = false }) { Text("Disconnect", color = MaterialTheme.colorScheme.error) } },
         dismissButton = { TextButton(onClick = { confirm = false }) { Text("Cancel") } },
     )
+}
+
+@Composable private fun UpdateSettings(model: BridgeModel) {
+    val update = model.updateStatus
+    ListItem(
+        headlineContent = { Text("PocketBridge ${update.installed}") },
+        overlineContent = { Text("App updates") },
+        supportingContent = { Text(if (update.latest.isBlank()) update.message else "Latest ${update.latest} · ${update.message}") },
+    )
+    Row(Modifier.padding(horizontal = 16.dp, vertical = 8.dp).horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+        FilledTonalButton(onClick = model::checkUpdate, enabled = !model.updateBusy, modifier = Modifier.heightIn(min = 48.dp)) { Text(if (model.updateBusy) "Checking…" else "Check latest") }
+        if (update.release != null && update.apkPath.isBlank()) Button(onClick = model::downloadUpdate, enabled = !model.updateBusy, modifier = Modifier.heightIn(min = 48.dp)) { Text("Download") }
+        if (update.apkPath.isNotBlank()) Button(onClick = model::installUpdate, enabled = !model.updateBusy, modifier = Modifier.heightIn(min = 48.dp)) { Text("Install") }
+    }
 }
 
 /** Minute-resolution clock so relative times stay true while the list is open. */
@@ -119,28 +139,66 @@ fun relativeTime(time: Long, now: Long): String =
     if (now - time < DateUtils.MINUTE_IN_MILLIS) "Just now"
     else DateUtils.getRelativeTimeSpanString(time, now, DateUtils.MINUTE_IN_MILLIS, DateUtils.FORMAT_ABBREV_RELATIVE or DateUtils.FORMAT_ABBREV_MONTH).toString()
 
+private enum class ProjectFilter { Latest, All }
+private enum class ProjectSort { Newest, Oldest, Name }
+private enum class ChatSort { Newest, Oldest }
+
+val LatestProjectWindowMillis = 7L * DateUtils.DAY_IN_MILLIS
+
+fun projectActivity(lastUsedAt: Long, newestChatUpdatedAt: Long) = maxOf(lastUsedAt.coerceAtLeast(0), newestChatUpdatedAt.coerceAtLeast(0))
+fun isLatestProject(activityAt: Long, now: Long) = activityAt > 0 && activityAt >= now - LatestProjectWindowMillis
+fun compareProjectActivity(leftAt: Long, leftName: String, rightAt: Long, rightName: String, newest: Boolean): Int {
+    val activity = if (newest) rightAt.compareTo(leftAt) else leftAt.compareTo(rightAt)
+    return activity.takeIf { it != 0 } ?: leftName.compareTo(rightName, ignoreCase = true)
+}
+private fun projectActivity(project: JSONObject, chats: List<JSONObject>) = projectActivity(project.optLong("lastUsedAt"), chats.maxOfOrNull { it.optLong("updatedAt") } ?: 0L)
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable fun Projects(model: BridgeModel, onOpen: (String) -> Unit) {
     val now = rememberNow()
-    // Most recently used first; projects without chats keep the Mac's order after them.
+    var filter by rememberSaveable { mutableStateOf(ProjectFilter.Latest) }
+    var sort by rememberSaveable { mutableStateOf(ProjectSort.Newest) }
     val latest = model.chats.groupBy { it.optString("projectId") }
-    val projects = model.projects.sortedByDescending { project -> latest[project.optString("id")]?.maxOf { it.optLong("updatedAt") } ?: 0L }
+    fun activity(project: JSONObject) = projectActivity(project, latest[project.optString("id")].orEmpty())
+    val projects = model.projects
+        .filter { filter == ProjectFilter.All || isLatestProject(activity(it), now) }
+        .sortedWith(when (sort) {
+            ProjectSort.Newest -> Comparator { a, b -> compareProjectActivity(activity(a), a.optString("name"), activity(b), b.optString("name"), newest = true) }
+            ProjectSort.Oldest -> Comparator { a, b -> compareProjectActivity(activity(a), a.optString("name"), activity(b), b.optString("name"), newest = false) }
+            ProjectSort.Name -> compareBy<JSONObject, String>(String.CASE_INSENSITIVE_ORDER) { it.optString("name") }.thenByDescending { activity(it) }
+        })
     PullToRefreshBox(model.refreshing, model::retry, Modifier.fillMaxSize()) {
         LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 24.dp)) {
+            item { ProjectControls(filter, sort, { filter = it }, { sort = it }) }
             if (!model.claudeAvailable) item { Notice("Claude Code isn't available on your Mac. Install it and sign in there, then restart PocketBridge.", Modifier.padding(16.dp)) }
             if (projects.isEmpty()) item {
-                if (model.online) Empty("No projects yet", "Add a project folder in PocketBridge on your Mac. It appears here right away.")
+                if (model.online && model.projects.isNotEmpty() && filter == ProjectFilter.Latest) Empty("No recent projects", "Latest shows projects used in the last 7 days. Choose All to see every project.")
+                else if (model.online) Empty("No projects yet", "Add a project folder in PocketBridge on your Mac. It appears here right away.")
                 else Empty("Waiting for your Mac", "Projects appear once your Mac answers.")
             }
             items(projects, key = { it.getString("id") }) { project ->
                 val chats = latest[project.optString("id")].orEmpty()
-                ProjectRow(project, chats, now) { onOpen(project.getString("id")) }
+                ProjectRow(project, chats, projectActivity(project, chats), now) { onOpen(project.getString("id")) }
             }
         }
     }
 }
 
-@Composable private fun ProjectRow(project: JSONObject, chats: List<JSONObject>, now: Long, onOpen: () -> Unit) {
+@Composable private fun ProjectControls(filter: ProjectFilter, sort: ProjectSort, onFilter: (ProjectFilter) -> Unit, onSort: (ProjectSort) -> Unit) {
+    Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(horizontal = 12.dp, vertical = 6.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        MenuButton("Show", if (filter == ProjectFilter.Latest) "Latest" else "All") {
+            DropdownMenuItem(text = { Text("Latest") }, onClick = { onFilter(ProjectFilter.Latest); it() })
+            DropdownMenuItem(text = { Text("All") }, onClick = { onFilter(ProjectFilter.All); it() })
+        }
+        MenuButton("Sort", when (sort) { ProjectSort.Newest -> "Newest"; ProjectSort.Oldest -> "Oldest"; ProjectSort.Name -> "Name" }) {
+            DropdownMenuItem(text = { Text("Newest") }, onClick = { onSort(ProjectSort.Newest); it() })
+            DropdownMenuItem(text = { Text("Oldest") }, onClick = { onSort(ProjectSort.Oldest); it() })
+            DropdownMenuItem(text = { Text("Name") }, onClick = { onSort(ProjectSort.Name); it() })
+        }
+    }
+}
+
+@Composable private fun ProjectRow(project: JSONObject, chats: List<JSONObject>, activityAt: Long, now: Long, onOpen: () -> Unit) {
     val colors = MaterialTheme.colorScheme
     // The one state worth surfacing from here: a chat that is waiting on you, or still working.
     val active = when {
@@ -154,18 +212,23 @@ fun relativeTime(time: Long, now: Long): String =
             if (active.isEmpty()) Text(shortPath(project.optString("path")), maxLines = 1, overflow = TextOverflow.Ellipsis)
             else Text(statusLabel(active), color = if (active == "waiting") colors.tertiary else colors.primary)
         },
-        trailingContent = { chats.maxOfOrNull { it.optLong("updatedAt") }?.let { Text(relativeTime(it, now), style = MaterialTheme.typography.labelMedium) } },
+        trailingContent = { if (activityAt > 0) Text(relativeTime(activityAt, now), style = MaterialTheme.typography.labelMedium) },
         modifier = Modifier.clickable(onClickLabel = "Open project", onClick = onOpen),
     )
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable fun Chats(model: BridgeModel, project: String) {
-    val chats = model.chats.filter { it.optString("projectId") == project }
+    var sort by rememberSaveable { mutableStateOf(ChatSort.Newest) }
+    val chats = model.chats.filter { it.optString("projectId") == project }.sortedWith(when (sort) {
+        ChatSort.Newest -> compareByDescending { it.optLong("updatedAt") }
+        ChatSort.Oldest -> compareBy { it.optLong("updatedAt") }
+    })
     val now = rememberNow()
     PullToRefreshBox(model.refreshing, model::retry, Modifier.fillMaxSize()) {
         // Bottom room keeps the last row clear of the New chat button.
         LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 96.dp)) {
+            item { ChatControls(sort) { sort = it } }
             if (!model.claudeAvailable) item { Notice("Claude Code isn't available on your Mac. Install it and sign in there, then restart PocketBridge.", Modifier.padding(16.dp)) }
             if (chats.isEmpty()) item { Empty("No chats here yet", "Start one with New chat. Claude keeps working on your Mac when this phone locks.") }
             items(chats, key = { it.getString("id") }) { chat -> ChatRow(model, chat, now) }
@@ -173,9 +236,32 @@ fun relativeTime(time: Long, now: Long): String =
     }
 }
 
+@Composable private fun ChatControls(sort: ChatSort, onSort: (ChatSort) -> Unit) {
+    Row(Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        MenuButton("Sort", if (sort == ChatSort.Newest) "Newest" else "Oldest") {
+            DropdownMenuItem(text = { Text("Newest") }, onClick = { onSort(ChatSort.Newest); it() })
+            DropdownMenuItem(text = { Text("Oldest") }, onClick = { onSort(ChatSort.Oldest); it() })
+        }
+    }
+}
+
+@Composable internal fun MenuButton(label: String, value: String, enabled: Boolean = true, content: @Composable (close: () -> Unit) -> Unit) {
+    var expanded by remember { mutableStateOf(false) }
+    Box {
+        AssistChip(onClick = { expanded = true }, enabled = enabled, label = { Text("$label: $value") }, modifier = Modifier.heightIn(min = 48.dp))
+        DropdownMenu(expanded, { expanded = false }) { content { expanded = false } }
+    }
+}
+
+@OptIn(ExperimentalFoundationApi::class)
 @Composable private fun ChatRow(model: BridgeModel, chat: JSONObject, now: Long) {
     val status = chat.optString("status")
     val colors = MaterialTheme.colorScheme
+    var menu by remember { mutableStateOf(false) }
+    var rename by remember { mutableStateOf(false) }
+    var delete by remember { mutableStateOf(false) }
+    val id = chat.getString("id")
+    val working = isWorking(status)
     ListItem(
         headlineContent = { Text(chat.optString("title").ifBlank { "New chat" }, maxLines = 2, overflow = TextOverflow.Ellipsis) },
         // Ready chats stay quiet; only states that need a look get a second line.
@@ -188,8 +274,50 @@ fun relativeTime(time: Long, now: Long): String =
                 }
             }
         },
-        trailingContent = { Text(relativeTime(chat.optLong("updatedAt"), now), style = MaterialTheme.typography.labelMedium) },
-        modifier = Modifier.clickable(onClickLabel = "Open chat") { model.open(chat.getString("id")) },
+        trailingContent = {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(relativeTime(chat.optLong("updatedAt"), now), style = MaterialTheme.typography.labelMedium)
+                Box {
+                    IconButton(onClick = { menu = true }) { Icon(Icons.Default.MoreVert, "Chat actions") }
+                    ChatMenu(menu, { menu = false }, { rename = true }, { delete = true }, working)
+                }
+            }
+        },
+        modifier = Modifier.combinedClickable(onClickLabel = "Open chat", onClick = { model.open(id) }, onLongClickLabel = "Chat actions", onLongClick = { menu = true }),
+    )
+    if (rename) RenameDialog(chat.optString("title").ifBlank { "New chat" }, { rename = false }, { model.rename(id, it); rename = false })
+    if (delete) DeleteDialog(chat.optString("title").ifBlank { "New chat" }, working, { delete = false }, { model.delete(id); delete = false })
+}
+
+@Composable private fun ChatMenu(expanded: Boolean, onDismiss: () -> Unit, onRename: () -> Unit, onDelete: () -> Unit, working: Boolean) {
+    DropdownMenu(expanded, onDismiss) {
+        DropdownMenuItem(text = { Text("Rename") }, onClick = { onDismiss(); onRename() })
+        DropdownMenuItem(
+            text = { Text(if (working) "Stop before deleting" else "Delete") },
+            enabled = !working,
+            onClick = { onDismiss(); onDelete() },
+        )
+    }
+}
+
+@Composable private fun RenameDialog(current: String, onDismiss: () -> Unit, onSave: (String) -> Unit) {
+    var title by rememberSaveable(current) { mutableStateOf(current) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Rename chat") },
+        text = { OutlinedTextField(title, { title = it }, Modifier.fillMaxWidth(), singleLine = true, label = { Text("Name") }) },
+        confirmButton = { TextButton(onClick = { onSave(title) }, enabled = title.isNotBlank()) { Text("Save") } },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
+    )
+}
+
+@Composable private fun DeleteDialog(title: String, working: Boolean, onDismiss: () -> Unit, onDelete: () -> Unit) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(if (working) "Stop this chat first" else "Delete chat?") },
+        text = { Text(if (working) "Claude is still working or waiting. Stop it before deleting." else "Delete \"$title\" from PocketBridge on this phone and Mac.") },
+        confirmButton = { TextButton(onClick = onDelete, enabled = !working) { Text("Delete", color = MaterialTheme.colorScheme.error) } },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
     )
 }
 

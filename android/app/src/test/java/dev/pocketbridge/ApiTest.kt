@@ -23,9 +23,18 @@ class ApiTest {
         }
     }
     @Test fun `prompt survives restart with same delivery ID text and mode`() {
-        val prompt = PendingPrompt("stable-id", "Change the project", "auto")
+        val prompt = PendingPrompt("stable-id", "Change the project", "auto", "sonnet", "high", "project")
         assertEquals(prompt, PendingPrompt.parse(prompt.json().toString()))
         assertEquals("auto", prompt.json().getString("mode"))
+        assertEquals("sonnet", prompt.json().getString("model"))
+        assertEquals("high", prompt.json().getString("effort"))
+        assertEquals("project", prompt.json().getString("projectId"))
+        assertEquals(PendingPrompt("old", "hi", "auto"), PendingPrompt.parse("""{"id":"old","text":"hi","mode":"auto"}"""))
+    }
+    @Test fun `local options reset effort for Haiku only`() {
+        assertEquals(ChatOptions("auto", "haiku", "default"), chatOptions("auto", "haiku", "high"))
+        assertEquals(ChatOptions("auto", "sonnet", "high"), chatOptions("auto", "sonnet", "high"))
+        assertEquals(ChatOptions("auto", "haiku", "default"), ChatOptions.parse("""{"mode":"auto","model":"haiku","effort":"max"}"""))
     }
     @Test fun `cursor never commits unseen updates that arrived during reconciliation`() {
         val cursor = EventCursor(10)

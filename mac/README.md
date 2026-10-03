@@ -1,6 +1,6 @@
 # PocketBridge on your Mac
 
-The service runs your official Claude Code CLI in registered project folders. The Mac keeps chats and delivery state locally. Phone and browser disconnections do not stop a task. Start managed chats here or on Android. An unrelated terminal session stays separate.
+The service runs your official Claude Code CLI in registered project folders. It also adds folders it finds from Claude Code session metadata on this Mac. Those older conversations are not imported. Discovery reads each Claude project directory on its own: the session index and the current session files. It checks at most 8 of the newest session files in that directory, and the first 256KB of each, then stops once that directory's folder is known. A project with hundreds of chats still leaves room for an older folder. A main session under `.claude/worktrees` is included. Sidechain sessions, agent transcripts, subagent files, and Claude desktop scratch workspaces are skipped. Project folders named scratchpad or subagents are included when their metadata describes a main session. The Mac keeps chats and delivery state locally. Phone and browser disconnections do not stop a task. Start managed chats here or on Android. An unrelated terminal session stays separate.
 
 ## Run
 
@@ -40,7 +40,7 @@ The service normally saves data in `~/Library/Application Support/PocketBridge`.
 }
 ```
 
-With `keepAwake` enabled, `caffeinate -s` prevents system sleep while on AC power. Set it to `false` and restart to turn this off. It does not bypass a closed lid. `POCKETBRIDGE_DATA_DIR`, `POCKETBRIDGE_PUBLIC_URL`, `POCKETBRIDGE_CLAUDE_PATH` and `POCKETBRIDGE_PORT` environment variables override the corresponding settings.
+With `keepAwake` enabled, `caffeinate -s` prevents system sleep while on AC power. Set it to `false` and restart to turn this off. It does not bypass a closed lid. `POCKETBRIDGE_DATA_DIR`, `POCKETBRIDGE_PUBLIC_URL`, `POCKETBRIDGE_CLAUDE_PATH`, `POCKETBRIDGE_PORT` and `POCKETBRIDGE_CLAUDE_PROJECTS_DIR` environment variables override the corresponding settings. The projects directory defaults to `~/.claude/projects`.
 
 Lifecycle logs are `service.log` and `service-error.log`. On startup, logs larger than 5 MB move to a single `.previous` file. Chat text is kept in SQLite and Claude's conversation files, not copied into those logs.
 
@@ -58,7 +58,7 @@ The app wraps an unmodified official CLI. It does not guarantee Anthropic's appr
 
 ## Checks
 
-Run the 24 service and browser-helper tests with `pnpm test` from `mac/`. Browser stream parsing and safe text formatting checks are also available directly:
+Run the 29 service and browser-helper tests with `pnpm test` from `mac/`. Browser stream parsing and safe text formatting checks are also available directly:
 
 ```sh
 node --test mac/scripts/*.test.mjs
