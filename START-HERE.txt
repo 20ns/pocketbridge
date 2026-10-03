@@ -1,0 +1,45 @@
+PocketBridge is built and running on this Mac.
+
+Open http://127.0.0.1:8787 for the Mac client. The service starts at login and
+keeps the Mac awake on AC power with the lid open. PocketBridge is already
+registered as a project; use Add folder to register your other project paths.
+
+ONE-TIME PHONE SETUP
+1. Open Tailscale on the Mac, sign in and approve its macOS VPN/network extension.
+   Install Tailscale on the S25 from Google Play and sign in to the same account.
+2. Double-click mac/launcher/Setup private connection.command in this folder.
+   It configures private HTTPS Serve, saves the address and restarts PocketBridge.
+   If it prints a Tailscale HTTPS enablement link, complete that step and rerun it.
+3. Sign into GitHub on your phone and download the latest PocketBridge APK from
+   https://github.com/20ns/pocketbridge/releases/latest . Install it over the old app.
+   The local releases folder also contains PocketBridge-0.3.0.apk.
+   Alternatively, open the private address from step 2 followed by /PocketBridge.apk
+   in Chrome on your phone. Android will ask for the usual APK installation approval.
+4. In the Mac client choose Connect phone, then Create pairing code.
+5. On the phone enter the private address and one-time code in PocketBridge.
+   Or scan the QR with the phone camera to prefill them, then tap Connect to Mac.
+
+After pairing, open the app, choose a project and make a chat. Bypass permissions
+is the default; Auto is also available. The mode is remembered per chat. Send a
+prompt, read streamed text/activity, answer questions and use Stop when needed.
+The Mac continues a turn while the app is closed. Reopening catches up.
+
+Pairing stays saved across app/service restarts. Keep Tailscale connected on both
+devices. Claude sign-in and Tailscale device keys can independently require renewal;
+disable key expiry for your own devices in Tailscale if desired.
+
+Only chats started through PocketBridge appear. Use its Mac client to continue a
+phone chat on the Mac. Existing Claude terminal/desktop sessions are separate.
+Stop does not undo completed edits. Ready means the Claude turn has ended;
+PocketBridge cleans up tools left running in that turn. Concurrent
+manual file edits have the usual filesystem conflict risk.
+
+The app runs the official, unmodified Claude Code CLI. It keeps Claude login on
+the Mac and never extracts subscription tokens or implements a substitute login.
+Provider usage limits and subscription rules still apply. This is a personal CLI
+controller, not an Anthropic-approved product or a guarantee against future changes.
+Official reference: https://code.claude.com/docs/en/legal-and-compliance
+
+To stop startup, use mac/launcher/Remove startup.command. This keeps your chats.
+Data: ~/Library/Application Support/PocketBridge
+Full technical instructions: mac/README.md and android/README.md

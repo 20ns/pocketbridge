@@ -1,0 +1,16 @@
+{
+  "name": "pocketbridge-mac",
+  "version": "0.3.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22.13.0"
+  },
+  "scripts": {
+    "start": "node service/server.mjs",
+    "test": "node --test service/*.test.mjs scripts/*.test.mjs"
+  },
+  "dependencies": {
+    "qrcode": "1.5.4"
+  }
+}

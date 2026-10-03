@@ -1,0 +1,69 @@
+package dev.pocketbridge
+
+import org.junit.Assert.*
+import org.junit.Test
+
+class TranscriptTest {
+    private fun activity(id: String, text: String) = Said(id, "activity", text)
+
+    @Test fun `consecutive activity becomes one group between replies`() {
+        val entries = transcript(listOf(
+            Said("u", "user", "Fix it"),
+            activity("a1", "Read\n{\n  \"file_path\": \"/repo/app/Api.kt\"\n}"),
+            activity("a2", "Tool result\n1\tpackage dev"),
+            activity("a3", "Bash\n{\"command\": \"pnpm test\", \"description\": \"Run Mac tests\"}"),
+            activity("a4", "Tool failed\nEADDRINUSE"),
+            Said("c", "assistant", "Done"),
+        ))
+        assertEquals(listOf("u", "steps:a1", "c"), entries.map { it.key })
+        val steps = (entries[1] as Steps).steps
+        assertEquals(listOf("Read" to "Api.kt", "Bash" to "Run Mac tests"), steps.map { it.tool to it.summary })
+        assertEquals("1\tpackage dev", steps[0].result)
+        assertTrue(steps[1].failed)
+        assertEquals("2 steps · Read, Bash", stepsTitle(steps))
+    }
+
+    @Test fun `parallel results pair with calls in order`() {
+        val steps = (transcript(listOf(
+            activity("a", "Read\n{\"file_path\":\"a.txt\"}"), activity("b", "Read\n{\"file_path\":\"b.txt\"}"),
+            activity("c", "Tool result\nA"), activity("d", "Tool result\nB"),
+        )).single() as Steps).steps
+        assertEquals(listOf("A", "B"), steps.map { it.result })
+    }
+
+    @Test fun `notices and orphan results stay visible without inventing tools`() {
+        val steps = (transcript(listOf(activity("n", "Permission denied for Bash"), activity("r", "Tool result\nlate output"))).single() as Steps).steps
+        assertTrue(steps[0].isNote)
+        assertEquals("Result", steps[1].tool)
+        assertEquals("2 steps · Result", stepsTitle(steps))
+    }
+
+    @Test fun `summaries prefer intent and stay short`() {
+        assertEquals("Updated 3 tasks", summarize("TodoWrite", "{\"todos\":[1,2,3]}"))
+        assertEquals("fun send", summarize("Grep", "{\"pattern\":\"fun send\",\"path\":\"android\"}"))
+        assertEquals("not json", summarize("X", "not json"))
+        assertEquals(90, firstLine("x".repeat(200)).length)
+        assertEquals("5 steps · A, B, C +2", stepsTitle("ABCDE".map { Step(it.toString(), it.toString(), "", "{}") }))
+    }
+
+    @Test fun `tool input and results read as text rather than JSON`() {
+        assertEquals("$ pnpm test", describeInput("Bash", "{\"command\":\"pnpm test\",\"description\":\"Run tests\"}"))
+        assertEquals("app/Api.kt\n- val a = 1\n+ val a = 2", describeInput("Edit", "{\"file_path\":\"app/Api.kt\",\"old_string\":\"val a = 1\",\"new_string\":\"val a = 2\"}"))
+        assertEquals("[x] Read\n[~] Fix", describeInput("TodoWrite", "{\"todos\":[{\"content\":\"Read\",\"status\":\"completed\"},{\"content\":\"Fix\",\"status\":\"in_progress\"}]}"))
+        assertEquals("Old path:\na\nb", describeInput("Move", "{\"old_path\":\"a\\nb\"}"))
+        val steps = (transcript(listOf(
+            activity("t", "Task\n{\"description\":\"Survey\"}"),
+            activity("r", "Tool result\n[{\"type\":\"text\",\"text\":\"Found 3 files\"}]"),
+        )).single() as Steps).steps
+        assertEquals("Found 3 files", steps.single().result)
+        assertEquals("[1, 2]", resultText("[1, 2]"))
+    }
+
+    @Test fun `answers in progress survive being saved as text`() {
+        val answers = Answers(
+            picks = mapOf("Which \"files\"?\nPick any" to setOf("Api.kt", "\u0000other"), "Ship?" to emptySet()),
+            typed = mapOf("Which \"files\"?\nPick any" to "and the tests"),
+        )
+        assertEquals(answers, decodeAnswers(encodeAnswers(answers)))
+    }
+}

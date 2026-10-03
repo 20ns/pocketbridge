@@ -1,0 +1,1 @@
+mac/launcher/PocketBridge.command

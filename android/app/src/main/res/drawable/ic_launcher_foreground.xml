@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Speech bubble holding a terminal prompt: a chat that drives Claude Code. Kept inside the 66dp safe zone. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android" android:width="108dp" android:height="108dp" android:viewportWidth="108" android:viewportHeight="108">
+    <path android:fillColor="#FFFFFF" android:pathData="M41,34h26a9,9 0,0 1,9 9v18a9,9 0,0 1,-9 9h-17l-9,9v-9a9,9 0,0 1,-9 -9v-18a9,9 0,0 1,9 -9z" />
+    <path android:strokeColor="#006A60" android:strokeWidth="4" android:strokeLineCap="round" android:strokeLineJoin="round" android:pathData="M43,45l7,6l-7,6" />
+    <path android:strokeColor="#006A60" android:strokeWidth="4" android:strokeLineCap="round" android:pathData="M56,57h10" />
+</vector>

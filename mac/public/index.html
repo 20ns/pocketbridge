@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>PocketBridge</title>
+  <link rel="stylesheet" href="/style.css">
+  <script type="module" src="/app.mjs"></script>
+</head>
+<body>
+  <header class="app-header">
+    <button id="chats-toggle" class="quiet drawer-toggle" aria-expanded="false" aria-controls="sidebar"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h10"/></svg>Chats</button>
+    <a class="brand" href="/" aria-label="PocketBridge home"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 17V7a3 3 0 0 1 3-3h4M20 7v10a3 3 0 0 1-3 3h-4M8 12h8m-3-3 3 3-3 3"/></svg><span>PocketBridge</span></a>
+    <div class="header-actions">
+      <span id="connection" class="connection" data-state="connecting" role="status"><span class="dot" aria-hidden="true"></span><span id="connection-text">Connecting to Mac…</span></span>
+      <button id="settings-toggle" class="quiet" aria-haspopup="dialog" aria-expanded="false" aria-controls="settings"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="7" y="3" width="10" height="18" rx="2.5"/><path d="M11 17.5h2"/></svg><span class="button-text">Connect phone</span></button>
+    </div>
+  </header>
+  <div id="notice" class="notice" role="alert" hidden></div>
+
+  <dialog id="settings" class="settings" aria-labelledby="settings-title">
+    <div class="settings-inner">
+      <div class="settings-head">
+        <h2 id="settings-title">Connect your phone</h2>
+        <button id="settings-close" class="quiet icon-button" aria-label="Close"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18"/></svg></button>
+      </div>
+      <div class="settings-body">
+        <section class="pairing" aria-label="Pairing">
+          <p>Install PocketBridge on Android, then scan the code with your phone camera or enter the address and code in the app. Both devices need Tailscale for remote access.</p>
+          <div class="settings-actions">
+            <button id="pair-button" autofocus>Create pairing code</button>
+            <a class="button-link" href="/PocketBridge.apk" download>Download Android APK</a>
+          </div>
+          <div id="pair-details" class="pair-details" hidden>
+            <dl class="pair-facts">
+              <dt>Private Mac address</dt><dd><code id="pair-url"></code></dd>
+              <dt>One-time code</dt><dd><strong id="pair-code" class="pair-code"></strong></dd>
+            </dl>
+            <p id="pair-expiry" class="muted"></p>
+            <button id="copy-pair" class="quiet">Copy connection link</button>
+            <div id="pair-qr" class="pair-qr" hidden></div>
+          </div>
+        </section>
+        <section class="setup" aria-labelledby="setup-title">
+          <h3 id="setup-title">One-time setup</h3>
+          <ol>
+            <li>Sign in to Tailscale on your Mac and phone.</li>
+            <li>Open <code>Setup private connection.command</code> in <code>mac/launcher</code>.</li>
+            <li>The helper saves your private address. Follow its restart instructions before pairing.</li>
+            <li>Create a pairing code here, then scan it on your phone.</li>
+          </ol>
+          <p class="muted">Use private Serve. Do not enable Funnel. Your app connection persists; Claude may still ask you to sign in again.</p>
+        </section>
+      </div>
+    </div>
+  </dialog>
+
+  <main class="workspace">
+    <aside id="sidebar" class="sidebar" aria-label="Projects and chats">
+      <div class="section-title"><h2>Projects</h2><button id="add-project" class="quiet small" aria-expanded="false" aria-controls="project-form">Add folder</button></div>
+      <form id="project-form" class="project-form" hidden>
+        <label>Folder path<input id="project-path" placeholder="/Users/you/Projects/my-app" required autocomplete="off"></label>
+        <label>Name <span class="muted">optional</span><input id="project-name" placeholder="My app" maxlength="120"></label>
+        <button type="submit">Register project</button>
+      </form>
+      <label class="sr-only" for="project-select">Project</label>
+      <select id="project-select" disabled><option value="">Loading projects…</option></select>
+      <button id="new-chat" class="new-chat" disabled><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>New chat</button>
+      <div class="section-title recent-heading"><h2>Recent chats</h2></div>
+      <nav id="chat-list" class="chat-list" aria-label="Recent chats"><p class="muted">Loading chats…</p></nav>
+      <p id="cli-status" class="sidebar-note" hidden></p>
+    </aside>
+    <div id="scrim" class="scrim" hidden></div>
+
+    <section class="conversation" aria-labelledby="chat-title">
+      <header class="chat-header">
+        <div class="chat-heading">
+          <h1 id="chat-title">Your Mac, from anywhere</h1>
+          <p id="chat-meta" class="chat-meta">Choose a project to start a chat.</p>
+        </div>
+        <div class="mode-field">
+          <label for="mode">Mode</label>
+          <select id="mode" aria-describedby="mode-help"><option value="bypassPermissions">Bypass permissions</option></select>
+          <p id="mode-help" class="mode-help"></p>
+        </div>
+      </header>
+      <p id="chat-live" class="sr-only" aria-live="polite"></p>
+      <div id="messages" class="messages" role="region" aria-label="Conversation" tabindex="0">
+        <div id="log" class="log"></div>
+        <div id="approvals" class="approvals" role="region" aria-label="Claude needs your answer" hidden></div>
+      </div>
+      <form id="composer" class="composer">
+        <label class="sr-only" for="prompt">Message to Claude</label>
+        <textarea id="prompt" placeholder="Ask Claude to work on this project…" rows="2" disabled></textarea>
+        <div class="composer-footer">
+          <p id="composer-hint" class="composer-hint">Chats started here also appear on your phone.</p>
+          <div class="composer-actions">
+            <button id="stop" class="stop" type="button" hidden><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="7" y="7" width="10" height="10" rx="1.5"/></svg><span>Stop</span></button>
+            <button id="send" type="submit" disabled>Send message</button>
+          </div>
+        </div>
+      </form>
+    </section>
+  </main>
+</body>
+</html>

@@ -1,0 +1,16 @@
+node_modules/
+.gradle/
+**/build/
+local.properties
+work/
+dist/
+releases/
+*.log
+*.sqlite*
+mac/public/PocketBridge.apk
+.DS_Store
+*.keystore
+*.jks
+.impeccable/review/
+.impeccable/mocks/
+.impeccable/config.local.json

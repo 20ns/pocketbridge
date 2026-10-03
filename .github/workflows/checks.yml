@@ -1,0 +1,59 @@
+name: Checks and APK release
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  mac:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+      - run: corepack enable && corepack prepare pnpm@10.27.0 --activate
+      - run: pnpm install --frozen-lockfile && pnpm test
+        working-directory: mac
+  android:
+    needs: mac
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: '21'
+      - run: ./gradlew assembleDebug testDebugUnitTest lintDebug
+        working-directory: android
+      - name: Restore the persistent personal signing key
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          SIGNING_KEY: ${{ secrets.APK_SIGNING_KEY }}
+        run: |
+          test -n "$SIGNING_KEY"
+          printf '%s' "$SIGNING_KEY" | base64 --decode > "$RUNNER_TEMP/pocketbridge.keystore"
+          chmod 600 "$RUNNER_TEMP/pocketbridge.keystore"
+      - name: Build signed APK
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          POCKETBRIDGE_SIGNING_KEY: ${{ runner.temp }}/pocketbridge.keystore
+        run: ./gradlew assembleRelease lintRelease
+        working-directory: android
+      - name: Publish private APK release
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          VERSION=$(node -p "JSON.parse(require('fs').readFileSync('android/app/build/outputs/apk/release/output-metadata.json')).elements[0].versionName")
+          [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          cp android/app/build/outputs/apk/release/app-release.apk "PocketBridge-$VERSION.apk"
+          shasum -a 256 "PocketBridge-$VERSION.apk" > "PocketBridge-$VERSION.apk.sha256"
+          gh release create "v$VERSION" "PocketBridge-$VERSION.apk" "PocketBridge-$VERSION.apk.sha256" --target "$GITHUB_SHA" --title "PocketBridge $VERSION" --notes-file RELEASE-NOTES.md
+      - name: Remove signing key
+        if: always()
+        run: rm -f "$RUNNER_TEMP/pocketbridge.keystore"
