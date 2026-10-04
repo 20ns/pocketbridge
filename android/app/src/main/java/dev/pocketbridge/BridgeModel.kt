@@ -100,6 +100,8 @@ class BridgeModel(application: Application) : AndroidViewModel(application) {
     var online by mutableStateOf(false); private set
     var busy by mutableStateOf(false); private set
     var error by mutableStateOf(""); private set
+    /** A short confirmation for an action whose result shows up elsewhere, like on the Mac. */
+    var notice by mutableStateOf(""); private set
     /** Why the live connection is down; separate from one-off action errors so it can stay visible. */
     var connectionIssue by mutableStateOf(""); private set
     var revoked by mutableStateOf(false); private set
@@ -517,6 +519,12 @@ class BridgeModel(application: Application) : AndroidViewModel(application) {
         val currentApi = api ?: return@action
         withContext(Dispatchers.IO) { currentApi.request("/api/approvals/$id", JSONObject().put("decision", if (allow) "allow" else "deny").apply { if (answers.length() > 0) put("answers", answers) }) }; sync()
     }
+    /** Hands a Claude chat to Claude Desktop on the Mac, the way the CLI's /desktop does. */
+    fun openInDesktop(id: String) = action {
+        val currentApi = api ?: return@action
+        withContext(Dispatchers.IO) { currentApi.request("/api/chats/$id/desktop", JSONObject()) }
+        notice = "Opened in Claude Desktop on your Mac"
+    }
     fun rename(id: String, title: String) = action {
         val currentApi = api ?: return@action
         require(title.trim().isNotEmpty()) { "Name the chat first." }
@@ -541,6 +549,7 @@ class BridgeModel(application: Application) : AndroidViewModel(application) {
         sync()
     }
     fun clearError() { error = "" }
+    fun clearNotice() { notice = "" }
 
     // Images in the composer. Every change saves the list for its chat, so a picked screenshot survives process death.
     private fun attachmentsOf(id: String): List<Attachment> = if (id.isEmpty()) emptyList() else attachmentLists.getOrPut(id) { decodeAttachments(store.get("attachments:$id")) }

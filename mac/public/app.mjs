@@ -135,6 +135,8 @@ function controls() {
   // Options apply to the next prompt, so they stay available while work runs.
   for (const id of ['model', 'effort', 'mode']) $(id).disabled = !chat || sending || Boolean(drafts[selected]?.attempted);
   const stored = chat && state?.chats.some(item => item.id === chat.id);
+  $('desktop').hidden = !stored || (chat.agent ?? 'claude') !== 'claude'; $('desktop').disabled = busy(chat);
+  $('desktop').title = busy(chat) ? 'Open in Claude Desktop once this turn finishes' : 'Open in Claude Desktop';
   $('rename').hidden = !stored; $('delete').hidden = !chat; $('delete').disabled = busy(chat) || Boolean(!stored && drafts[selected]?.attempted);
   $('delete').title = busy(chat) ? 'Stop this chat before deleting it' : 'Delete';
   $('composer-hint').textContent = !online ? 'Mac is disconnected. Your draft is saved on this device.' : off ? `${agentName(chat)} is off. Turn it on in the sidebar to continue this chat.` : chat?.status === 'waiting' ? 'Answer above, or stop this turn.' : busy(chat) ? 'Enter steers the running turn · Send now stops the current step first' : uploading ? 'Uploading images…' : drafts[selected]?.attempted ? 'Not confirmed by your Mac. Retry uses the same delivery ID.' : chat ? 'Enter to send · Shift+Enter for a new line' : 'Chats started here also appear on your phone.';
@@ -699,6 +701,10 @@ $('model').onchange = () => {
 };
 $('effort').onchange = () => setOptions({...chatOptions(), effort: $('effort').value});
 $('mode').onchange = () => setOptions({...chatOptions(), mode: $('mode').value});
+$('desktop').onclick = async () => {
+  const chat = currentChat(); if (!chat) return;
+  try { await api(`/chats/${encodeURIComponent(chat.id)}/desktop`, {}); notice('Opened in Claude Desktop.'); } catch (error) { notice(error.message); }
+};
 function cancelRename() { $('rename-form').hidden = true; $('chat-title').hidden = false; }
 $('rename').onclick = () => {
   const chat = currentChat(); if (!chat) return;

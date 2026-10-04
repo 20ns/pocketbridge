@@ -5,7 +5,7 @@ import { mkdirSync, statSync, realpathSync, existsSync, readFileSync, writeFileS
 import { homedir } from 'node:os';
 import { dirname, join, extname, resolve, basename, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { spawn, spawnSync } from 'node:child_process';
+import { spawn, spawnSync, execFile } from 'node:child_process';
 import { gzipSync } from 'node:zlib';
 import QRCode from 'qrcode';
 import { agentIds, agentNames, agentModes, agentEnv, claudeCatalog, codexCatalog, checkModel, checkEffort, codexPolicy, codexAppConsumer, codexSessionFolders, claudeUsage, codexUsage, claudeContext, claudeUserMessage, gitStatus, claudeSessions, codexRequest, claudeCommands } from './agents.mjs';
@@ -49,6 +49,9 @@ const brief = input => {
   return value ? oneLine(value.includes('/') && !value.includes(' ') ? value.split('/').filter(Boolean).pop() ?? value : value, 120) : '';
 };
 const uuid = value => /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
+
+/** Opens a URL with macOS's `open`, as the Claude CLI does for its desktop hand-off. */
+const openUrl = url => new Promise(resolveOpen => execFile('open', [url], { timeout: 10_000 }, error => resolveOpen(!error)));
 
 export async function createService(options = {}) {
   const dataDir = options.dataDir ?? process.env.POCKETBRIDGE_DATA_DIR ?? join(homedir(), 'Library/Application Support/PocketBridge');
@@ -896,7 +899,7 @@ export async function createService(options = {}) {
           const id = randomUUID();
           run('INSERT INTO chats (id,projectId,agent,title,mode,model,effort,status,updatedAt) VALUES (?,?,?,?,?,?,?,?,?)', id, input.projectId, agent, input.title ? text(input.title, 'title', 160) : 'New chat', options.mode ?? 'bypassPermissions', options.model ?? 'default', options.effort ?? 'default', 'idle', Date.now()); change('state', id); return json(response, 201, chat(id));
         }
-        const chatRoute = route.match(/^\/api\/chats\/([^/]+)\/(messages|prompts|stop|delete|rename)$/);
+        const chatRoute = route.match(/^\/api\/chats\/([^/]+)\/(messages|prompts|stop|delete|rename|desktop)$/);
         if (chatRoute) {
           const [, id, action] = chatRoute;
           if (action === 'delete' && request.method === 'POST') {
@@ -995,6 +998,17 @@ export async function createService(options = {}) {
             return json(response, 200, { messages, approvals: all('SELECT * FROM approvals WHERE chatId=? ORDER BY rowid', id).map(item => ({ ...item, input: JSON.parse(item.input) })), turns, subagents, activity: row.activity ?? null });
           }
           if (action === 'stop' && request.method === 'POST') { stop(id); return json(response, 200, { ok: true }); }
+          // Claude Desktop lists only sessions handed to it; this is the same claude://resume link the CLI's /desktop opens.
+          if (action === 'desktop' && request.method === 'POST') {
+            const row = get('SELECT agent,status,sessionStarted FROM chats WHERE id=?', id);
+            if (!row) throw fail(404, 'Chat not found');
+            if ((row.agent || 'claude') !== 'claude') throw fail(409, 'Only Claude chats open in Claude Desktop');
+            if (!row.sessionStarted) throw fail(409, 'Send a prompt first');
+            if (active.has(id) || ['running', 'waiting', 'stopping'].includes(row.status)) throw fail(409, 'Wait for this chat to finish, so both apps don\'t write to it at once');
+            const opened = await (options.openUrl ?? openUrl)(`claude://resume?session=${encodeURIComponent(id)}`);
+            if (!opened) throw fail(502, 'Couldn\'t open Claude Desktop on the Mac');
+            return json(response, 200, { ok: true });
+          }
           if (action === 'rename' && request.method === 'POST') {
             const input = await body(request), title = text(input.title, 'title', 160);
             run('UPDATE chats SET title=?,updatedAt=? WHERE id=?', title, Date.now(), id); change('state', id); return json(response, 200, chat(id));

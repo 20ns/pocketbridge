@@ -1,3 +1,7 @@
+PocketBridge 0.6.2
+
+- Open in Claude Desktop: a Claude chat's menu (and a button in the Mac browser) hands the chat to the Claude desktop app on your Mac, the same way `/desktop` does in the terminal. It then appears in Desktop's list with its full history. Wait for a turn to finish first; both apps shouldn't work on one chat at the same time.
+
 PocketBridge 0.6.1
 
 - A prompt the Mac accepted but whose confirmation got lost no longer leaves the phone stuck on "Not confirmed".

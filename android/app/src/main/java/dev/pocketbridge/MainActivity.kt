@@ -144,6 +144,9 @@ private enum class Screen(val depth: Int) { Pair(0), Projects(0), Chats(1), Sett
 
     // One-off action failures are transient; connection problems get a persistent banner instead.
     val snackbar = remember { SnackbarHostState() }
+    LaunchedEffect(model.notice) {
+        if (model.notice.isNotEmpty()) { snackbar.showSnackbar(model.notice, duration = SnackbarDuration.Short); model.clearNotice() }
+    }
     LaunchedEffect(model.error, model.paired) {
         if (model.paired && model.error.isNotEmpty()) { snackbar.showSnackbar(model.error, withDismissAction = true, duration = SnackbarDuration.Long); model.clearError() }
     }
@@ -293,7 +296,8 @@ private enum class Screen(val depth: Int) { Pair(0), Projects(0), Chats(1), Sett
     val title = chat.optString("title").ifBlank { "New chat" }
     Box {
         IconButton(onClick = { menu = true }) { Icon(Icons.Default.MoreVert, "Chat actions") }
-        ChatMenu(menu, { menu = false }, if (local) null else ({ rename = true }), { delete = true }, working)
+        val desktop = if (local || chat.optString("agent").ifBlank { "claude" } != "claude") null else ({ model.openInDesktop(id) })
+        ChatMenu(menu, { menu = false }, if (local) null else ({ rename = true }), { delete = true }, working, desktop)
     }
     if (rename) RenameDialog(title, { rename = false }, { model.rename(id, it); rename = false })
     if (delete) DeleteDialog(title, working, local, { delete = false }, { if (local) model.discardDraft(id) else model.delete(id); delete = false })

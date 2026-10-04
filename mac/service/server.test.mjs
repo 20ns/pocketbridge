@@ -20,7 +20,8 @@ async function fixture(t) {
   const projectPath = join(dir, 'project'); mkdirSync(projectPath);
   const claudeProjectsDir = join(dir, 'claude-projects'); mkdirSync(claudeProjectsDir);
   const codexSessionsDir = join(dir, 'codex-sessions');
-  const options = () => ({ port: 0, dataDir: join(dir, 'data'), claudePath: join(here, 'fake-claude.mjs'), codexPath: join(here, 'fake-codex.mjs'), codexSessionsDir, stopTimeoutMs: 50, claudeProjectsDir, discoverIntervalMs: 60_000, writtenGraceMs: 400 });
+  const opened = [];
+  const options = () => ({ openUrl: async url => { opened.push(url); return true; }, port: 0, dataDir: join(dir, 'data'), claudePath: join(here, 'fake-claude.mjs'), codexPath: join(here, 'fake-codex.mjs'), codexSessionsDir, stopTimeoutMs: 50, claudeProjectsDir, discoverIntervalMs: 60_000, writtenGraceMs: 400 });
   let service = await createService(options()); await service.ready;
   t.after(async () => { await service.close(); rmSync(dir, { recursive: true, force: true }); });
   let token = (await (await fetch(service.url + '/api/local-session')).json()).token;
@@ -35,7 +36,7 @@ async function fixture(t) {
   const createChat = async () => (await request('/api/chats', { projectId: project.id })).data;
   const send = (chat, prompt, id = randomUUID()) => request(`/api/chats/${chat.id}/prompts`, { id, text: prompt });
   const finished = chat => wait(async () => (await request('/api/state')).data.chats.find(c => c.id === chat.id && !['running', 'stopping', 'waiting'].includes(c.status)));
-  return { dir, projectPath, claudeProjectsDir, codexSessionsDir, request, createChat, send, finished, get service() { return service; }, get token() { return token; }, async restart() { await service.close(); service = await createService(options()); await service.ready; } };
+  return { opened, dir, projectPath, claudeProjectsDir, codexSessionsDir, request, createChat, send, finished, get service() { return service; }, get token() { return token; }, async restart() { await service.close(); service = await createService(options()); await service.ready; } };
 }
 
 test('prompt delivery is durable and idempotent; stream chunks reconcile with final message; resume uses same session', async t => {
@@ -911,4 +912,21 @@ test('bug pass regressions: Codex skills without a listing, Codex continue bring
     + record({ type: 'user', isSidechain: false, message: { role: 'user', content: 'Now add a toggle' } }));
   const claudeChat = (await f.request('/api/chats/continue', { projectId: project.id, agent: 'claude', sessionId: source })).data;
   assert.deepEqual((await messagesOf(f, claudeChat.id)).messages.map(m => [m.role, m.text]), [['user', 'Now add a toggle']]);
+});
+
+test('a finished Claude chat opens in Claude Desktop through its resume link; others are refused', async t => {
+  const f = await fixture(t), project = (await f.request('/api/state')).data.projects[0];
+  const draft = await f.createChat();
+  assert.equal((await f.request(`/api/chats/${draft.id}/desktop`, {})).status, 409);
+  const chatId = randomUUID();
+  assert.equal((await turnWith(f, chatId, 'slow', { projectId: project.id })).status, 202);
+  await wait(async () => (await messagesOf(f, chatId)).messages.some(m => m.text.includes('sleep 100')));
+  assert.equal((await f.request(`/api/chats/${chatId}/desktop`, {})).status, 409);
+  await f.request(`/api/chats/${chatId}/stop`, {}); await f.finished({ id: chatId });
+  assert.equal((await f.request(`/api/chats/${chatId}/desktop`, {})).status, 200);
+  assert.deepEqual(f.opened, [`claude://resume?session=${chatId}`]);
+  const codexChat = randomUUID();
+  await turnWith(f, codexChat, 'hello', { agent: 'codex', projectId: project.id }); await f.finished({ id: codexChat });
+  assert.equal((await f.request(`/api/chats/${codexChat}/desktop`, {})).status, 409);
+  assert.equal(f.opened.length, 1);
 });

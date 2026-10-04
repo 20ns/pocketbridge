@@ -541,7 +541,7 @@ private fun projectActivity(project: JSONObject, chats: List<JSONObject>) = proj
     Box {
         GroupRow(
             index, count, onClick = { model.open(id) }, onClickLabel = "Open chat",
-            // Long press opens Rename and Delete; an unconfirmed prompt has none until the Mac answers.
+            // Long press opens chat actions; an unconfirmed prompt has none until the Mac answers.
             onLongClick = if (unconfirmed) null else ({ menu = true }), onLongClickLabel = "Chat actions",
             // Quiet chats show their last words; anything that needs a look shows its state instead.
             supporting = {
@@ -557,14 +557,17 @@ private fun projectActivity(project: JSONObject, chats: List<JSONObject>) = proj
                 }
             },
         ) { Text(title, maxLines = 1, overflow = TextOverflow.Ellipsis) }
-        Box(Modifier.align(Alignment.TopEnd).padding(end = Spacing.xxxl)) { ChatMenu(menu, { menu = false }, if (local) null else ({ rename = true }), { delete = true }, working) }
+        val desktop = if (local || chat.optString("agent").ifBlank { "claude" } != "claude") null else ({ model.openInDesktop(id) })
+        Box(Modifier.align(Alignment.TopEnd).padding(end = Spacing.xxxl)) { ChatMenu(menu, { menu = false }, if (local) null else ({ rename = true }), { delete = true }, working, desktop) }
     }
     if (rename) RenameDialog(title, { rename = false }, { model.rename(id, it); rename = false })
     if (delete) DeleteDialog(title, working, local, { delete = false }, { if (local) model.discardDraft(id) else model.delete(id); delete = false })
 }
 
-@Composable fun ChatMenu(expanded: Boolean, onDismiss: () -> Unit, onRename: (() -> Unit)?, onDelete: () -> Unit, working: Boolean) {
+@Composable fun ChatMenu(expanded: Boolean, onDismiss: () -> Unit, onRename: (() -> Unit)?, onDelete: () -> Unit, working: Boolean, onDesktop: (() -> Unit)? = null) {
     DropdownMenu(expanded, onDismiss, shape = RoundedCornerShape(Corners.groupOuter), containerColor = Pocket.colors.panel, shadowElevation = 8.dp) {
+        // Both apps writing one session at once would interleave turns, so the hand-off waits for the turn to end.
+        if (onDesktop != null) DropdownMenuItem(text = { Text(if (working) "Open in Claude Desktop when done" else "Open in Claude Desktop") }, enabled = !working, onClick = { onDismiss(); onDesktop() })
         if (onRename != null) DropdownMenuItem(text = { Text("Rename") }, onClick = { onDismiss(); onRename() })
         DropdownMenuItem(
             text = { Text(if (working) "Stop before deleting" else "Delete", color = if (working) Color.Unspecified else MaterialTheme.colorScheme.error) },
