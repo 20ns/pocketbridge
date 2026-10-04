@@ -1,7 +1,7 @@
 // PocketBridge Mac service: owns chats and their saved state, runs the official Claude and Codex CLIs, and serves
 // the phone and browser clients over HTTP and Server-Sent Events. See PROTOCOL.md.
 import http from 'node:http';
-import { mkdirSync, existsSync, readFileSync } from 'node:fs';
+import { mkdirSync, existsSync, readFileSync, realpathSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -21,10 +21,14 @@ export async function createService(options = {}) {
   if (process.env.NODE_TEST_CONTEXT && resolve(claudeProjectsDir) === resolve(defaultProjects)) throw new Error('Tests must pass claudeProjectsDir and must not read Claude history');
   const testing = Boolean(process.env.NODE_TEST_CONTEXT);
   const codexSessionsDir = options.codexSessionsDir ?? process.env.POCKETBRIDGE_CODEX_SESSIONS_DIR ?? (testing ? null : join(homedir(), '.codex', 'sessions'));
+  // General chats run here: the home folder, so they can work across the Mac without belonging to a project.
+  const generalDir = options.generalDir ?? process.env.POCKETBRIDGE_GENERAL_DIR ?? (testing ? null : homedir());
+  // New projects from the phone are plain folders here.
+  const experimentsDir = options.experimentsDir ?? process.env.POCKETBRIDGE_EXPERIMENTS_DIR ?? (testing ? null : join(homedir(), 'Desktop', 'experiments'));
   mkdirSync(dataDir, { recursive: true, mode: 0o700 });
   const database = openDatabase(dataDir), { db, get, all, run, transaction, setting, saveSetting } = database;
   // Shared by the service modules. Each adds its own part: agents, projects, runs.
-  const ctx = { ...database, options, dataDir, testing, claudeProjectsDir, codexSessionsDir, closed: false, probes: new AbortController(), internalToken: secret(), clients: new Set(), active: new Map(), waiting: new Map() };
+  const ctx = { ...database, options, dataDir, testing, claudeProjectsDir, codexSessionsDir, experimentsDir, closed: false, probes: new AbortController(), internalToken: secret(), clients: new Set(), active: new Map(), waiting: new Map() };
   let eventTimer;
   ctx.localToken = setting('localToken');
   if (!ctx.localToken) { run('INSERT OR IGNORE INTO settings VALUES (?,?)', 'localToken', secret()); ctx.localToken = setting('localToken'); }
@@ -80,7 +84,7 @@ export async function createService(options = {}) {
         (SELECT substr(text,1,400) FROM messages m WHERE m.chatId=chats.id AND m.role!='activity' ORDER BY m.rowid DESC LIMIT 1) AS preview
         FROM chats ORDER BY updatedAt DESC`).map(chatRow),
       lastSeq: lastSeq(), capabilities: { modes: agentModes.claude, models: legacyModels, efforts: legacyEfforts, agents: agentIds.map(agents.agentCatalog) },
-      server: { claudeAvailable: agents.available.claude, codexAvailable: agents.available.codex, publicUrl: ctx.publicUrl },
+      server: { claudeAvailable: agents.available.claude, codexAvailable: agents.available.codex, publicUrl: ctx.publicUrl, experiments: experimentsDir ? experimentsDir.replace(homedir(), '~') : null },
     };
   };
   const status = ctx.status = (id, value, error = null) => { run('UPDATE chats SET status=?,error=?,updatedAt=? WHERE id=?', value, error, Date.now(), id); change('state', id); };
@@ -120,6 +124,7 @@ export async function createService(options = {}) {
   } catch (error) { clearTimeout(eventTimer); releaseOwner(); db.close(); throw error; }
 
   const projects = ctx.projects = createProjects(ctx);
+  if (generalDir) projects.ensureGeneral(realpathSync(generalDir));
   projects.refreshDiscovery(true);
   const catalogsReady = agents.load();
   ctx.runs = createRuns(ctx);

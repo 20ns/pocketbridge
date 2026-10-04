@@ -80,28 +80,8 @@ fun shareTargets(chats: List<JSONObject>, projects: List<JSONObject>, recentChat
  */
 @Composable fun SharePanel(model: BridgeModel) {
     val visible = model.sharing || model.shared.isNotEmpty()
-    var back by remember { mutableFloatStateOf(0f) }
-    LaunchedEffect(visible) { if (visible) back = 0f }
-    PredictiveBackHandler(enabled = visible) { events ->
-        try { events.collect { back = it.progress }; model.cancelShare() } catch (cancelled: CancellationException) { back = 0f; throw cancelled }
-    }
     Box(Modifier.fillMaxSize()) {
-        AnimatedVisibility(visible, enter = fadeIn(Motion.effects()), exit = fadeOut(Motion.fastEffects())) {
-            Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.scrim.copy(alpha = 0.32f)).clickable(remember { MutableInteractionSource() }, null, onClickLabel = "Cancel sharing", onClick = model::cancelShare))
-        }
-        AnimatedVisibility(
-            visible, Modifier.align(Alignment.BottomCenter),
-            enter = expandVertically(Motion.spatial(IntSize.VisibilityThreshold), expandFrom = Alignment.Bottom) + fadeIn(Motion.effects()),
-            exit = shrinkVertically(Motion.fastSpatial(IntSize.VisibilityThreshold), shrinkTowards = Alignment.Bottom) + fadeOut(Motion.fastEffects()),
-        ) {
-            Surface(
-                Modifier.navigationBarsPadding().padding(horizontal = Spacing.sm, vertical = Spacing.sm).fillMaxWidth()
-                    .heightIn(max = (LocalConfiguration.current.screenHeightDp * 0.6f).dp)
-                    .graphicsLayer { val p = back; transformOrigin = TransformOrigin(0.5f, 1f); scaleX = 1f - 0.06f * p; scaleY = 1f - 0.06f * p; translationY = p * 16.dp.toPx() },
-                shape = RoundedCornerShape(Corners.composer), color = Pocket.colors.panel, contentColor = MaterialTheme.colorScheme.onSurface,
-                shadowElevation = 8.dp, border = BorderStroke(1.dp, Pocket.colors.composerBorder),
-            ) { ShareList(model) }
-        }
+        RisingPanel(visible, model::cancelShare, "Cancel sharing", Modifier.navigationBarsPadding(), maxFraction = 0.6f) { ShareList(model) }
     }
 }
 

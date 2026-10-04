@@ -1,6 +1,8 @@
 // Shared by the browser client's modules: DOM helpers, saved state, the live session and the Mac API.
 import {blankLocalDraft, statusLabel, avatarLetter, projectTone} from './support.mjs';
 
+const generalIcon = '<svg viewBox="0 0 24 24"><path d="M5 5h14a1 1 0 0 1 1 1v9a1 1 0 0 1-1 1h-7l-4 3.5V16H5a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1z"/></svg>';
+
 export const $ = id => document.getElementById(id);
 export const el = (tag, className, text) => { const node = document.createElement(tag); if (className) node.className = className; if (text !== undefined) node.textContent = text; return node; };
 
@@ -80,6 +82,7 @@ export const currentChat = () => app.state?.chats.find(chat => chat.id === app.s
 export const storedChat = id => Boolean(app.state?.chats.some(chat => chat.id === id));
 export const projectFor = chat => app.state?.projects.find(project => project.id === chat?.projectId);
 export const projectName = chat => projectFor(chat)?.name ?? 'Project';
+export const isGeneral = projectId => Boolean(app.state?.projects.find(project => project.id === projectId)?.general);
 export const agentFor = id => app.agents.find(agent => agent.id === (id || 'claude'));
 export const agentName = chat => agentFor(chat?.agent)?.name ?? 'Claude';
 export const busy = (chat = currentChat()) => ['running','stopping','waiting'].includes(chat?.status);
@@ -95,6 +98,8 @@ export function statusBadge(status) {
 export function projectAvatar(project, size = 'small') {
   const avatar = el('span', `avatar ${size}`); avatar.setAttribute('aria-hidden', 'true');
   if (!project) return avatar;
+  // General chats belong to no project, so they get a plain chat mark instead of a project's colour or logo.
+  if (project.general) { avatar.classList.add('general'); avatar.innerHTML = generalIcon; return avatar; }
   avatar.dataset.tone = projectTone(project.id); avatar.textContent = avatarLetter(project.name);
   if (project.icon) {
     // The icon tag versions the URL, so a changed logo isn't served from the browser cache.

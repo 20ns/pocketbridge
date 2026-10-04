@@ -352,6 +352,9 @@ select:disabled, textarea:disabled { opacity: 0.6; }
 .project-form label { font-size: var(--text-sm); font-weight: 600; }
 .project-form label .muted { font-weight: 400; }
 .project-form input { display: block; width: 100%; margin-top: 6px; font-weight: 400; }
+.form-hint { margin-top: -4px; font-size: var(--text-xs); }
+.form-hint[data-problem] { color: var(--danger); }
+.section-actions { display: flex; gap: 4px; }
 
 .chat-list { display: grid; gap: 2px; }
 .chat-list > p { font-size: var(--text-sm); padding: 0 4px; }
@@ -441,6 +444,8 @@ select:disabled, textarea:disabled { opacity: 0.6; }
 .avatar.medium { width: 40px; height: 40px; border-radius: var(--radius); font-size: var(--text-lg); }
 .avatar.logo { background: var(--sunken); box-shadow: inset 0 0 0 1px var(--line); }
 .avatar img { width: 100%; height: 100%; object-fit: contain; }
+.avatar.general { background: var(--sunken); color: var(--muted); box-shadow: inset 0 0 0 1px var(--line); }
+.avatar.general svg { width: 62%; height: 62%; }
 .avatar[data-tone="0"] { --avatar-bg: var(--tone-0-bg); --avatar-fg: var(--tone-0-fg); }
 .avatar[data-tone="1"] { --avatar-bg: var(--tone-1-bg); --avatar-fg: var(--tone-1-fg); }
 .avatar[data-tone="2"] { --avatar-bg: var(--tone-2-bg); --avatar-fg: var(--tone-2-fg); }

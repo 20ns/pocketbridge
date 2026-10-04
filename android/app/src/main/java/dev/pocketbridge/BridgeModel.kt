@@ -24,6 +24,9 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.channels.BufferOverflow
 import org.json.JSONObject
 
+private const val PROJECT_ATTEMPT = "newProject"
+private const val DELETIONS = "deletions"
+
 /**
  * The phone's view of the Mac: pairing, the live connection, chats and delivery. Usage, app updates and per-project
  * details live in their own models, reached through [usage], [updates] and [details].
@@ -76,12 +79,25 @@ class BridgeModel(application: Application) : AndroidViewModel(application) {
     /** Images shared into PocketBridge, prepared and waiting for a chat to go to. */
     var shared by mutableStateOf<List<String>>(emptyList()); private set
     var sharing by mutableStateOf(false); private set
-    /** Bumped when something outside the app (a notification, a share) asks to show the open chat. */
-    var showChat by mutableIntStateOf(0); private set
+    /** Something outside the app (a notification, a share) asked to show the open chat; cleared once shown. */
+    var showChat by mutableStateOf(false); private set
     /** True once a first send should ask for notification permission. */
     var askAlerts by mutableStateOf(false); private set
     var alertsOn by mutableStateOf(store.get("alerts") != "off"); private set
     var claudeAvailable by mutableStateOf(true); private set
+    /** Where New project creates folders on the Mac, as the owner sees it ("~/Desktop/experiments"); blank when it can't. */
+    var experiments by mutableStateOf(""); private set
+    var creatingProject by mutableStateOf(false); private set
+    /** Why the last New project attempt failed, shown under its name field. */
+    var projectError by mutableStateOf(""); private set
+    /** A deleted chat still inside its Undo window: hidden here, deleted on the Mac when the window closes. */
+    var deleting by mutableStateOf<Pair<String, String>?>(null); private set
+    /** Chats deleted here and not yet confirmed by the Mac, saved so they stay hidden and get sent after a restart. */
+    var deletions by mutableStateOf(decodeDeletions(store.get(DELETIONS))); private set
+    /** Agent switches on their way to the Mac, shown at once so a tap never waits on the round trip. */
+    private var agentSwitching by mutableStateOf<Map<String, Boolean>>(emptyMap())
+    /** The launcher's New chat shortcut asked for the panel; cleared once shown, so a rotation can't show it again. */
+    var newChatRequested by mutableStateOf(false); private set
     var selected by mutableStateOf(store.get("selected")); private set
     var draft by mutableStateOf(store.get("draft:$selected")); private set
     var pending by mutableStateOf(loadPending(selected)); private set
@@ -123,8 +139,9 @@ class BridgeModel(application: Application) : AndroidViewModel(application) {
         // The open chat's turn ended: its edits change the branch's counts.
         chats.find { it.optString("id") == selected && it.optString("id") in wasWorking && !isWorking(it.optString("status")) }?.let { details.refreshGit(it.optString("projectId"), force = true) }
         details.projectsChanged(projects.mapNotNull { project -> project.textOrNull("icon")?.let { project.optString("id") to it } }.toMap())
-        agents = parseAgents(state.optJSONObject("capabilities"))
+        agents = parseAgents(state.optJSONObject("capabilities")).map { agent -> agentSwitching[agent.id]?.let { agent.copy(enabled = it) } ?: agent }
         claudeAvailable = state.optJSONObject("server")?.optBoolean("claudeAvailable", true) ?: true
+        experiments = state.optJSONObject("server")?.textOrNull("experiments").orEmpty()
     }
     private fun draftChat(id: String) = store.get("draftChat:$id").takeIf { it.isNotEmpty() }?.let {
         runCatching { DraftChat.parse(id, it) }.onFailure { store.remove("draftChat:$id") }.getOrNull()
@@ -198,9 +215,13 @@ class BridgeModel(application: Application) : AndroidViewModel(application) {
     private fun forgetPairingData() {
         turns = emptyList(); subagents = emptyList(); activity = ""; attachments = emptyList(); attachmentLists.clear(); shared = emptyList()
         details.clear(); acceptedAt.clear(); alertsOn = true
+        deleting = null; deletions = emptyMap(); agentSwitching = emptyMap(); experiments = ""; projectError = ""; newChatRequested = false; showChat = false
         viewModelScope.launch(Dispatchers.IO) { outbox.deleteRecursively(); images.clear() }
     }
-    fun foreground(active: Boolean) { foreground = active; Alerts.foreground = active; if (active && paired) start() else if (!active) stopConnection() }
+    fun foreground(active: Boolean) {
+        foreground = active; Alerts.foreground = active
+        if (active && paired) start() else if (!active) stopConnection()
+    }
     private fun stopConnection() { session?.cancel(); session = null; online = false }
     private fun start() {
         if (session?.isActive == true) return
@@ -274,6 +295,7 @@ class BridgeModel(application: Application) : AndroidViewModel(application) {
         }
         if (lastSeq >= 0) cursor.commit(lastSeq)
         online = foreground; connectionIssue = ""; revoked = false
+        if (fetchState && deletions.isNotEmpty()) sendLeftoverDeletions()
     }
     fun refresh() { if (paired) viewModelScope.launch { runCatching { sync() }.onFailure { fail(it) } } }
     /** User-initiated: sync now, or restart the connection loop instead of waiting out its backoff. */
@@ -406,13 +428,112 @@ class BridgeModel(application: Application) : AndroidViewModel(application) {
         if (selected == id) { pending = null; draft = store.get("draft:$id"); attachments = attachmentsOf(id) }
         cleanOutbox()
     }
-    /** Turns an agent CLI on or off on the Mac for every client. Off stops its probes, discovery and new turns. */
-    fun setAgentEnabled(id: String, on: Boolean) = action {
-        val currentApi = api ?: return@action
-        withContext(Dispatchers.IO) { currentApi.request("/api/agents/$id", JSONObject().put("enabled", on)) }
-        usage.stale()
-        sync()
-        usage.refresh(force = true)
+    /**
+     * Turns an agent CLI on or off on the Mac for every client. Off stops its probes, discovery and new turns. The
+     * switch moves at once; a refusal puts it back with the reason.
+     */
+    fun setAgentEnabled(id: String, on: Boolean) {
+        val currentApi = api ?: return
+        if (id in agentSwitching) return
+        agentSwitching = agentSwitching + (id to on)
+        agents = agents.map { if (it.id == id) it.copy(enabled = on) else it }
+        viewModelScope.launch {
+            try {
+                withContext(Dispatchers.IO) { currentApi.request("/api/agents/$id", JSONObject().put("enabled", on)) }
+            } catch (cancelled: CancellationException) { throw cancelled }
+            catch (failure: Exception) {
+                // Put the switch back now; the state fetch below may fail too.
+                if (api === currentApi) { agents = agents.map { if (it.id == id) it.copy(enabled = !on) else it }; error = failureReason(failure) }
+            }
+            finally {
+                agentSwitching = agentSwitching - id
+                if (api === currentApi) { usage.stale(); runCatching { sync() }; usage.refresh(force = true) }
+            }
+        }
+    }
+
+    /**
+     * Creates an empty folder in the Mac's experiments folder and opens a new chat in it. The attempt's id is saved
+     * before sending and reused by a retry of the same name, so a lost answer never makes a second folder.
+     */
+    fun createProject(name: String) {
+        val currentApi = api ?: return
+        if (creatingProject) return
+        val problem = projectNameProblem(name)
+        if (problem != null) { projectError = problem; return }
+        val session = store.session()
+        creatingProject = true; projectError = ""
+        viewModelScope.launch {
+            val attempt = projectAttempt(store.get(PROJECT_ATTEMPT), name.trim())
+            try {
+                val project = withContext(Dispatchers.IO) {
+                    store.commit(PROJECT_ATTEMPT, attempt.store(), session)
+                    currentApi.request("/api/projects/new", JSONObject().put("id", attempt.id).put("name", attempt.name))
+                }
+                store.removeIfSame(PROJECT_ATTEMPT, attempt.store(), session)
+                if (api !== currentApi) return@launch
+                runCatching { sync() }
+                newChat(project.getString("id"))
+            } catch (cancelled: CancellationException) { throw cancelled }
+            catch (failure: Exception) {
+                // A refusal (bad name, folder exists, no experiments folder) is final; anything else may have made it.
+                if (failure is ApiError && failure.definitiveRejection) store.removeIfSame(PROJECT_ATTEMPT, attempt.store(), session)
+                if (api === currentApi) projectError = failureReason(failure)
+            } finally { creatingProject = false }
+        }
+    }
+    fun clearProjectError() { projectError = "" }
+
+    /** The launcher's New chat shortcut: Projects with its new chat panel open. */
+    fun requestNewChat() { if (paired) { if (selected.isNotEmpty()) open(""); newChatRequested = true } }
+    fun newChatShown() { newChatRequested = false }
+    fun chatShown() { showChat = false }
+
+    /** Settings for this phone's lists (filters, sorts, the open project); they go with the pairing. */
+    fun uiSetting(key: String) = store.get("ui:$key")
+    fun saveUiSetting(key: String, value: String) { if (store.get("ui:$key") != value) store.put("ui:$key", value) }
+
+    /**
+     * Hides the chat now and offers Undo; the Mac deletes it when the window closes. The deletion is saved first, so
+     * process death inside the window still deletes it at the next launch. One Undo window at a time.
+     */
+    fun deleteWithUndo(id: String, title: String) {
+        commitDeletion()
+        saveDeletions(deletions + (id to title))
+        if (selected == id) open("")
+        deleting = id to title
+    }
+    fun undoDelete() {
+        val (id, _) = deleting ?: return
+        deleting = null
+        saveDeletions(deletions - id)
+    }
+    /** The Undo window closed, or the app really left the screen: delete for real, waiting out any action in flight. */
+    fun commitDeletion() {
+        val (id, _) = deleting ?: return
+        deleting = null
+        sendDeletion(id)
+    }
+    /** The app left the screen for real (not a rotation): an open Undo window ends now. */
+    fun leaving() = commitDeletion()
+    private val sendingDeletions = mutableSetOf<String>()
+    private fun sendDeletion(id: String) {
+        if (!sendingDeletions.add(id)) return
+        viewModelScope.launch {
+            try {
+                snapshotFlow { busy }.first { !it }
+                if (chats.none { it.optString("id") == id }) { discardDraft(id); forgetDeletion(id) } else delete(id)
+            } finally { sendingDeletions -= id }
+        }
+    }
+    /** Deletions saved before a restart (or a lost connection) go to the Mac once it answers again. */
+    private fun sendLeftoverDeletions() {
+        deletions.keys.filter { it != deleting?.first }.forEach(::sendDeletion)
+    }
+    private fun forgetDeletion(id: String) { if (id in deletions) saveDeletions(deletions - id) }
+    private fun saveDeletions(next: Map<String, String>) {
+        deletions = next
+        if (next.isEmpty()) store.remove(DELETIONS) else store.put(DELETIONS, encodeDeletions(next))
     }
     fun stop() = action {
         val currentApi = api ?: return@action
@@ -438,18 +559,25 @@ class BridgeModel(application: Application) : AndroidViewModel(application) {
     fun delete(id: String) = action {
         val currentApi = api ?: return@action
         val chat = chats.find { it.optString("id") == id }
-        require(!isWorking(chat?.optString("status"))) { "Stop this chat before deleting it." }
+        if (isWorking(chat?.optString("status"))) { forgetDeletion(id); error("Stop this chat before deleting it.") }
         val removalSession = store.session()
-        syncMutex.withLock {
-            withContext(Dispatchers.IO) {
-                currentApi.request("/api/chats/$id/delete", JSONObject())
-                store.commitChatRemoval(id, removalSession)
-                transcripts.remove(id)
+        try {
+            syncMutex.withLock {
+                withContext(Dispatchers.IO) {
+                    currentApi.request("/api/chats/$id/delete", JSONObject())
+                    store.commitChatRemoval(id, removalSession)
+                    transcripts.remove(id)
+                }
+                chats = chats.filter { it.optString("id") != id }
+                attachmentLists.remove(id)
+                if (selected == id) open("")
             }
-            chats = chats.filter { it.optString("id") != id }
-            attachmentLists.remove(id)
-            if (selected == id) open("")
+        } catch (failure: Exception) {
+            // Refused: the chat comes back with the reason. Unreachable: it stays hidden and goes at the next connection.
+            if (deletionSettled(failure)) forgetDeletion(id)
+            throw failure
         }
+        forgetDeletion(id)
         sync()
     }
     fun clearError() { error = "" }
@@ -570,7 +698,7 @@ class BridgeModel(application: Application) : AndroidViewModel(application) {
         shared = emptyList()
         if (selected.isEmpty() || pending != null) { error = "This chat is waiting for your Mac to confirm. Try again once it has."; cleanOutbox(); return }
         attachPrepared(selected, files)
-        showChat++
+        showChat = true
     }
     fun cancelShare() { shared = emptyList(); cleanOutbox() }
 
@@ -578,7 +706,7 @@ class BridgeModel(application: Application) : AndroidViewModel(application) {
     fun openFromAlert(chatId: String) {
         if (!paired || chatId.isEmpty()) return
         if (chatId != selected) open(chatId) else Alerts.dismiss(getApplication(), chatId)
-        showChat++
+        showChat = true
     }
 
     // Background alerts.

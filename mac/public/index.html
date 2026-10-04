@@ -68,7 +68,12 @@
 
   <main class="workspace">
     <aside id="sidebar" class="sidebar" aria-label="Projects and chats">
-      <div class="section-title"><h2>Projects</h2><button id="add-project" class="quiet small" aria-expanded="false" aria-controls="project-form">Add folder</button></div>
+      <div class="section-title"><h2>Projects</h2><div class="section-actions"><button id="new-project" class="quiet small" aria-expanded="false" aria-controls="new-project-form" hidden>New project</button><button id="add-project" class="quiet small" aria-expanded="false" aria-controls="project-form">Add folder</button></div></div>
+      <form id="new-project-form" class="project-form" hidden novalidate>
+        <label>Project name<input id="new-project-name" placeholder="my-idea" maxlength="64" required autocomplete="off" aria-describedby="new-project-hint"></label>
+        <p id="new-project-hint" class="form-hint muted"></p>
+        <button type="submit">Create project</button>
+      </form>
       <form id="project-form" class="project-form" hidden>
         <label>Folder path<input id="project-path" placeholder="/Users/you/Projects/my-app" required autocomplete="off"></label>
         <label>Name <span class="muted">optional</span><input id="project-name" placeholder="My app" maxlength="120"></label>

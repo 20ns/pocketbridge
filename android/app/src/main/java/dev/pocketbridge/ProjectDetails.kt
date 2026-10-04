@@ -4,7 +4,9 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import java.io.File
+import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
+import org.json.JSONObject
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -114,3 +116,53 @@ class ProjectDetails(private val scope: CoroutineScope, private val api: () -> A
         scope.launch(Dispatchers.IO) { icons.clear() }
     }
 }
+
+/** A Unicode letter (\p{L}) or number (\p{N}: digits, letter numbers like Ⅳ, other numbers), by code point. */
+private fun letterOrNumber(codePoint: Int) = Character.isLetter(codePoint) || when (Character.getType(codePoint).toByte()) {
+    Character.DECIMAL_DIGIT_NUMBER, Character.LETTER_NUMBER, Character.OTHER_NUMBER -> true
+    else -> false
+}
+
+/**
+ * Why a folder name won't do on the Mac, in the Mac's own rules (/^[\p{L}\p{N}][\p{L}\p{N} ._-]*$/u, no trailing dot
+ * or space, at most 64 UTF-16 units like its JavaScript length), or null when it's fine. Checked by code point, so
+ * letters outside the basic plane count as one letter. Surrounding spaces are trimmed before sending.
+ */
+fun projectNameProblem(name: String): String? {
+    val trimmed = name.trim()
+    val points = trimmed.codePoints().toArray()
+    return when {
+        points.isEmpty() -> "Name the project."
+        trimmed.length > 64 -> "Use 64 characters or fewer."
+        !letterOrNumber(points.first()) -> "Start with a letter or number."
+        trimmed.endsWith('.') -> "Don't end with a dot."
+        points.any { !(letterOrNumber(it) || it == ' '.code || it == '.'.code || it == '_'.code || it == '-'.code) } -> "Use letters, numbers, spaces, dots, dashes and underscores."
+        else -> null
+    }
+}
+
+/** One try at making a project folder. Its [id] goes with every retry of the same name, so a lost answer makes no second folder. */
+data class ProjectAttempt(val id: String, val name: String) {
+    fun store() = JSONObject().put("id", id).put("name", name).toString()
+    companion object {
+        fun parse(value: String) = runCatching { JSONObject(value).let { ProjectAttempt(it.getString("id"), it.getString("name")) } }.getOrNull()
+    }
+}
+
+/** The saved attempt when it was for this same name and is still unanswered; otherwise a new one. */
+fun projectAttempt(saved: String, name: String, newId: () -> String = { UUID.randomUUID().toString() }): ProjectAttempt =
+    saved.takeIf { it.isNotBlank() }?.let(ProjectAttempt::parse)?.takeIf { it.name == name } ?: ProjectAttempt(newId(), name)
+
+/** Projects for starting a chat: most recently active first, then by name; [query] matches name or folder. */
+fun projectsByActivity(projects: List<JSONObject>, chats: List<JSONObject>, query: String = ""): List<JSONObject> {
+    val newest = chats.groupBy { it.optString("projectId") }.mapValues { (_, list) -> list.maxOf { it.optLong("updatedAt") } }
+    fun activity(project: JSONObject) = projectActivity(project.optLong("lastUsedAt"), newest[project.optString("id")] ?: 0L)
+    return folderProjects(projects).filter { query.isBlank() || matchesProject(query, it.optString("name"), it.optString("path")) }
+        .sortedWith(Comparator { a, b -> compareProjectActivity(activity(a), a.optString("name"), activity(b), b.optString("name"), newest = true) })
+}
+
+/** The Mac's General project: chats that belong to no folder (computer use, questions). Older Macs have none. */
+fun isGeneral(project: JSONObject?) = project?.optBoolean("general") == true
+fun generalProject(projects: List<JSONObject>): JSONObject? = projects.firstOrNull(::isGeneral)
+/** Folders only: General has its own entry and its own option, never a row among them. */
+fun folderProjects(projects: List<JSONObject>): List<JSONObject> = projects.filterNot(::isGeneral)

@@ -1,6 +1,6 @@
 // The sidebar: projects, recent chats, sessions to continue and the agent switches.
-import {relativeTime, blankLocalDraft, usableAgent, newChatAgent, resolveOptions, modelName} from './support.mjs';
-import {$, el, app, drafts, localChats, lastOptions, persist, notice, api, projectFor, projectName, agentFor, statusBadge, projectAvatar} from './core.mjs';
+import {relativeTime, blankLocalDraft, usableAgent, newChatAgent, resolveOptions, modelName, projectNameProblem, newProjectAttempt, settleProjectAttempt, projectChoices} from './support.mjs';
+import {$, el, app, drafts, localChats, lastOptions, persist, notice, api, projectFor, projectName, agentFor, statusBadge, projectAvatar, isGeneral} from './core.mjs';
 import {controls, refresh, selectChat} from './app.mjs';
 import {loadUsage} from './usage.mjs';
 
@@ -10,13 +10,23 @@ export function sidebarControls() {
 }
 
 export function renderProjects() {
-  const projectSelect = $('project-select'), projects = app.state.projects;
+  const projectSelect = $('project-select'), projects = app.state.projects, {general, folders} = projectChoices(projects);
   const chosenProject = projects.some(p => p.id === projectSelect.value) ? projectSelect.value : app.preferredProject;
   projectSelect.replaceChildren();
   if (!projects.length) projectSelect.append(new Option('Register a project folder', ''));
-  for (const project of projects) projectSelect.append(new Option(project.name, project.id));
+  // General (no project) comes first, set apart from the project folders.
+  if (general) {
+    projectSelect.append(new Option(general.name || 'General', general.id));
+    if (folders.length) { const group = document.createElement('optgroup'); group.label = 'Projects'; group.append(...folders.map(project => new Option(project.name, project.id))); projectSelect.append(group); }
+  } else for (const project of folders) projectSelect.append(new Option(project.name, project.id));
   if (projects.some(p => p.id === chosenProject)) projectSelect.value = chosenProject;
+  else if (general && folders.length) projectSelect.value = folders[0].id;
   renderProjectAvatar();
+  // New projects need the Mac's experiments folder; without one the option stays hidden.
+  const experiments = app.state.server?.experiments;
+  $('new-project').hidden = !experiments;
+  if (!experiments) toggleNewProjectForm(false);
+  else if (!('problem' in $('new-project-hint').dataset)) $('new-project-hint').textContent = `Creates an empty folder in ${experiments}.`;
 }
 function renderProjectAvatar() {
   const project = app.state?.projects.find(item => item.id === $('project-select').value);
@@ -50,6 +60,24 @@ export function renderChatList() {
     if (chat.id === focused) button.focus();
   }
 }
+
+// The sidebar keeps its scroll position across reloads. It is restored once the whole sidebar has rendered and again
+// when the sessions list arrives, unless the sidebar has been scrolled by then; only the owner's scrolling is saved.
+const scrollTarget = (() => { try { return Number(localStorage.getItem('pocketbridge.sidebarScroll')) || 0; } catch { return 0; } })();
+const restoredPhases = new Set();
+let ownScroll = false;
+export function restoreSidebarScroll(phase = 'render') {
+  if (ownScroll || restoredPhases.has(phase)) return;
+  restoredPhases.add(phase);
+  $('sidebar').scrollTop = scrollTarget;
+}
+const markOwnScroll = () => { ownScroll = true; };
+for (const type of ['wheel', 'touchstart', 'pointerdown', 'keydown']) $('sidebar').addEventListener(type, markOwnScroll, {passive: true});
+let scrollSave;
+$('sidebar').addEventListener('scroll', () => {
+  if (!ownScroll) return;
+  clearTimeout(scrollSave); scrollSave = setTimeout(() => persist('pocketbridge.sidebarScroll', $('sidebar').scrollTop), 200);
+}, {passive: true});
 setInterval(() => { if (app.state) renderChatList(); }, 60000);
 
 /** The setup note when neither agent can start a chat. */
@@ -62,7 +90,8 @@ export function renderCliStatus() {
 // Sessions from Terminal or the desktop apps in the chosen project, to continue here.
 export async function loadSessions() {
   const projectId = $('project-select').value;
-  if (!projectId || !app.token) { $('sessions').hidden = true; return; }
+  // General chats run in the home folder; its sessions aren't offered to continue.
+  if (!projectId || !app.token || isGeneral(projectId)) { $('sessions').hidden = true; return; }
   try {
     const {sessions} = await api(`/projects/${encodeURIComponent(projectId)}/sessions`);
     if ($('project-select').value !== projectId) return;
@@ -79,6 +108,7 @@ export async function loadSessions() {
       };
       return button;
     }));
+    restoreSidebarScroll('sessions');
   } catch { $('sessions').hidden = true; }
 }
 
@@ -115,15 +145,50 @@ narrow.addEventListener('change', () => showDrawer(false));
 document.addEventListener('keydown', event => { if (event.key === 'Escape' && document.body.classList.contains('drawer-open')) { showDrawer(false); $('chats-toggle').focus(); } });
 
 $('project-select').onchange = () => { app.preferredProject = $('project-select').value; persist('pocketbridge.project', app.preferredProject); renderProjectAvatar(); controls(); loadSessions(); };
-export function toggleProjectForm(show = $('project-form').hidden) { $('project-form').hidden = !show; $('add-project').setAttribute('aria-expanded', String(show)); if (show) $('project-path').focus(); }
+export function toggleProjectForm(show = $('project-form').hidden) { $('project-form').hidden = !show; $('add-project').setAttribute('aria-expanded', String(show)); if (show) { toggleNewProjectForm(false); $('project-path').focus(); } }
 $('add-project').onclick = () => toggleProjectForm();
+function toggleNewProjectForm(show = $('new-project-form').hidden) { $('new-project-form').hidden = !show; $('new-project').setAttribute('aria-expanded', String(show)); if (show) { toggleProjectForm(false); $('new-project-name').focus(); } }
+$('new-project').onclick = () => toggleNewProjectForm();
+
+// New project: an empty folder in the Mac's experiments folder, then a new chat in it.
+// One id per attempt; an unknown result keeps it, so retrying the same name can't make a second folder.
+// A pending attempt survives a reload, so retrying the same name after an unknown result still reuses its id.
+let projectAttempt = (() => { try { return JSON.parse(localStorage.getItem('pocketbridge.projectAttempt')); } catch { return null; } })();
+const keepAttempt = attempt => { projectAttempt = attempt; persist('pocketbridge.projectAttempt', attempt); };
+function showNameProblem(problem) {
+  const hint = $('new-project-hint');
+  if (problem) { hint.dataset.problem = problem; hint.textContent = problem; }
+  else { delete hint.dataset.problem; hint.textContent = `Creates an empty folder in ${app.state?.server?.experiments ?? 'the experiments folder'}.`; }
+  $('new-project-name').setAttribute('aria-invalid', String(Boolean(problem)));
+}
+$('new-project-name').oninput = () => { const value = $('new-project-name').value; showNameProblem(value.trim() ? projectNameProblem(value) : null); };
+$('new-project-form').onsubmit = async event => {
+  event.preventDefault();
+  const name = $('new-project-name').value.trim(), problem = projectNameProblem(name);
+  showNameProblem(problem); if (problem) { $('new-project-name').focus(); return; }
+  const button = event.submitter ?? $('new-project-form').querySelector('button'); button.disabled = true;
+  keepAttempt(newProjectAttempt(projectAttempt, name));
+  try {
+    const project = await api('/projects/new', {id: projectAttempt.id, name});
+    keepAttempt(null);
+    app.preferredProject = project.id; persist('pocketbridge.project', project.id);
+    $('new-project-form').reset(); showNameProblem(null); toggleNewProjectForm(false);
+    await refresh(); notice();
+    $('project-select').value = project.id; renderProjectAvatar(); loadSessions();
+    await startChat(project.id);
+  } catch (error) {
+    keepAttempt(settleProjectAttempt(projectAttempt, error));
+    if (error.status === 400 || error.status === 409) showNameProblem(error.message); else notice(projectAttempt ? `${error.message}. Create again to retry; it won't make a second folder.` : error.message);
+  } finally { button.disabled = false; }
+};
 $('project-form').onsubmit = async event => {
   event.preventDefault(); const button = event.submitter; button.disabled = true;
   try { const project = await api('/projects', {path:$('project-path').value.trim(),name:$('project-name').value.trim() || undefined}); app.preferredProject = project.id; persist('pocketbridge.project', project.id); $('project-form').reset(); $('project-form').hidden = true; $('add-project').setAttribute('aria-expanded','false'); await refresh(); notice(); }
   catch (error) { notice(error.message); } finally { button.disabled = false; }
 };
-$('new-chat').onclick = async () => {
-  const projectId = $('project-select').value;
+$('new-chat').onclick = () => startChat($('project-select').value);
+/** A local draft chat in the project; it reaches the Mac with its first prompt. */
+async function startChat(projectId) {
   if (!projectId) return;
   $('new-chat').disabled = true;
   const id = crypto.randomUUID();
@@ -133,6 +198,6 @@ $('new-chat').onclick = async () => {
   const agent = agentFor(agentId);
   const options = agent ? resolveOptions(agent, lastOptions[agent.id]) : {agent:'claude', mode:'bypassPermissions', model:'default', effort:'default', speed:null};
   localChats[id] = {id, projectId, title:'New chat', ...options, status:'idle', updatedAt:Date.now()};
-  try { await selectChat(id); notice(); $('prompt').focus(); }
+  try { await selectChat(id); notice(); markOwnScroll(); $('chat-list').querySelector('.selected')?.scrollIntoView({block: 'nearest'}); $('prompt').focus(); }
   finally { controls(); }
-};
+}

@@ -56,24 +56,32 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.delay
+import androidx.compose.ui.text.input.TextFieldValue
+import androidx.compose.ui.text.TextRange
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import org.json.JSONObject
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable fun Chats(model: BridgeModel, project: String, sort: ChatSort, list: LazyListState, insets: PageInsets) {
-    val chats = projectChats(model.chats, project, model.visibleDrafts()).sortedWith(when (sort) {
+    // A chat inside its Undo window, or deleted but not yet confirmed by the Mac, is already gone from the list.
+    val hidden = model.deletions.keys
+    val chats = projectChats(model.chats, project, model.visibleDrafts()).filter { it.optString("id") !in hidden }.sortedWith(when (sort) {
         ChatSort.Newest -> compareByDescending { it.optLong("updatedAt") }
         ChatSort.Oldest -> compareBy { it.optLong("updatedAt") }
     })
     val now = rememberNow()
     // Sessions started in Terminal or the desktop apps, offered for continuing here. Asked for once per visit.
-    LaunchedEffect(project, model.online) { if (model.online) model.details.refreshSessions(project) }
-    val sessions = model.details.sessions[project].orEmpty()
+    // General belongs to no folder, so it has no Mac sessions and no git line.
+    val general = isGeneral(model.projects.find { it.optString("id") == project })
+    LaunchedEffect(project, model.online) { if (model.online && !general) model.details.refreshSessions(project) }
+    val sessions = if (general) emptyList() else model.details.sessions[project].orEmpty()
     var macOpen by rememberSaveable { mutableStateOf(true) }
     var macAll by rememberSaveable(project) { mutableStateOf(false) }
     var continuing by remember { mutableStateOf<String?>(null) }
     LaunchedEffect(model.busy) { if (!model.busy) continuing = null }
-    val refresh = { model.retry(); model.details.refreshSessions(project); model.details.refreshGit(project, force = true) }
-    PullToRefreshBox(model.refreshing, refresh, Modifier.fillMaxSize()) {
+    val refresh = { model.retry(); if (!general) { model.details.refreshSessions(project); model.details.refreshGit(project, force = true) } }
+    RefreshBox(model.refreshing, refresh, Modifier.fillMaxSize()) {
         // Bottom room keeps the last row clear of the New chat button.
         LazyColumn(Modifier.fillMaxSize().then(insets.scroll), list, PaddingValues(bottom = insets.bottom + 96.dp)) {
             item(key = "top-gap") { Spacer(Modifier.height(Spacing.xs)) }
@@ -94,7 +102,9 @@ import org.json.JSONObject
                 }
                 if (chats.isNotEmpty()) item(key = "chats-label") { GroupLabel("Chats") }
             }
-            if (chats.isEmpty() && sessions.isEmpty()) item(key = "empty") { EmptyState(PocketIcons.Terminal, "No chats yet", "") }
+            // Nothing says "No chats yet" while the Mac's own sessions for this folder are still on their way.
+            val sessionsPending = !general && project in model.details.sessionsLoading && model.details.sessions[project] == null
+            if (chats.isEmpty() && sessions.isEmpty() && !sessionsPending) item(key = "empty") { EmptyState(PocketIcons.Terminal, "No chats yet", "") }
             itemsIndexed(chats, key = { _, chat -> chat.getString("id") }) { index, chat -> ChatRow(model, chat, now, index, chats.size) }
         }
     }
@@ -140,7 +150,7 @@ import org.json.JSONObject
     val colors = MaterialTheme.colorScheme
     var menu by remember { mutableStateOf(false) }
     var rename by remember { mutableStateOf(false) }
-    var delete by remember { mutableStateOf(false) }
+    val haptics = rememberHaptics()
     val id = chat.getString("id")
     val local = chat.optBoolean("local")
     val unconfirmed = local && status == "unconfirmed"
@@ -153,7 +163,7 @@ import org.json.JSONObject
         GroupRow(
             index, count, onClick = { model.open(id) }, onClickLabel = "Open chat", container = hint.tint, accent = hint.accent,
             // Long press opens chat actions; an unconfirmed prompt has none until the Mac answers.
-            onLongClick = if (unconfirmed) null else ({ menu = true }), onLongClickLabel = "Chat actions",
+            onLongClick = if (unconfirmed) null else ({ haptics.perform(Haptic.LongPress); menu = true }), onLongClickLabel = "Chat actions",
             // Quiet chats show their last words; anything that needs a look shows its state instead.
             supporting = {
                 when {
@@ -169,10 +179,9 @@ import org.json.JSONObject
             },
         ) { Text(title, maxLines = 1, overflow = TextOverflow.Ellipsis) }
         val desktop = if (local || chat.optString("agent").ifBlank { "claude" } != "claude") null else ({ model.openInDesktop(id) })
-        Box(Modifier.align(Alignment.TopEnd).padding(end = Spacing.xxxl)) { ChatMenu(menu, { menu = false }, if (local) null else ({ rename = true }), { delete = true }, working, desktop) }
+        Box(Modifier.align(Alignment.TopEnd).padding(end = Spacing.xxxl)) { ChatMenu(menu, { menu = false }, if (local) null else ({ rename = true }), { model.deleteWithUndo(id, title) }, working, desktop) }
     }
     if (rename) RenameDialog(title, { rename = false }, { model.rename(id, it); rename = false })
-    if (delete) DeleteDialog(title, working, local, { delete = false }, { if (local) model.discardDraft(id) else model.delete(id); delete = false })
 }
 
 @Composable fun ChatMenu(expanded: Boolean, onDismiss: () -> Unit, onRename: (() -> Unit)?, onDelete: () -> Unit, working: Boolean, onDesktop: (() -> Unit)? = null) {
@@ -189,26 +198,21 @@ import org.json.JSONObject
 }
 
 @Composable fun RenameDialog(current: String, onDismiss: () -> Unit, onSave: (String) -> Unit) {
-    var title by rememberSaveable(current) { mutableStateOf(current) }
+    // Opens with the keyboard up and the old name selected, so typing replaces it; Done saves.
+    var title by rememberSaveable(current, stateSaver = TextFieldValue.Saver) { mutableStateOf(TextFieldValue(current, TextRange(0, current.length))) }
+    val focus = remember { FocusRequester() }
+    LaunchedEffect(Unit) { focus.requestFocus() }
+    val save = { if (title.text.isNotBlank()) onSave(title.text) }
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("Rename chat") },
-        text = { OutlinedTextField(title, { title = it }, Modifier.fillMaxWidth(), singleLine = true, label = { Text("Name") }, shape = RoundedCornerShape(Corners.groupInner * 3)) },
-        confirmButton = { TextButton(onClick = { onSave(title) }, enabled = title.isNotBlank()) { Text("Save") } },
-        dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
-    )
-}
-
-@Composable fun DeleteDialog(title: String, working: Boolean, local: Boolean, onDismiss: () -> Unit, onDelete: () -> Unit) {
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        title = { Text(if (working) "Stop this chat first" else "Delete chat?") },
-        text = { Text(when {
-            working -> "It's still working or waiting. Stop it before deleting."
-            local -> "Delete \"$title\" from this phone. It hasn't been sent."
-            else -> "Delete \"$title\" from PocketBridge on this phone and Mac."
-        }) },
-        confirmButton = { TextButton(onClick = onDelete, enabled = !working) { Text("Delete", color = MaterialTheme.colorScheme.error) } },
+        text = {
+            OutlinedTextField(
+                title, { title = it }, Modifier.fillMaxWidth().focusRequester(focus), singleLine = true, label = { Text("Name") }, shape = RoundedCornerShape(Corners.groupInner * 3),
+                keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Sentences, imeAction = ImeAction.Done), keyboardActions = KeyboardActions(onDone = { save() }),
+            )
+        },
+        confirmButton = { TextButton(onClick = save, enabled = title.text.isNotBlank()) { Text("Save") } },
         dismissButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
     )
 }

@@ -62,8 +62,11 @@ import org.json.JSONObject
     var confirm by remember { mutableStateOf(false) }
     val colors = MaterialTheme.colorScheme
     LaunchedEffect(model.online) { if (model.online) model.usage.refresh() }
+    RefreshBox(model.refreshing, { model.retry(); model.usage.refresh(force = true) }, Modifier.fillMaxSize()) {
     Column(Modifier.fillMaxSize().then(insets.scroll).verticalScroll(rememberScrollState()).padding(bottom = insets.bottom + Spacing.xxl)) {
-        GroupLabel("Mac", Modifier.padding(top = 0.dp))
+        // Agents first: the owner switches subscriptions often, so on and off is one tap from the Projects bar.
+        AgentsGroup(model)
+        GroupLabel("Mac")
         GroupRow(
             0, 3,
             leading = { Tile(colors.secondaryContainer) { Icon(PocketIcons.Laptop, null, Modifier.size(20.dp), tint = colors.onSecondaryContainer) } },
@@ -85,33 +88,6 @@ import org.json.JSONObject
             leading = { Tile(Color.Transparent) { Icon(Icons.AutoMirrored.Filled.ExitToApp, null, tint = colors.error) } },
         ) { Text("Disconnect", color = colors.error) }
 
-        GroupLabel("Agents")
-        val agents = model.agents.ifEmpty { listOf(AgentInfo(CLAUDE, "Claude", model.claudeAvailable, emptyList(), emptyList(), "default", "default")) }
-        agents.forEachIndexed { index, agent ->
-            GroupRow(
-                index, agents.size,
-                leading = {
-                    val hint = agentColors(agent.id)
-                    Tile(hint.container) { Icon(if (agent.id == CODEX) PocketIcons.Terminal else PocketIcons.Spark, null, Modifier.size(20.dp), tint = hint.accent) }
-                },
-                supporting = {
-                    Text(when {
-                        !agent.available -> "Not found. Install and sign in on the Mac, then restart PocketBridge."
-                        !agent.enabled -> "Off. New chats and usage skip it."
-                        agent.models.isEmpty() -> "Model list unavailable"
-                        else -> listOfNotNull(agent.version.ifBlank { null }, plural(agent.models.size, "model"), modelName(agent, agent.defaultModel)).joinToString(" · ")
-                    })
-                },
-                // The switch is the whole row's action: one tap turns an agent on or off on the Mac.
-                onClick = { model.setAgentEnabled(agent.id, !agent.enabled) }.takeIf { agent.available && model.online && !model.busy && model.agents.isNotEmpty() },
-                onClickLabel = if (agent.enabled) "Turn off" else "Turn on",
-                trailing = {
-                    if (!agent.available) StatusLine("error", word = "Missing")
-                    else Switch(agent.enabled, null, enabled = model.online && !model.busy && model.agents.isNotEmpty(), modifier = Modifier.semantics { contentDescription = "${agent.name} ${if (agent.enabled) "on" else "off"}" })
-                },
-            ) { Text(if (agent.id == CLAUDE) "Claude Code" else agent.name) }
-        }
-
         AlertsRow(model)
 
         if (model.usage.agents.isNotEmpty()) {
@@ -125,6 +101,7 @@ import org.json.JSONObject
         GroupLabel("Updates")
         UpdateRow(model)
     }
+    }
     if (confirm) AlertDialog(
         onDismissRequest = { confirm = false },
         title = { Text("Disconnect from your Mac?") },
@@ -132,6 +109,39 @@ import org.json.JSONObject
         confirmButton = { TextButton(onClick = { model.disconnect(); confirm = false }) { Text("Disconnect", color = colors.error) } },
         dismissButton = { TextButton(onClick = { confirm = false }) { Text("Cancel") } },
     )
+}
+
+/** Claude Code and Codex, each one tap to turn on or off on the Mac. The switch moves at once and gives a toggle tick. */
+@Composable private fun AgentsGroup(model: BridgeModel) {
+    val haptics = rememberHaptics()
+    GroupLabel("Agents", Modifier.padding(top = 0.dp))
+    val agents = model.agents.ifEmpty { listOf(AgentInfo(CLAUDE, "Claude", model.claudeAvailable, emptyList(), emptyList(), "default", "default")) }
+    val switchable = model.online && model.agents.isNotEmpty()
+    agents.forEachIndexed { index, agent ->
+        val toggle = { haptics.toggle(!agent.enabled); model.setAgentEnabled(agent.id, !agent.enabled) }
+        GroupRow(
+            index, agents.size,
+            leading = {
+                val hint = agentColors(agent.id)
+                Tile(hint.container) { Icon(if (agent.id == CODEX) PocketIcons.Terminal else PocketIcons.Spark, null, Modifier.size(20.dp), tint = hint.accent) }
+            },
+            supporting = {
+                Text(when {
+                    !agent.available -> "Not found. Install and sign in on the Mac, then restart PocketBridge."
+                    !agent.enabled -> "Off. New chats and usage skip it."
+                    agent.models.isEmpty() -> "Model list unavailable"
+                    else -> listOfNotNull(agent.version.ifBlank { null }, plural(agent.models.size, "model"), modelName(agent, agent.defaultModel)).joinToString(" · ")
+                })
+            },
+            // The switch is the whole row's action: one tap turns an agent on or off on the Mac.
+            onClick = toggle.takeIf { agent.available && switchable },
+            onClickLabel = if (agent.enabled) "Turn off" else "Turn on",
+            trailing = {
+                if (!agent.available) StatusLine("error", word = "Missing")
+                else Switch(agent.enabled, null, enabled = switchable, modifier = Modifier.semantics { contentDescription = "${agent.name} ${if (agent.enabled) "on" else "off"}" })
+            },
+        ) { Text(if (agent.id == CLAUDE) "Claude Code" else agent.name) }
+    }
 }
 
 /** One switch for background alerts. Turning it on asks Android for notifications, or opens their settings once refused. */
@@ -144,7 +154,9 @@ import org.json.JSONObject
     val openSettings = { context.startActivity(Intent(android.provider.Settings.ACTION_APP_NOTIFICATION_SETTINGS).putExtra(android.provider.Settings.EXTRA_APP_PACKAGE, context.packageName)) }
     val ask = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted -> model.alertsAsked(granted); if (!granted) openSettings() }
     val on = model.alertsOn && permitted
+    val haptics = rememberHaptics()
     val toggle = {
+        haptics.toggle(!on)
         when {
             on -> model.setAlerts(false)
             permitted -> model.setAlerts(true)

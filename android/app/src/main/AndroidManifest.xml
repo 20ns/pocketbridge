@@ -15,6 +15,7 @@
             <intent-filter><action android:name="android.intent.action.VIEW"/><category android:name="android.intent.category.DEFAULT"/><category android:name="android.intent.category.BROWSABLE"/><data android:scheme="pocketbridge" android:host="pair"/></intent-filter>
             <intent-filter android:label="PocketBridge"><action android:name="android.intent.action.SEND"/><category android:name="android.intent.category.DEFAULT"/><data android:mimeType="image/*"/></intent-filter>
             <intent-filter android:label="PocketBridge"><action android:name="android.intent.action.SEND_MULTIPLE"/><category android:name="android.intent.category.DEFAULT"/><data android:mimeType="image/*"/></intent-filter>
+            <meta-data android:name="android.app.shortcuts" android:resource="@xml/shortcuts" />
         </activity>
         <!-- Runs only while the app is closed and a chat works on the Mac; it stops itself when nothing is running. -->
         <service android:name=".AlertService" android:exported="false" android:foregroundServiceType="specialUse">

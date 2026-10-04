@@ -120,9 +120,10 @@ private val AnswersSaver = Saver<Answers, String>(save = { encodeAnswers(it) }, 
 
 /** Both buttons need the Mac and no other answer on its way; confirm also needs the answer to be [ready]. */
 @Composable private fun Decision(confirm: String, decline: String, enabled: Boolean, onConfirm: () -> Unit, onDecline: () -> Unit, ready: Boolean = true) {
+    val haptics = rememberHaptics()
     Row(Modifier.fillMaxWidth().padding(top = Spacing.xs), horizontalArrangement = Arrangement.spacedBy(Spacing.sm, Alignment.End)) {
-        OutlinedButton(onClick = onDecline, enabled = enabled) { Text(decline) }
-        Button(onClick = onConfirm, enabled = enabled && ready) { Text(confirm) }
+        OutlinedButton(onClick = { haptics.perform(Haptic.Reject); onDecline() }, enabled = enabled) { Text(decline) }
+        Button(onClick = { haptics.perform(Haptic.Confirm); onConfirm() }, enabled = enabled && ready) { Text(confirm) }
     }
 }
 

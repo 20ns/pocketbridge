@@ -30,6 +30,8 @@ export function openDatabase(dataDir) {
     // 0.7: Codex speed tier per chat and per recorded prompt; project icons.
     ['chats', 'speed', 'TEXT'], ['prompts', 'speed', 'TEXT'],
     ['projects', 'icon', 'TEXT'], ['projects', 'iconType', 'TEXT'], ['projects', 'iconSource', 'TEXT'], ['projects', 'iconCheckedAt', 'INTEGER'],
+    // 0.8: the one General project, for chats that belong to no project folder.
+    ['projects', 'general', 'INTEGER NOT NULL DEFAULT 0'],
   ]) if (!columns(table).includes(column)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${type}`);
   db.exec(`CREATE TABLE IF NOT EXISTS deleted_chats (id TEXT PRIMARY KEY, deletedAt INTEGER NOT NULL);
     CREATE INDEX IF NOT EXISTS messages_chat ON messages(chatId);

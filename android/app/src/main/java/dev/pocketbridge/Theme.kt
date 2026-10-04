@@ -227,6 +227,7 @@ object PocketIcons {
     val SkipNext = icon("SkipNext", "M6 18l8.5-6L6 6v12zM16 6v12h2V6h-2z")
     val StopCircle = icon("StopCircle", "M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm4 14H8V8h8v8z")
     val Branch = outline("Branch", "M8.25 5.5a2.25 2.25 0 1 1-4.5 0a2.25 2.25 0 1 1 4.5 0zM8.25 18.5a2.25 2.25 0 1 1-4.5 0a2.25 2.25 0 1 1 4.5 0zM20.25 5.5a2.25 2.25 0 1 1-4.5 0a2.25 2.25 0 1 1 4.5 0zM6 7.75v8.5M18 7.75v1c0 2.5-2 4-4.5 4h-3c-2.6 0-4.5 1.4-4.5 3.5")
+    val Chat = icon("Chat", "M20 2H4c-1.1 0-2 .9-2 2v18l4-4h14c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zm0 14H6l-2 2V4h16v12z")
     val Bolt = icon("Bolt", "M11 21h-1l1-7H7.5c-.58 0-.57-.32-.38-.66.19-.34.05-.08.07-.12C8.48 10.94 10.42 7.54 13 3h1l-1 7h3.5c.49 0 .56.33.47.51l-.07.15C12.96 17.55 11 21 11 21z")
     val Reset = icon("Reset", "M13 3c-4.97 0-9 4.03-9 9H1l3.89 3.89.07.14L9 12H6c0-3.87 3.13-7 7-7s7 3.13 7 7-3.13 7-7 7c-1.93 0-3.68-.79-4.94-2.06l-1.42 1.42C8.27 19.99 10.51 21 13 21c4.97 0 9-4.03 9-9s-4.03-9-9-9z")
     /** Claude's mark in lists: a plain spark, not the brand logo. Codex uses [Terminal]. */

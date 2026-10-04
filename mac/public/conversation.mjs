@@ -13,7 +13,7 @@ export function renderHeader(chat) {
   $('chat-title').textContent = chat?.title ?? 'Your Mac, from anywhere';
   const project = projectFor(chat);
   $('chat-folder').hidden = !chat;
-  $('chat-folder').title = project?.path ?? '';
+  $('chat-folder').title = project?.general ? 'Not in a project' : project?.path ?? '';
   if (chat) $('chat-folder').replaceChildren(projectAvatar(project, 'tiny'), el('span', '', projectName(chat)));
   document.querySelector('.chat-header').dataset.agent = chat ? chat.agent || 'claude' : '';
   if (chat) {
@@ -51,7 +51,8 @@ export function renderEmpty() {
 }
 function showPendingChat() {
   const empty = el('div', 'empty'), chat = currentChat();
-  empty.append(el('h2', '', `What should ${agentName(chat)} work on?`), el('p', 'muted', projectFor(chat)?.path ?? ''));
+  const project = projectFor(chat);
+  empty.append(el('h2', '', `What should ${agentName(chat)} work on?`), el('p', 'muted', project?.general ? 'A general chat, not in a project.' : project?.path ?? ''));
   clearConversation(); $('log').append(empty);
 }
 

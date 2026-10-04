@@ -1,3 +1,31 @@
+PocketBridge 0.8.0 verification, 4 October 2026
+
+AUTOMATED CHECKS
+- Mac: pnpm test, 77 passed. New: creating projects in the experiments folder
+  (name rules, unicode, retries by id, a crash between registering and creating
+  the folder), and the General project (home folder, no git/sessions/icon, one
+  per Mac across restarts).
+- Android: assembleDebug, testDebugUnitTest and lintDebug passed; 125 JVM tests, 0
+  lint errors. New: new-project names by code point, pending deletions saved and
+  settled, General filtering, scroll and filter persistence.
+- Review: GPT-6.1-Sol on the 0.8 changes found 11 issues (Undo delete committed on
+  rotation or lost on process death, a failed agent switch staying on, a launcher
+  shortcut replayed on rotation, Back from naming closing the panel, unicode
+  names, project creation retries, browser attempt ids, hints and scroll). All
+  fixed.
+
+EMULATOR CHECKS (demo service on 8788)
+- + panel with New project and General chat, creating a project and its draft,
+  General row and chats, scroll restored, Undo delete including across rotation
+  and a force-stop, agent switches, launcher shortcut intent.
+- Mac browser: New project, General chats, sidebar scroll after reload.
+- Not tested: physical phone haptics (the emulator has none), TalkBack, 1.3x font.
+
+TEST CLEANUP
+- Old soak-test Claude sessions and the work/*-project test folders were moved
+  from ~/.claude/projects to work/old-test-sessions, and two empty test projects
+  were removed from the live project list (after a database backup).
+
 PocketBridge 0.7.0 verification, 4 October 2026
 
 AUTOMATED CHECKS

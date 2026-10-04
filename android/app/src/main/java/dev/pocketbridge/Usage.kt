@@ -227,6 +227,7 @@ fun updatedLabel(updatedAt: Long, now: Long): String {
 @Composable private fun ResetRow(model: BridgeModel, resets: Resets, now: Long) {
     var confirm by remember { mutableStateOf(false) }
     val colors = MaterialTheme.colorScheme
+    val haptics = rememberHaptics()
     val expiry = resets.next?.expiresAt?.let { expiryLabel(it, now) }.orEmpty()
     Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
         Column(Modifier.weight(1f).semantics(mergeDescendants = true) {}, verticalArrangement = Arrangement.spacedBy(Spacing.xxs)) {
@@ -239,7 +240,11 @@ fun updatedLabel(updatedAt: Long, now: Long): String {
         }
     }
     val message = model.usage.resetMessage
-    LaunchedEffect(message) { if (message.isNotEmpty()) { delay(8_000); model.usage.clearResetMessage() } }
+    LaunchedEffect(message) {
+        if (message.isEmpty()) return@LaunchedEffect
+        if (model.usage.resetFailed) haptics.perform(Haptic.Reject)
+        delay(8_000); model.usage.clearResetMessage()
+    }
     AnimatedVisibility(message.isNotEmpty(), enter = expandVertically(Motion.spatial(IntSize.VisibilityThreshold)) + fadeIn(Motion.effects()), exit = shrinkVertically(Motion.fastSpatial(IntSize.VisibilityThreshold)) + fadeOut(Motion.fastEffects())) {
         Row(Modifier.semantics(mergeDescendants = true) { liveRegion = LiveRegionMode.Polite }, verticalAlignment = Alignment.CenterVertically) {
             val tint = if (model.usage.resetFailed) colors.error else colors.primary
@@ -252,7 +257,7 @@ fun updatedLabel(updatedAt: Long, now: Long): String {
         onDismissRequest = { confirm = false },
         title = { Text("Use 1 of ${resets.available} ${if (resets.available == 1) "reset" else "resets"}?") },
         text = { Text("Resets your Codex limits now.") },
-        confirmButton = { TextButton(onClick = { confirm = false; model.usage.useReset() }) { Text("Use reset") } },
+        confirmButton = { TextButton(onClick = { confirm = false; haptics.perform(Haptic.Confirm); model.usage.useReset() }) { Text("Use reset") } },
         dismissButton = { TextButton(onClick = { confirm = false }) { Text("Cancel") } },
     )
 }

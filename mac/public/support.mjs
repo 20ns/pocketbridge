@@ -435,9 +435,11 @@ export function nextCredit(resets) {
 }
 /** One idempotency key per attempt: a retry after a lost answer reuses the pending attempt and its key. */
 export const resetAttempt = (pending, creditId = null) => pending ?? {id: crypto.randomUUID(), creditId};
-/** Only an unknown result (no answer, a timeout or a gateway timeout) keeps the attempt for a retry with the same key.
- * Any other answer, including Codex refusing with a 502, is definite: the attempt ends and the next one gets a new key. */
-export const settleReset = (pending, error) => error && (error.status === undefined || error.status === 408 || error.status === 504) ? pending : null;
+/** No answer, a timeout or a gateway timeout: the request may or may not have taken effect. */
+export const unknownResult = error => Boolean(error) && (error.status === undefined || error.status === 408 || error.status === 504);
+/** Only an unknown result keeps the attempt for a retry with the same key. Any other answer, including Codex
+ * refusing with a 502, is definite: the attempt ends and the next one gets a new key. */
+export const settleReset = (pending, error) => unknownResult(error) ? pending : null;
 export const resetPrompt = available => `Use 1 of ${available} ${available === 1 ? 'reset' : 'resets'}? Resets your Codex limits now.`;
 export const resetOutcomes = {reset: 'Codex limits reset.', nothingToReset: 'Nothing to reset. No reset was used.', noCredit: 'No resets left.', alreadyRedeemed: 'That reset was already used.'};
 
@@ -450,3 +452,22 @@ export function hashIndex(text, size) {
 export const projectTones = 8;
 export const projectTone = id => hashIndex(id, projectTones);
 export const avatarLetter = name => (/[\p{L}\p{N}]/u.exec(name ?? '')?.[0] ?? '?').toUpperCase();
+
+/** Why a new project name won't be accepted, or null. Same rule as the Mac: a folder name in the experiments folder. */
+export function projectNameProblem(name) {
+  const value = String(name ?? '').trim();
+  if (!value) return 'Enter a name';
+  if (value.length > 64) return 'Use at most 64 characters';
+  if (!/^[\p{L}\p{N}][\p{L}\p{N} ._-]*$/u.test(value) || /[. ]$/.test(value)) return 'Use letters, numbers, spaces, dots, dashes or underscores';
+  return null;
+}
+/** Creating a project: a 4xx answer (bad name, folder exists, unavailable) made nothing. No answer, a timeout or any
+ * 5xx may have created it, so the attempt is kept and a retry with its id returns that project instead of a second one. */
+export const settleProjectAttempt = (pending, error) => error && (error.status === undefined || error.status === 408 || error.status >= 500) ? pending : null;
+/** One id per new-project attempt: a retry of the same name after an unknown result reuses it, so only one folder is made. */
+export const newProjectAttempt = (pending, name) => pending?.name === name ? pending : {id: crypto.randomUUID(), name};
+
+/** The picker's General entry (chats that belong to no project) apart from the project folders. Older Macs have none. */
+export function projectChoices(projects = []) {
+  return {general: projects.find(project => project.general) ?? null, folders: projects.filter(project => !project.general)};
+}

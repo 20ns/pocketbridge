@@ -1,6 +1,6 @@
 // The composer: next-prompt options, images, "/" commands, the git line and delivery.
 import {withAttachments, slashMatches, editDraft, prepareDelivery, afterDelivery, promptPayload, blankLocalDraft, usableAgent, findModel, resolveOptions, supportedOptions, modeLabels, effortLabel, modeHelp, modelName, effortName, speedName} from './support.mjs';
-import {$, el, app, drafts, localChats, overrides, persist, persistDrafts, persistLocalChats, persistLastOptions, notice, api, imageUrl, rememberImage, currentChat, storedChat, agentFor, agentName, busy} from './core.mjs';
+import {$, el, app, drafts, localChats, overrides, persist, persistDrafts, persistLocalChats, persistLastOptions, notice, api, imageUrl, rememberImage, currentChat, storedChat, agentFor, agentName, busy, isGeneral} from './core.mjs';
 import {controls, refresh, renderState} from './app.mjs';
 import {renderChatList} from './sidebar.mjs';
 
@@ -159,6 +159,8 @@ $('composer').addEventListener('drop', event => { $('composer').classList.remove
 let gitFor = null, gitAt = 0;
 export async function loadGit(force = false) {
   const chat = currentChat(), projectId = chat?.projectId;
+  // General chats belong to no project, so there is no git line.
+  if (projectId && isGeneral(projectId)) { $('git-bar').hidden = true; gitFor = null; return; }
   if (!projectId || !app.token || (!force && gitFor === projectId && Date.now() - gitAt < 15000)) { if (!projectId) $('git-bar').hidden = true; return; }
   gitFor = projectId; gitAt = Date.now();
   try {

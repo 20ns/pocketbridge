@@ -65,8 +65,17 @@ export function createProjects(ctx) {
   let lastDiscovery = 0;
   const sessionMeta = new Map(), codexMeta = new Map();
   const project = id => { const row = get('SELECT * FROM projects WHERE id=?', id); if (!row) throw fail(404, 'Project not found'); return row; };
-  const projectRow = row => ({ id: row.id, name: row.name, path: row.path, lastUsedAt: Number(row.lastUsedAt || 0), icon: row.icon ?? null });
-  const list = () => all('SELECT id,name,path,lastUsedAt,icon FROM projects ORDER BY name').map(projectRow);
+  const projectRow = row => ({ id: row.id, name: row.name, path: row.path, lastUsedAt: Number(row.lastUsedAt || 0), icon: row.general ? null : row.icon ?? null, ...(row.general ? { general: true } : {}) });
+  const list = () => all('SELECT id,name,path,lastUsedAt,icon,general FROM projects ORDER BY name').map(projectRow);
+  /** The General project: one per Mac, at [path]. A folder already listed there (say, the home folder) becomes it. */
+  const ensureGeneral = path => transaction(() => {
+    const general = get('SELECT id,path FROM projects WHERE general=1'), atPath = get('SELECT id FROM projects WHERE path=?', path);
+    if (general && general.path === path) return;
+    if (general && !atPath) { run('UPDATE projects SET path=? WHERE id=?', path, general.id); return; }
+    if (general) run('UPDATE projects SET general=0 WHERE id=?', general.id);
+    if (atPath) run("UPDATE projects SET general=1,name='General' WHERE id=?", atPath.id);
+    else run("INSERT INTO projects (id,name,path,lastUsedAt,general) VALUES (?,'General',?,0,1)", randomUUID(), path);
+  });
 
   const discoverProjects = () => {
     let entries = []; try { if (enabled.claude && existsSync(claudeProjectsDir)) entries = readdirSync(claudeProjectsDir, { withFileTypes: true }); } catch { /* unreadable Claude metadata */ }
@@ -148,7 +157,7 @@ export function createProjects(ctx) {
   };
   const refreshIcons = () => {
     if (iconScan || ctx.closed || options.icons === false) return;
-    const due = all('SELECT id,path,icon,iconType,iconSource,iconCheckedAt FROM projects').filter(row => Date.now() - Number(row.iconCheckedAt ?? 0) > (options.iconIntervalMs ?? 600_000));
+    const due = all('SELECT id,path,icon,iconType,iconSource,iconCheckedAt FROM projects WHERE general=0').filter(row => Date.now() - Number(row.iconCheckedAt ?? 0) > (options.iconIntervalMs ?? 600_000));
     if (!due.length) return;
     iconScan = (async () => {
       for (const row of due) {
@@ -191,6 +200,7 @@ export function createProjects(ctx) {
   };
   /** Recomputed at most every few seconds; a turn ending clears it so the counts follow the agent's edits. */
   const git = async folder => {
+    if (folder.general) return null; // a home folder is no repository to count
     const cached = gitCache.get(folder.id);
     if (!cached || Date.now() - cached.at > 4000) gitCache.set(folder.id, { at: Date.now(), value: gitStatus(folder.path) });
     return gitCache.get(folder.id).value;
@@ -209,6 +219,8 @@ export function createProjects(ctx) {
   };
   /** Sessions in a project folder that PocketBridge didn't start, newest first, for continuing on the phone. */
   const externalSessions = async folder => {
+    // Every session ever started in the home folder would land in General; it lists only its own chats.
+    if (folder.general) return [];
     const managed = new Set(all('SELECT id FROM chats UNION SELECT agentSession FROM chats WHERE agentSession IS NOT NULL UNION SELECT forkFrom FROM chats WHERE forkFrom IS NOT NULL UNION SELECT id FROM deleted_chats UNION SELECT id FROM hidden_sessions').map(item => item.id));
     const sessions = [];
     if (available.claude && enabled.claude) {
@@ -228,5 +240,5 @@ export function createProjects(ctx) {
     return sessions.filter(session => !managed.has(session.id)).sort((a, b) => b.updatedAt - a.updatedAt).slice(0, 30);
   };
 
-  return { project, projectRow, list, refreshDiscovery, refreshIcons, iconOf, close: () => { clearInterval(iconTimer); return iconScan ?? Promise.resolve(); }, loadCodexSkills, freshSkills, knownSkills, commands, git, changed, codexLastExchange, externalSessions };
+  return { project, projectRow, list, ensureGeneral, refreshDiscovery, refreshIcons, iconOf, close: () => { clearInterval(iconTimer); return iconScan ?? Promise.resolve(); }, loadCodexSkills, freshSkills, knownSkills, commands, git, changed, codexLastExchange, externalSessions };
 }

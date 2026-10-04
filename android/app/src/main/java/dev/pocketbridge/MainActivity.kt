@@ -27,7 +27,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -52,6 +52,9 @@ import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import kotlinx.coroutines.launch
 
+/** The launcher shortcut's action (res/xml/shortcuts.xml). */
+const val ACTION_NEW_CHAT = "dev.pocketbridge.NEW_CHAT"
+
 class MainActivity : ComponentActivity() {
     private val model by viewModels<BridgeModel>()
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -65,12 +68,14 @@ class MainActivity : ComponentActivity() {
     override fun onResume() { super.onResume(); model.updates.resume() }
     // On screen, the app's own connection shows everything; closed with work running, the alerts service takes over.
     override fun onStart() { super.onStart(); Alerts.stop(this) }
-    override fun onStop() { super.onStop(); if (!isChangingConfigurations) model.startAlerts() }
+    // A rotation is not leaving: an open Undo window survives it; really leaving ends it now.
+    override fun onStop() { super.onStop(); if (!isChangingConfigurations) { model.leaving(); model.startAlerts() } }
 
     /** A pairing link, images shared from another app, or a tapped notification. */
     private fun handle(intent: Intent) = when (intent.action) {
         Intent.ACTION_SEND, Intent.ACTION_SEND_MULTIPLE -> model.receiveShare(sharedImages(intent))
         Alerts.ACTION_OPEN -> intent.getStringExtra(Alerts.EXTRA_CHAT)?.let(model::openFromAlert) ?: Unit
+        ACTION_NEW_CHAT -> model.requestNewChat()
         else -> model.handleLink(intent.data)
     }
 
@@ -101,15 +106,26 @@ private enum class Screen(val depth: Int) { Pair(0), Projects(0), Chats(1), Sett
     var settings by rememberSaveable { mutableStateOf(false) }
     var usage by rememberSaveable { mutableStateOf(false) }
     var models by rememberSaveable { mutableStateOf(false) }
-    var project by rememberSaveable { mutableStateOf(model.chat?.optString("projectId") ?: "") }
+    var newChat by rememberSaveable { mutableStateOf(false) }
+    // The open project survives a restart too, so the app reopens where it was left.
+    var project by rememberSaveable { mutableStateOf(model.chat?.optString("projectId") ?: model.uiSetting("project")) }
+    LaunchedEffect(project) { model.saveUiSetting("project", project) }
+    // A project removed on the Mac closes its list once the Mac has answered.
+    LaunchedEffect(model.projects, project) { if (project.isNotEmpty() && model.projects.isNotEmpty() && model.projects.none { it.optString("id") == project }) project = "" }
+    // Back lands where each list was left: Projects, and every project's chats.
+    val positions = rememberSaveable(saver = ListPositions.Saver) { ListPositions() }
     // An open chat always belongs to the list Back returns to, including after a restart.
     val chatProject = model.chat?.optString("projectId")
     LaunchedEffect(chatProject) { if (!chatProject.isNullOrEmpty()) project = chatProject }
-    LaunchedEffect(model.paired) { if (!model.paired) { settings = false; project = ""; usage = false } }
+    LaunchedEffect(model.paired) { if (!model.paired) { settings = false; project = ""; usage = false; newChat = false } }
+    // The launcher's New chat shortcut: Projects with the panel open.
+    LaunchedEffect(model.newChatRequested) { if (model.newChatRequested) { settings = false; usage = false; project = ""; newChat = true; model.newChatShown() } }
+    // A picked project opens its draft; the panel's job is done.
+    LaunchedEffect(model.selected) { if (model.selected.isNotEmpty()) newChat = false }
     // The model panel belongs to one chat and closes once its choices lock.
     LaunchedEffect(model.selected, model.pending) { if (model.pending != null || model.selected.isEmpty()) models = false }
     // A notification or a share chose a chat: show it over whatever was open.
-    LaunchedEffect(model.showChat) { if (model.showChat > 0) { settings = false; usage = false; models = false } }
+    LaunchedEffect(model.showChat) { if (model.showChat) { settings = false; usage = false; models = false; model.chatShown() } }
     // Asked once, on the first send, so a turn can report back after the app closes.
     val askAlerts = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { model.alertsAsked(it) }
     LaunchedEffect(model.askAlerts) { if (model.askAlerts && Build.VERSION.SDK_INT >= 33) askAlerts.launch(Manifest.permission.POST_NOTIFICATIONS) }
@@ -147,10 +163,19 @@ private enum class Screen(val depth: Int) { Pair(0), Projects(0), Chats(1), Sett
     LaunchedEffect(model.notice) {
         if (model.notice.isNotEmpty()) { snackbar.showSnackbar(model.notice, duration = SnackbarDuration.Short); model.clearNotice() }
     }
+    val haptics = rememberHaptics()
     LaunchedEffect(model.error, model.paired) {
-        if (model.paired && model.error.isNotEmpty()) { snackbar.showSnackbar(model.error, withDismissAction = true, duration = SnackbarDuration.Long); model.clearError() }
+        if (model.paired && model.error.isNotEmpty()) { haptics.perform(Haptic.Reject); snackbar.showSnackbar(model.error, withDismissAction = true, duration = SnackbarDuration.Long); model.clearError() }
+    }
+    // Deleting is undoable for a few seconds; the Mac deletes the chat once this snackbar goes.
+    LaunchedEffect(model.deleting) {
+        if (model.deleting == null) return@LaunchedEffect
+        snackbar.currentSnackbarData?.dismiss()
+        val result = snackbar.showSnackbar("Chat deleted", actionLabel = "Undo", duration = SnackbarDuration.Long)
+        if (result == SnackbarResult.ActionPerformed) model.undoDelete() else model.commitDeletion()
     }
 
+    val scope = rememberCoroutineScope()
     // One image viewer over every screen, opened from prompts and the composer.
     var viewer by remember { mutableStateOf<Pair<List<String>, Int>?>(null) }
     LaunchedEffect(model.selected) { viewer = null }
@@ -185,11 +210,20 @@ private enum class Screen(val depth: Int) { Pair(0), Projects(0), Chats(1), Sett
                     Screen.Projects -> Page(
                         model, snackbar, title = "Projects", saved = model.projects.isNotEmpty(), onSettings = { settings = true },
                         actions = {
+                            IconButton(onClick = { newChat = true }, enabled = model.projects.isNotEmpty() || model.experiments.isNotEmpty()) { Icon(Icons.Default.Add, "New chat") }
                             UsageMeter(model) { usage = true }
                             IconButton(onClick = { settings = true }) { Icon(Icons.Default.Settings, "Settings") }
                         },
-                    ) { insets -> Projects(model, insets, onOpenProject = { project = it }, onOpenChat = { chat -> project = chat.optString("projectId"); model.open(chat.optString("id")) }) }
-                    Screen.Chats -> ChatsPage(model, snackbar, project, onBack = back, onSettings = { settings = true })
+                        dimTop = newChat, onDimTop = { newChat = false },
+                        overlay = {
+                            NewChatPanel(model, newChat, { newChat = false }) { id ->
+                                val blocked = newChatBlocked(model, id)
+                                if (blocked != null) scope.launch { snackbar.currentSnackbarData?.dismiss(); snackbar.showSnackbar(blocked) }
+                                else { project = id; model.newChat(id) }
+                            }
+                        },
+                    ) { insets -> Projects(model, insets, positions.of("projects"), onOpenProject = { project = it }, onOpenChat = { chat -> project = chat.optString("projectId"); model.open(chat.optString("id")) }) }
+                    Screen.Chats -> ChatsPage(model, snackbar, project, positions.of("chats:$project"), onBack = back, onSettings = { settings = true })
                     Screen.Settings -> Page(model, snackbar, title = "Settings", onBack = back) { insets -> Settings(model, insets) }
                     Screen.Chat -> Page(
                         model, snackbar, title = model.chat?.optString("title")?.ifBlank { null } ?: "New chat", onBack = back,
@@ -223,18 +257,17 @@ private enum class Screen(val depth: Int) { Pair(0), Projects(0), Chats(1), Sett
     if (model.paired) SharePanel(model)
 }
 
-@Composable private fun ChatsPage(model: BridgeModel, snackbar: SnackbarHostState, project: String, onBack: () -> Unit, onSettings: () -> Unit) {
-    var sort by rememberSaveable { mutableStateOf(ChatSort.Newest) }
-    val list = rememberLazyListState()
+@Composable private fun ChatsPage(model: BridgeModel, snackbar: SnackbarHostState, project: String, list: LazyListState, onBack: () -> Unit, onSettings: () -> Unit) {
+    var sort by remember { mutableStateOf(ChatSort.entries.find { it.name == model.uiSetting("chatSort") } ?: ChatSort.Newest) }
     // The button shrinks to its icon once the list scrolls, leaving titles readable underneath.
     val extended by remember { derivedStateOf { list.firstVisibleItemIndex == 0 } }
     val info = model.projects.find { it.optString("id") == project }
     Page(
         model, snackbar, title = projectName(model, project), onBack = onBack, onSettings = onSettings,
         leading = { ProjectAvatar(model, info, Sizes.headerAvatar) },
-        subtitle = info?.let { { Text(compactPath(it.optString("path")), maxLines = 1, overflow = TextOverflow.Ellipsis) } },
+        subtitle = info?.takeUnless(::isGeneral)?.let { { Text(compactPath(it.optString("path")), maxLines = 1, overflow = TextOverflow.Ellipsis) } },
         saved = projectChats(model.chats, project, model.visibleDrafts()).isNotEmpty(),
-        actions = { SortMenu(ChatSort.entries, sort, { it.label }) { sort = it } },
+        actions = { SortMenu(ChatSort.entries, sort, { it.label }) { sort = it; model.saveUiSetting("chatSort", it.name) } },
         fab = { NewChatButton(model, project, snackbar, extended) },
     ) { insets -> Chats(model, project, sort, list, insets) }
 }
@@ -247,27 +280,20 @@ private enum class Screen(val depth: Int) { Pair(0), Projects(0), Chats(1), Sett
     val working = isWorking(chat.optString("status"))
     var menu by remember { mutableStateOf(false) }
     var rename by remember { mutableStateOf(false) }
-    var delete by remember { mutableStateOf(false) }
     val title = chat.optString("title").ifBlank { "New chat" }
     Box {
         IconButton(onClick = { menu = true }) { Icon(Icons.Default.MoreVert, "Chat actions") }
         val desktop = if (local || chat.optString("agent").ifBlank { "claude" } != "claude") null else ({ model.openInDesktop(id) })
-        ChatMenu(menu, { menu = false }, if (local) null else ({ rename = true }), { delete = true }, working, desktop)
+        ChatMenu(menu, { menu = false }, if (local) null else ({ rename = true }), { model.deleteWithUndo(id, title) }, working, desktop)
     }
     if (rename) RenameDialog(title, { rename = false }, { model.rename(id, it); rename = false })
-    if (delete) DeleteDialog(title, working, local, { delete = false }, { if (local) model.discardDraft(id) else model.delete(id); delete = false })
 }
 
 @Composable private fun NewChatButton(model: BridgeModel, project: String, snackbar: SnackbarHostState, extended: Boolean) {
     val scope = rememberCoroutineScope()
     ExtendedFloatingActionButton(
         onClick = {
-            val blocked = when {
-                model.agents.isNotEmpty() && model.agents.none { it.usable } -> if (model.agents.any { it.available }) "Claude and Codex are both off. Turn one on in Settings." else "No coding agent is available on your Mac."
-                model.agents.isEmpty() && !model.claudeAvailable -> "No coding agent is available on your Mac."
-                model.projects.none { it.optString("id") == project } -> "This project was removed on your Mac."
-                else -> null
-            }
+            val blocked = newChatBlocked(model, project)
             if (blocked != null) scope.launch { snackbar.currentSnackbarData?.dismiss(); snackbar.showSnackbar(blocked) }
             else model.newChat(project)
         },

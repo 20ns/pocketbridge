@@ -79,3 +79,15 @@ fun failureReason(failure: Throwable) = when (failure) {
     is java.io.IOException -> "The connection to your Mac was interrupted. Check Tailscale on both devices."
     else -> failure.message?.takeIf { it.isNotBlank() } ?: "Something went wrong. Try again."
 }
+
+/**
+ * Chats deleted on this phone whose deletion hasn't reached the Mac yet, id to title. Saved before a chat is hidden,
+ * so a chat said to be deleted never comes back after a restart: leftovers are sent at the next connection.
+ */
+fun encodeDeletions(deletions: Map<String, String>): String = JSONObject().apply { deletions.forEach { (id, title) -> put(id, title) } }.toString()
+fun decodeDeletions(value: String): Map<String, String> = if (value.isBlank()) emptyMap() else runCatching {
+    JSONObject(value).let { json -> json.keys().asSequence().associateWith { json.optString(it) } }
+}.getOrDefault(emptyMap())
+
+/** Whether a failed deletion is settled for good (the Mac refused it), rather than worth sending again later. */
+fun deletionSettled(failure: Throwable) = failure is ApiError && failure.definitiveRejection

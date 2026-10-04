@@ -209,7 +209,8 @@ private fun deliveryLabel(kind: String) = when (kind) { STEER -> PocketIcons.Arr
             return@Column
         }
         Text("What should $agent work on?", style = MaterialTheme.typography.headlineSmall)
-        project?.let {
+        // General has no folder worth naming; a project shows where the work happens.
+        project?.takeUnless(::isGeneral)?.let {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Icon(PocketIcons.Folder, null, Modifier.size(Sizes.smallIcon), tint = colors.onSurfaceVariant)
                 Spacer(Modifier.width(Spacing.sm))

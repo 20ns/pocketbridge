@@ -71,7 +71,7 @@ The app wraps an unmodified official CLI. It does not guarantee Anthropic's appr
 
 ## Checks
 
-Run the 73 service and browser-helper tests with `pnpm test` from `mac/`. They use fake Claude and Codex CLIs and never touch your real installs: only the CLI paths a test names are asked for their version, and a banked Codex reset is only ever redeemed against the fake. Browser stream parsing and safe text formatting checks are also available directly:
+Run the 77 service and browser-helper tests with `pnpm test` from `mac/`. They use fake Claude and Codex CLIs and never touch your real installs: only the CLI paths a test names are asked for their version, and a banked Codex reset is only ever redeemed against the fake. Browser stream parsing and safe text formatting checks are also available directly:
 
 ```sh
 node --test mac/scripts/*.test.mjs

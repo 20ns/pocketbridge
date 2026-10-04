@@ -119,26 +119,7 @@ fun modelTiers(models: List<ModelInfo>): Pair<List<ModelInfo>, List<ModelInfo>> 
  * below, its own scroll. An unsent chat switches agent at the top. One tap picks and closes. Back follows the gesture.
  */
 @Composable fun BoxScope.ModelPanel(model: BridgeModel, visible: Boolean, onDismiss: () -> Unit) {
-    var back by remember { mutableFloatStateOf(0f) }
-    LaunchedEffect(visible) { if (visible) back = 0f }
-    PredictiveBackHandler(enabled = visible) { events ->
-        try { events.collect { back = it.progress }; onDismiss() } catch (cancelled: CancellationException) { back = 0f; throw cancelled }
-    }
-    AnimatedVisibility(visible, enter = fadeIn(Motion.effects()), exit = fadeOut(Motion.fastEffects())) {
-        Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.scrim.copy(alpha = 0.32f)).clickable(remember { MutableInteractionSource() }, null, onClickLabel = "Close models", onClick = onDismiss))
-    }
-    val maxHeight = (LocalConfiguration.current.screenHeightDp * 0.5f).dp
-    AnimatedVisibility(
-        visible, Modifier.align(Alignment.BottomCenter),
-        enter = expandVertically(Motion.spatial(IntSize.VisibilityThreshold), expandFrom = Alignment.Bottom) + fadeIn(Motion.effects()),
-        exit = shrinkVertically(Motion.fastSpatial(IntSize.VisibilityThreshold), shrinkTowards = Alignment.Bottom) + fadeOut(Motion.fastEffects()),
-    ) {
-        Surface(
-            Modifier.padding(horizontal = Spacing.sm, vertical = Spacing.xs).fillMaxWidth().heightIn(max = maxHeight)
-                .graphicsLayer { val p = back; transformOrigin = TransformOrigin(0.5f, 1f); scaleX = 1f - 0.06f * p; scaleY = 1f - 0.06f * p; translationY = p * 16.dp.toPx() },
-            shape = RoundedCornerShape(Corners.composer), color = Pocket.colors.panel, shadowElevation = 8.dp, border = BorderStroke(1.dp, Pocket.colors.composerBorder),
-        ) { ModelList(model, onDismiss) }
-    }
+    RisingPanel(visible, onDismiss, "Close models") { ModelList(model, onDismiss) }
 }
 
 @Composable private fun ModelList(model: BridgeModel, onDismiss: () -> Unit) {
@@ -192,6 +173,7 @@ private fun pick(model: BridgeModel, agent: AgentInfo, entry: ModelInfo) {
 /** Claude or Codex, for a chat that hasn't been sent. A tonal track with the chosen agent filled. */
 @Composable private fun AgentSwitch(agents: List<AgentInfo>, selected: String, onSelect: (String) -> Unit) {
     val colors = MaterialTheme.colorScheme
+    val haptics = rememberHaptics()
     Row(
         Modifier.padding(start = Spacing.md, end = Spacing.md, top = Spacing.md, bottom = Spacing.xs).fillMaxWidth()
             .background(Pocket.colors.pill, CircleShape).padding(Spacing.xs).selectableGroup(),
@@ -200,7 +182,7 @@ private fun pick(model: BridgeModel, agent: AgentInfo, entry: ModelInfo) {
             val on = agent.id == selected
             val fill by animateColorAsState(if (on) colors.secondaryContainer else Color.Transparent, Motion.effects(), label = "agent")
             Box(
-                Modifier.weight(1f).heightIn(min = 40.dp).clip(CircleShape).background(fill).selectable(on, role = Role.Tab) { onSelect(agent.id) },
+                Modifier.weight(1f).heightIn(min = 40.dp).clip(CircleShape).background(fill).selectable(on, role = Role.Tab) { if (!on) haptics.perform(Haptic.Tick); onSelect(agent.id) },
                 contentAlignment = Alignment.Center,
             ) { Text(agent.name, style = MaterialTheme.typography.labelLarge, color = if (on) colors.onSecondaryContainer else colors.onSurfaceVariant) }
         }

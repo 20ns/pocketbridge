@@ -156,6 +156,24 @@ export function createRoutes(ctx) {
           });
           return json(response, 201, chat(created));
         }
+        // A new project is a new, empty folder in the experiments folder. The client's id makes a retry return the same project.
+        if (route === '/api/projects/new' && request.method === 'POST') {
+          if (!ctx.experimentsDir) throw fail(404, 'New projects are not set up on this Mac');
+          const input = await body(request), id = text(input.id, 'project id', 64), name = text(input.name, 'project name', 64).trim();
+          if (!uuid(id)) throw fail(400, 'Invalid project id');
+          // A retry whose first attempt registered the project but stopped before its folder existed finishes the folder.
+          const known = get('SELECT * FROM projects WHERE id=?', id); if (known) { mkdirSync(known.path, { recursive: true }); return json(response, 200, projects.projectRow(known)); }
+          if (!/^[\p{L}\p{N}][\p{L}\p{N} ._-]*$/u.test(name) || /[. ]$/.test(name)) throw fail(400, 'Use letters, numbers, spaces, dots, dashes or underscores');
+          mkdirSync(ctx.experimentsDir, { recursive: true });
+          const folder = join(realpathSync(ctx.experimentsDir), name);
+          if (existsSync(folder)) throw fail(409, 'A folder with that name already exists');
+          // Registered first, so a crash before the folder exists leaves a record a retry with the same id completes.
+          const project = { id, name, path: folder, lastUsedAt: Date.now(), icon: null };
+          run('INSERT INTO projects (id,name,path,lastUsedAt) VALUES (?,?,?,?)', project.id, project.name, project.path, project.lastUsedAt);
+          try { mkdirSync(folder); } catch (error) { run('DELETE FROM projects WHERE id=?', id); throw error.code === 'EEXIST' ? fail(409, 'A folder with that name already exists') : error; }
+          change('state');
+          return json(response, 201, project);
+        }
         if (route === '/api/projects' && request.method === 'POST') {
           if (!equal(bearer, ctx.localToken)) throw fail(403, 'Register projects on the Mac');
           const input = await body(request); let path;

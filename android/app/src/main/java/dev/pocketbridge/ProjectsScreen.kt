@@ -78,16 +78,19 @@ fun matchesProject(query: String, name: String, path: String): Boolean {
 private fun projectActivity(project: JSONObject, chats: List<JSONObject>) = projectActivity(project.optLong("lastUsedAt"), chats.maxOfOrNull { it.optLong("updatedAt") } ?: 0L)
 
 @OptIn(ExperimentalMaterial3Api::class)
-@Composable fun Projects(model: BridgeModel, insets: PageInsets, onOpenProject: (String) -> Unit, onOpenChat: (JSONObject) -> Unit) {
+@Composable fun Projects(model: BridgeModel, insets: PageInsets, list: LazyListState, onOpenProject: (String) -> Unit, onOpenChat: (JSONObject) -> Unit) {
     val now = rememberNow()
-    var recent by rememberSaveable { mutableStateOf(true) }
-    var sort by rememberSaveable { mutableStateOf(ProjectSort.Newest) }
+    // Filter and sort are this phone's preference, kept across launches.
+    var recent by remember { mutableStateOf(model.uiSetting("projectsAll") != "1") }
+    var sort by remember { mutableStateOf(ProjectSort.entries.find { it.name == model.uiSetting("projectSort") } ?: ProjectSort.Newest) }
+    LaunchedEffect(recent, sort) { model.saveUiSetting("projectsAll", if (recent) "" else "1"); model.saveUiSetting("projectSort", sort.name) }
     var query by rememberSaveable { mutableStateOf("") }
     LaunchedEffect(model.online) { if (model.online) model.usage.refresh() }
-    val byProject = model.chats.groupBy { it.optString("projectId") }
+    val byProject = model.chats.filter { it.optString("id") !in model.deletions }.groupBy { it.optString("projectId") }
     fun activity(project: JSONObject) = projectActivity(project, byProject[project.optString("id")].orEmpty())
     val searching = query.isNotBlank()
-    val projects = model.projects
+    val general = generalProject(model.projects)
+    val projects = folderProjects(model.projects)
         .filter { if (searching) matchesProject(query, it.optString("name"), it.optString("path")) else !recent || isLatestProject(activity(it), now) }
         .sortedWith(when (sort) {
             ProjectSort.Newest -> Comparator { a, b -> compareProjectActivity(activity(a), a.optString("name"), activity(b), b.optString("name"), newest = true) }
@@ -96,8 +99,8 @@ private fun projectActivity(project: JSONObject, chats: List<JSONObject>) = proj
         })
     // Work in progress anywhere comes first, so a waiting question is one tap from launch.
     val active = if (searching) emptyList() else model.chats.filter { isWorking(it.optString("status")) }
-    PullToRefreshBox(model.refreshing, model::retry, Modifier.fillMaxSize()) {
-        LazyColumn(Modifier.fillMaxSize().then(insets.scroll), contentPadding = PaddingValues(bottom = insets.bottom + Spacing.xxl)) {
+    RefreshBox(model.refreshing, model::retry, Modifier.fillMaxSize()) {
+        LazyColumn(Modifier.fillMaxSize().then(insets.scroll), list, PaddingValues(bottom = insets.bottom + Spacing.xxl)) {
             item(key = "search") { SearchField(query) { query = it } }
             if (!searching) item(key = "filters") {
                 Row(Modifier.fillMaxWidth().padding(start = Spacing.lg, end = Spacing.xs), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(Spacing.sm)) {
@@ -106,6 +109,10 @@ private fun projectActivity(project: JSONObject, chats: List<JSONObject>) = proj
                     Spacer(Modifier.weight(1f))
                     SortMenu(ProjectSort.entries, sort, { it.label }) { sort = it }
                 }
+            }
+            // General sits apart from the folders: one quiet row, always there so it can be found.
+            if (general != null && !searching) item(key = "general") {
+                GeneralRow(byProject[general.optString("id")].orEmpty(), now) { onOpenProject(general.optString("id")) }
             }
             if (model.agents.isNotEmpty() && model.agents.none { it.available }) item { Notice("No coding agent found on your Mac. Install Claude Code or Codex and sign in there, then restart PocketBridge.", Modifier.padding(Spacing.lg)) }
             if (active.isNotEmpty()) {
@@ -133,12 +140,15 @@ private fun projectActivity(project: JSONObject, chats: List<JSONObject>) = proj
 
 @Composable private fun SearchField(query: String, onQuery: (String) -> Unit) {
     val colors = MaterialTheme.colorScheme
+    val focus = LocalFocusManager.current
     TextField(
         query, onQuery, Modifier.fillMaxWidth().padding(start = Spacing.lg, end = Spacing.lg, top = Spacing.xs, bottom = Spacing.sm).heightIn(min = 56.dp),
         placeholder = { Text("Search projects") }, singleLine = true, shape = CircleShape,
         leadingIcon = { Icon(Icons.Default.Search, null) },
         trailingIcon = { if (query.isNotEmpty()) IconButton(onClick = { onQuery("") }) { Icon(Icons.Default.Clear, "Clear search") } },
         keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search, autoCorrectEnabled = false),
+        // Search runs as you type; the keyboard's search key just puts the keyboard away.
+        keyboardActions = KeyboardActions(onSearch = { focus.clearFocus() }),
         colors = TextFieldDefaults.colors(
             focusedContainerColor = Pocket.colors.row, unfocusedContainerColor = Pocket.colors.row,
             focusedIndicatorColor = Color.Transparent, unfocusedIndicatorColor = Color.Transparent,
@@ -188,4 +198,20 @@ private fun projectActivity(project: JSONObject, chats: List<JSONObject>) = proj
         },
         trailing = { if (activityAt > 0) Text(relativeTime(activityAt, now), style = MaterialTheme.typography.labelMedium, color = colors.onSurfaceVariant) },
     ) { Text(name, maxLines = 1, overflow = TextOverflow.Ellipsis) }
+}
+
+/** General's entry above the folders: a chat mark, its chat count and when it was last used. */
+@Composable private fun GeneralRow(chats: List<JSONObject>, now: Long, onOpen: () -> Unit) {
+    val colors = MaterialTheme.colorScheme
+    val newest = chats.maxOfOrNull { it.optLong("updatedAt") } ?: 0L
+    val working = chats.any { isWorking(it.optString("status")) }
+    GroupRow(
+        0, 1, Modifier.padding(bottom = Spacing.xs), onClick = onOpen, onClickLabel = "Open General chats",
+        leading = { Tile(colors.surfaceContainerHigh) { Icon(PocketIcons.Chat, null, Modifier.size(20.dp), tint = colors.onSurfaceVariant) } },
+        supporting = {
+            if (working) StatusLine(if (chats.any { it.optString("status") == "waiting" }) "waiting" else "running")
+            else Text(if (chats.isEmpty()) "Chats outside any project" else plural(chats.size, "chat"), maxLines = 1)
+        },
+        trailing = { if (newest > 0) Text(relativeTime(newest, now), style = MaterialTheme.typography.labelMedium, color = colors.onSurfaceVariant) },
+    ) { Text("General", maxLines = 1) }
 }

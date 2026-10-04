@@ -1,3 +1,15 @@
+PocketBridge 0.8.0
+
+- New chat from anywhere: a + next to Projects offers New project, General chat, or a chat in any project.
+- New project creates a folder in ~/Desktop/experiments on your Mac and opens a chat in it.
+- General chats belong to no project. They run in your home folder, so they can work across the Mac, and have their own place at the top of Projects.
+- Lists keep their scroll position when you come back, even after the app restarts. The Recent/All filter and sort stick too.
+- Haptic feedback on send, steer, stop, toggles, menus, Allow/Deny and errors, following your system setting.
+- Deleting a chat shows Undo for a few seconds. The deletion is saved right away, so it still goes through if the app closes.
+- Agents come first in Settings and switch instantly, for when you alternate subscriptions.
+- Long-press the app icon for New chat. Pull to refresh in Settings. Ctrl+Enter sends on a hardware keyboard.
+- The Mac browser gets New project, General chats and a remembered sidebar position.
+
 PocketBridge 0.7.0
 
 - Back arrows on every screen past Projects, alongside the back gesture. Headers are compact: "Projects" sits top-left, and a chat shows its project folder under the title.

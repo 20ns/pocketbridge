@@ -2,7 +2,7 @@
 // core.mjs holds shared state; sidebar, conversation, composer, usage and pairing own their parts of the page.
 import {EventDecoder, agentsFrom, blankLocalDraft} from './support.mjs';
 import {$, app, drafts, localChats, overrides, persist, persistDrafts, persistLocalChats, discardBlankLocal, notice, api, currentChat, busy} from './core.mjs';
-import {renderProjects, renderChatList, renderCliStatus, renderAgentSwitches, loadSessions, sidebarControls, narrow, showDrawer} from './sidebar.mjs';
+import {renderProjects, renderChatList, renderCliStatus, renderAgentSwitches, loadSessions, sidebarControls, narrow, showDrawer, restoreSidebarScroll} from './sidebar.mjs';
 import {renderHeader, headerControls, renderEmpty, clearConversation, loadMessages, cancelRename} from './conversation.mjs';
 import {renderOptions, renderAttachments, composerControls, autosize, clearPrompt, hideSlash, loadGit, sameOptions, savedOptions} from './composer.mjs';
 import {loadUsage} from './usage.mjs';
@@ -25,7 +25,7 @@ export function renderState() {
   const chat = currentChat();
   renderHeader(chat);
   if (!chat) renderEmpty();
-  renderCliStatus(); renderAgentSwitches();
+  renderCliStatus(); renderAgentSwitches(); restoreSidebarScroll();
   renderOptions(); autosize(); controls();
 }
 export async function selectChat(id) {

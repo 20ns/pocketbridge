@@ -22,6 +22,9 @@ import androidx.compose.ui.graphics.CompositingStrategy
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.key
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.input.key.isCtrlPressed
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.layout.onSizeChanged
@@ -100,7 +103,7 @@ import kotlin.coroutines.cancellation.CancellationException
     val pending = model.pending
     val colors = MaterialTheme.colorScheme
     val pocket = Pocket.colors
-    val haptics = LocalHapticFeedback.current
+    val haptics = rememberHaptics()
     val keyboard = LocalSoftwareKeyboardController.current
     val focus = LocalFocusManager.current
     val options = model.options
@@ -127,13 +130,16 @@ import kotlin.coroutines.cancellation.CancellationException
     val slashOpen = query != null && (matches.isNotEmpty() || loadingCommands)
     BackHandler(slashOpen) { slashHidden = shownDraft }
     var boxWidth by remember { mutableIntStateOf(0) }
+    // A brand-new chat is for typing: the field takes focus and the keyboard comes up, as in other chat apps.
+    val fieldFocus = remember { FocusRequester() }
+    LaunchedEffect(model.selected) { if (model.canSwitchAgent && model.draft.isEmpty() && model.attachments.isEmpty()) runCatching { fieldFocus.requestFocus() } }
     Surface(color = colors.surface) {
         Column(Modifier.fillMaxWidth().navigationBarsPadding().imePadding().padding(start = Spacing.sm, end = Spacing.sm, top = Spacing.xs, bottom = Spacing.sm)) {
             if (off) Row(Modifier.fillMaxWidth().padding(start = Spacing.md, bottom = Spacing.xs), verticalAlignment = Alignment.CenterVertically) {
                 Text("${agent?.name ?: "This agent"} is off", Modifier.weight(1f), style = MaterialTheme.typography.labelLarge, color = colors.onSurfaceVariant)
                 TextButton(onClick = { model.setAgentEnabled(options.agent, true) }, enabled = model.online && !model.busy) { Text("Turn on") }
             }
-            if (projectId.isNotEmpty()) GitStrip(model, projectId)
+            if (projectId.isNotEmpty() && !isGeneral(model.projects.find { it.optString("id") == projectId })) GitStrip(model, projectId)
             Box {
                 Surface(Modifier.onSizeChanged { boxWidth = it.width }, shape = RoundedCornerShape(Corners.composer), color = pocket.composer, border = BorderStroke(1.dp, pocket.composerBorder)) {
                     Column(Modifier.animateContentSize(Motion.fastSpatial(IntSize.VisibilityThreshold))) {
@@ -143,6 +149,9 @@ import kotlin.coroutines.cancellation.CancellationException
                             enabled = pending == null && !model.busy,
                             placeholder = when { pending != null -> "Waiting for your Mac to confirm"; status == "waiting" -> "Answer above to continue"; working -> "Steer or add a message"; else -> "Message ${agent?.name ?: "Claude"}" },
                             onEscape = { if (slashOpen) { slashHidden = shownDraft; true } else false },
+                            // A hardware keyboard sends with Ctrl+Enter, or steers while a turn runs; Enter stays a new line.
+                            onSubmit = { if (ready && status != "stopping") { haptics.perform(Haptic.Confirm); model.send(null) } },
+                            focus = fieldFocus,
                         )
                         Row(Modifier.fillMaxWidth().padding(start = Spacing.sm, end = Spacing.sm, bottom = Spacing.sm), verticalAlignment = Alignment.CenterVertically) {
                             val pills = rememberScrollState()
@@ -166,8 +175,8 @@ import kotlin.coroutines.cancellation.CancellationException
                             SendControls(
                                 working = working, sending = model.busy && pending != null, ready = ready && status != "stopping",
                                 stopEnabled = !model.busy && model.online && status != "stopping",
-                                onSend = { delivery -> haptics.performHapticFeedback(HapticFeedbackType.TextHandleMove); model.send(delivery) },
-                                onStop = { haptics.performHapticFeedback(HapticFeedbackType.LongPress); model.stop() },
+                                onSend = { delivery -> haptics.perform(Haptic.Confirm); model.send(delivery) },
+                                onStop = { haptics.perform(Haptic.Confirm); model.stop() },
                             )
                         }
                     }
@@ -188,14 +197,20 @@ private fun Modifier.fadeEnd(scroll: ScrollState) = graphicsLayer { compositingS
 }
 
 /** Keeps the cursor where the person put it, and at the end when the text is replaced from outside (a picked command). */
-@Composable private fun MessageField(value: String, onValue: (String) -> Unit, enabled: Boolean, placeholder: String, onEscape: () -> Boolean) {
+@Composable private fun MessageField(value: String, onValue: (String) -> Unit, enabled: Boolean, placeholder: String, onEscape: () -> Boolean, onSubmit: () -> Unit, focus: FocusRequester) {
     val colors = MaterialTheme.colorScheme
     val style = MaterialTheme.typography.bodyLarge
     var field by remember { mutableStateOf(TextFieldValue(value, TextRange(value.length))) }
     val shown = if (field.text == value) field else TextFieldValue(value, TextRange(value.length))
     BasicTextField(
         shown, { next -> field = next; if (next.text != value) onValue(next.text) },
-        Modifier.fillMaxWidth().semantics { contentDescription = placeholder }.onPreviewKeyEvent { it.key == Key.Escape && it.type == KeyEventType.KeyUp && onEscape() },
+        Modifier.fillMaxWidth().focusRequester(focus).semantics { contentDescription = placeholder }.onPreviewKeyEvent {
+            when {
+                it.key == Key.Escape && it.type == KeyEventType.KeyUp -> onEscape()
+                (it.key == Key.Enter || it.key == Key.NumPadEnter) && it.isCtrlPressed -> { if (it.type == KeyEventType.KeyDown) onSubmit(); true }
+                else -> false
+            }
+        },
         enabled = enabled, textStyle = style.copy(color = colors.onSurface), cursorBrush = SolidColor(colors.primary), maxLines = 8,
         keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Sentences),
         decorationBox = { inner ->
@@ -260,10 +275,11 @@ private fun Modifier.fadeEnd(scroll: ScrollState) = graphicsLayer { compositingS
     }
     val speed = speeds.single()
     val on = chosen != null
+    val haptics = rememberHaptics()
     val container by animateColorAsState(if (on) colors.secondaryContainer else Pocket.colors.pill, Motion.effects(), label = "speed")
     Surface(
         shape = CircleShape, color = container, contentColor = if (on) colors.onSecondaryContainer else colors.onSurfaceVariant,
-        modifier = Modifier.alpha(if (enabled) 1f else 0.45f).toggleable(on, enabled = enabled, role = Role.Switch) { onPick(if (it) speed.id else null) }
+        modifier = Modifier.alpha(if (enabled) 1f else 0.45f).toggleable(on, enabled = enabled, role = Role.Switch) { haptics.toggle(it); onPick(if (it) speed.id else null) }
             .semantics { contentDescription = speed.name + if (speed.description.isNotBlank()) ", " + speed.description else "" },
     ) {
         Row(Modifier.heightIn(min = 34.dp).padding(start = Spacing.sm + Spacing.xxs, end = Spacing.md), verticalAlignment = Alignment.CenterVertically) {

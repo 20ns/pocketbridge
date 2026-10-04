@@ -24,7 +24,7 @@ async function fixture(t, extra = {}) {
   const claudeProjectsDir = join(dir, 'claude-projects'); mkdirSync(claudeProjectsDir);
   const codexSessionsDir = join(dir, 'codex-sessions');
   const opened = [];
-  const options = () => ({ openUrl: async url => { opened.push(url); return true; }, port: 0, dataDir: join(dir, 'data'), claudePath: join(here, 'fake-claude.mjs'), codexPath: join(here, 'fake-codex.mjs'), codexSessionsDir, stopTimeoutMs: 50, claudeProjectsDir, discoverIntervalMs: 60_000, writtenGraceMs: 400, ...extra });
+  const options = () => ({ openUrl: async url => { opened.push(url); return true; }, port: 0, dataDir: join(dir, 'data'), claudePath: join(here, 'fake-claude.mjs'), codexPath: join(here, 'fake-codex.mjs'), codexSessionsDir, experimentsDir: join(dir, 'experiments'), stopTimeoutMs: 50, claudeProjectsDir, discoverIntervalMs: 60_000, writtenGraceMs: 400, ...extra });
   let service = await createService(options()); await service.ready;
   t.after(async () => { await service.close(); rmSync(dir, { recursive: true, force: true }); });
   let token = (await (await fetch(service.url + '/api/local-session')).json()).token;
@@ -1192,4 +1192,46 @@ test('review regressions: icons are reread inside the project at render time, ap
   writeFileSync(join(f.projectPath, 'favicon.png'), pngOf(64, 64));
   // Nothing asks for state here; the timer finds the new logo.
   await wait(async () => (await fetch(`${f.service.url}/api/projects/${project.id}/icon`, { headers: { Authorization: `Bearer ${f.token}` } })).status === 200);
+});
+
+test('the phone creates a new project as an empty folder in the experiments folder, once per id', async t => {
+  const f = await fixture(t), id = randomUUID();
+  assert.equal((await f.request('/api/state')).data.server.experiments, join(f.dir, 'experiments'));
+  const created = await f.request('/api/projects/new', { id, name: 'Weather bot' });
+  assert.equal(created.status, 201); assert.equal(created.data.name, 'Weather bot');
+  assert.equal(created.data.path, realpathSync(join(f.dir, 'experiments', 'Weather bot')));
+  assert.equal((await f.request('/api/projects/new', { id, name: 'Weather bot' })).status, 200);
+  assert.equal((await f.request('/api/projects/new', { id: randomUUID(), name: 'Weather bot' })).status, 409);
+  for (const name of ['../escape', '.hidden', 'a/b', 'trailing.', '']) assert.equal((await f.request('/api/projects/new', { id: randomUUID(), name })).status, 400, name);
+  assert.ok((await f.request('/api/state')).data.projects.some(project => project.id === id));
+  // A registration whose folder never got made (a crash in between) is finished by a retry with the same id.
+  rmSync(join(f.dir, 'experiments', 'Weather bot'), { recursive: true });
+  assert.equal((await f.request('/api/projects/new', { id, name: 'Weather bot' })).status, 200);
+  assert.ok(existsSync(join(f.dir, 'experiments', 'Weather bot')));
+  const chatId = randomUUID();
+  assert.equal((await turnWith(f, chatId, 'hello', { projectId: id })).status, 202);
+  await f.finished({ id: chatId });
+});
+
+test('General chats run in their own folder, outside any project, without git, sessions or icon', async t => {
+  const dir = mkdtempSync(join(tmpdir(), 'pocketbridge-general-')), generalDir = join(dir, 'home'); mkdirSync(generalDir);
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const options = { port: 0, dataDir: join(dir, 'data'), claudePath: join(here, 'fake-claude.mjs'), codexPath: join(here, 'fake-codex.mjs'), claudeProjectsDir: join(dir, 'claude'), generalDir, stopTimeoutMs: 50, writtenGraceMs: 400 };
+  mkdirSync(options.claudeProjectsDir);
+  let service = await createService(options); await service.ready;
+  const token = (await (await fetch(service.url + '/api/local-session')).json()).token;
+  const call = async (route, data) => { const response = await fetch(service.url + route, { method: data ? 'POST' : 'GET', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, ...(data ? { body: JSON.stringify(data) } : {}) }); return { status: response.status, data: await response.json() }; };
+  let general = (await call('/api/state')).data.projects.filter(project => project.general);
+  assert.equal(general.length, 1); assert.equal(general[0].name, 'General'); assert.equal(general[0].path, realpathSync(generalDir));
+  assert.deepEqual((await call(`/api/projects/${general[0].id}/git`)).data, { repo: false });
+  assert.deepEqual((await call(`/api/projects/${general[0].id}/sessions`)).data.sessions, []);
+  const chatId = randomUUID();
+  assert.equal((await call(`/api/chats/${chatId}/prompts`, { id: randomUUID(), text: 'hello', projectId: general[0].id })).status, 202);
+  await wait(async () => (await call('/api/state')).data.chats.find(chat => chat.id === chatId)?.status === 'idle');
+  assert.ok(existsSync(join(generalDir, 'calls.ndjson')));
+  // A restart keeps the same single General project.
+  await service.close(); service = await createService(options); await service.ready;
+  t.after(() => service.close());
+  const again = (await (await fetch(service.url + '/api/state', { headers: { Authorization: `Bearer ${(await (await fetch(service.url + '/api/local-session')).json()).token}` } })).json()).projects.filter(project => project.general);
+  assert.deepEqual(again.map(project => project.id), [general[0].id]);
 });

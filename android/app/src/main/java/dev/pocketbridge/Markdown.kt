@@ -266,11 +266,11 @@ private fun bulletGlyph(depth: Int) = when (depth % 3) { 0 -> "•"; 1 -> "◦";
 /** A labelled Copy action that confirms in place. */
 @Composable fun CopyButton(text: String, description: String, modifier: Modifier = Modifier) {
     val clipboard = LocalClipboardManager.current
-    val haptics = LocalHapticFeedback.current
+    val haptics = rememberHaptics()
     var copied by remember { mutableStateOf(false) }
     LaunchedEffect(copied) { if (copied) { delay(1600); copied = false } }
     TextButton(
-        onClick = { clipboard.setText(AnnotatedString(text)); haptics.performHapticFeedback(HapticFeedbackType.LongPress); copied = true },
+        onClick = { clipboard.setText(AnnotatedString(text)); haptics.perform(Haptic.Confirm); copied = true },
         modifier.semantics { contentDescription = if (copied) "Copied" else description }, contentPadding = PaddingValues(horizontal = Spacing.md),
         colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.onSurfaceVariant),
     ) {

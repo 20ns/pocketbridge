@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {EventDecoder, safeLink, markdown, parseActivity, summariseInput, groupMessages, activitySummary, statusLabel, relativeTime, editDraft, prepareDelivery, afterDelivery, promptPayload, blankLocalDraft, withAttachments, slashMatches, turnPlacement, agentsFrom, usableAgent, newChatAgent, resolveOptions, supportedOptions, highlight, diffLines, resetLabel, modelName, effortName, modeHelp, liveStep, elapsedLabel, modelSpeeds, speedName, effortLabel, weeklyLimit, headlineLimit, usageRings, nextCredit, resetAttempt, settleReset, resetPrompt, resetOutcomes, hashIndex, projectTone, projectTones, avatarLetter} from '../public/support.mjs';
+import {EventDecoder, safeLink, markdown, parseActivity, summariseInput, groupMessages, activitySummary, statusLabel, relativeTime, editDraft, prepareDelivery, afterDelivery, promptPayload, blankLocalDraft, withAttachments, slashMatches, turnPlacement, agentsFrom, usableAgent, newChatAgent, resolveOptions, supportedOptions, highlight, diffLines, resetLabel, modelName, effortName, modeHelp, liveStep, elapsedLabel, modelSpeeds, speedName, effortLabel, weeklyLimit, headlineLimit, usageRings, nextCredit, resetAttempt, settleReset, resetPrompt, resetOutcomes, hashIndex, projectTone, projectTones, avatarLetter, projectNameProblem, newProjectAttempt, unknownResult, settleProjectAttempt, projectChoices} from '../public/support.mjs';
 
 // A tiny DOM records writes. No browser or dependency is needed to assert the trust boundary.
 const fakeDoc = () => ({
@@ -347,4 +347,32 @@ test('project colours are stable, spread across the palette and letters fall bac
   assert.equal(avatarLetter('  _my app'), 'M');
   assert.equal(avatarLetter('édition'), 'É');
   assert.equal(avatarLetter(''), '?');
+});
+
+test('new project names follow the Mac\'s folder rule and a retry reuses the attempt id', () => {
+  for (const name of ['my-idea', 'Garden sensors 2', 'v1.2_test', 'Ünïcode']) assert.equal(projectNameProblem(name), null, name);
+  assert.equal(projectNameProblem('  '), 'Enter a name');
+  assert.equal(projectNameProblem('x'.repeat(65)), 'Use at most 64 characters');
+  for (const name of ['.hidden', 'trailing.', 'a/b', '../up', '-dash-first', 'semi;colon']) assert.match(projectNameProblem(name), /^Use letters/, name);
+  assert.equal(projectNameProblem('ends with space '), null, 'surrounding spaces are trimmed like the Mac does');
+  const first = newProjectAttempt(null, 'my-idea');
+  assert.match(first.id, /^[0-9a-f-]{36}$/);
+  assert.equal(newProjectAttempt(first, 'my-idea'), first);
+  assert.notEqual(newProjectAttempt(first, 'other').id, first.id);
+  assert.equal(unknownResult(new Error('offline')), true);
+  assert.equal(unknownResult(Object.assign(new Error('x'), {status: 504})), true);
+  assert.equal(unknownResult(Object.assign(new Error('exists'), {status: 409})), false);
+  assert.equal(unknownResult(null), false);
+  // Creation may have happened on any 5xx or lost answer: keep the id. A 4xx answer made nothing: start over.
+  const failed = status => Object.assign(new Error('x'), status ? {status} : {});
+  for (const status of [undefined, 408, 500, 502, 503, 504]) assert.equal(settleProjectAttempt(first, failed(status)), first, String(status));
+  for (const status of [400, 401, 404, 409]) assert.equal(settleProjectAttempt(first, failed(status)), null, String(status));
+  assert.equal(settleProjectAttempt(first, null), null);
+});
+
+test('General is kept apart from the project folders, and older Macs have none', () => {
+  const general = {id:'g', name:'General', path:'/Users/me', general:true}, app = {id:'a', name:'App'}, site = {id:'s', name:'Site'};
+  assert.deepEqual(projectChoices([app, general, site]), {general, folders:[app, site]});
+  assert.deepEqual(projectChoices([app, site]), {general:null, folders:[app, site]});
+  assert.deepEqual(projectChoices(), {general:null, folders:[]});
 });

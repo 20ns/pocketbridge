@@ -121,13 +121,13 @@ import kotlin.coroutines.cancellation.CancellationException
 @OptIn(ExperimentalFoundationApi::class)
 @Composable private fun SteerButton(modifier: Modifier, onSend: (String?) -> Unit) {
     val colors = MaterialTheme.colorScheme
-    val haptics = LocalHapticFeedback.current
+    val haptics = rememberHaptics()
     var menu by remember { mutableStateOf(false) }
     val outer = Sizes.sendButton / 2
     Row(modifier.height(Sizes.sendButton), horizontalArrangement = Arrangement.spacedBy(Spacing.xxs)) {
         Row(
             Modifier.fillMaxHeight().clip(RoundedCornerShape(outer, Corners.groupInner, Corners.groupInner, outer)).background(colors.primary)
-                .combinedClickable(onClickLabel = "Steer the running turn", role = Role.Button, onLongClickLabel = "More ways to send", onLongClick = { haptics.performHapticFeedback(HapticFeedbackType.LongPress); menu = true }) { onSend(STEER) }
+                .combinedClickable(onClickLabel = "Steer the running turn", role = Role.Button, onLongClickLabel = "More ways to send", onLongClick = { haptics.perform(Haptic.LongPress); menu = true }) { onSend(STEER) }
                 .padding(start = Spacing.md, end = Spacing.md),
             verticalAlignment = Alignment.CenterVertically,
         ) {

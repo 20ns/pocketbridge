@@ -177,6 +177,13 @@ class PageInsets(val scroll: Modifier, val bottom: Dp)
  * loads off the main thread and is cached on disk by version tag; the letter shows until it's ready.
  */
 @Composable fun ProjectAvatar(model: BridgeModel, project: JSONObject?, size: Dp = Sizes.tile) {
+    // General has no folder of its own: a neutral chat mark instead of a logo or letter.
+    if (isGeneral(project)) {
+        Box(Modifier.size(size).background(MaterialTheme.colorScheme.surfaceContainerHigh, RoundedCornerShape(if (size < Sizes.tile) Corners.groupInner * 2 else Corners.groupInner * 3)), contentAlignment = Alignment.Center) {
+            Icon(PocketIcons.Chat, null, Modifier.size(if (size < Sizes.tile) Sizes.tinyIcon + Spacing.xxs else 20.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+        return
+    }
     val id = project?.optString("id").orEmpty()
     val tag = project?.textOrNull("icon")
     val name = project?.optString("name").orEmpty()
