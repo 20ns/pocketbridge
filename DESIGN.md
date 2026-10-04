@@ -44,6 +44,12 @@ colors:
   light-syntax-annotation: "#8B5000"
   light-diff-added: "#DFF3E3"
   light-diff-removed: "#FCE3E1"
+  light-claude-accent: "#C4612C"
+  light-claude-container: "#FBE4D6"
+  light-claude-tint: "#FFF7F2"
+  light-codex-accent: "#2F6BD6"
+  light-codex-container: "#DCE6FA"
+  light-codex-tint: "#F4F7FE"
   dark-primary: "#83D5C6"
   dark-on-primary: "#003731"
   dark-primary-container: "#005048"
@@ -86,6 +92,12 @@ colors:
   dark-syntax-annotation: "#FFB86F"
   dark-diff-added: "#173323"
   dark-diff-removed: "#3D1D1C"
+  dark-claude-accent: "#F0A070"
+  dark-claude-container: "#4A3122"
+  dark-claude-tint: "#242523"
+  dark-codex-accent: "#8AB4FF"
+  dark-codex-container: "#243652"
+  dark-codex-tint: "#1C2529"
   mac-light-bg: "#f7f7f2"
   mac-light-surface: "#fffefa"
   mac-light-sidebar: "#eeeee7"
@@ -310,9 +322,9 @@ components:
 
 **Creative North Star: "Native conversation log"**
 
-On Android, PocketBridge is a Material You app on a fixed teal seed, laid out like the Android 16 system apps: large collapsing titles, grouped rounded lists on a warm page, tonal pills and spring motion. The conversation reads like a current AI chat app: teal prompt bubbles on the right, full-width unbubbled replies with careful Markdown, and a composer that holds every choice for the next prompt. The Mac keeps its existing two-column conversation layout and platform font stack.
+On Android, PocketBridge is a Material You app on a fixed teal seed, laid out like the Android 16 system apps: compact top bars, grouped rounded lists on a warm page, tonal pills and spring motion. The conversation reads like a current AI chat app: teal prompt bubbles on the right, full-width unbubbled replies with careful Markdown, and a composer that holds every choice for the next prompt. The Mac keeps its existing two-column conversation layout and platform font stack.
 
-The phone follows system light or dark appearance and font scaling. Warm off-white and charcoal pages carry the interface. Teal identifies prompts, primary actions and Working. Amber marks a question or decision; red marks failures and Stop. Wallpaper colour is not used, because it would recolour those status cues.
+The phone follows system light or dark appearance and font scaling. Warm off-white and charcoal pages carry the interface. Teal identifies prompts, primary actions and Working. Amber marks a question or decision; red marks failures and Stop. Claude is a hint of orange and Codex a hint of blue wherever a chat or agent appears. Wallpaper colour is not used, because it would recolour those status cues.
 
 **Key Characteristics:**
 
@@ -321,7 +333,7 @@ The phone follows system light or dark appearance and font scaling. Warm off-whi
 - Replies are reading text, not bubbles; code and tables are their own bordered surfaces.
 - Status is always a word or icon with its colour, never colour alone.
 
-Android colour truth is `android/app/src/main/java/dev/pocketbridge/Theme.kt` (`PocketTheme`, the `Pocket.colors` extension tokens, `Spacing`, `Corners`, `Sizes` and `Motion`). Component truth is `MainActivity.kt`, `Screens.kt`, `Conversation.kt`, `Composer.kt`, `Work.kt` (sub-agents), `ProjectInfo.kt` (git line, "/" list), `Attachments.kt` and `Images.kt` (images, Send to, viewer), `Alerts.kt`, `Usage.kt`, `Markdown.kt` and `Highlight.kt` in that directory. Mac tokens remain in `mac/public/style.css`.
+Android colour truth is `android/app/src/main/java/dev/pocketbridge/Theme.kt` (`PocketTheme`, the `Pocket.colors` extension tokens, `Spacing`, `Corners`, `Sizes` and `Motion`). Component truth is `MainActivity.kt` and `Page.kt` (shell, top bars, connection banner), `Components.kt` (rows, labels, avatars, menus), `ProjectsScreen.kt`, `ChatsScreen.kt`, `SettingsScreen.kt`, `Pairing.kt`, `Conversation.kt`, `Steps.kt`, `Approvals.kt`, `Composer.kt`, `SendControls.kt`, `ModelPanel.kt`, `ComposerImages.kt`, `Work.kt` (sub-agents), `ProjectInfo.kt` (git line, "/" list), `Attachments.kt` and `Images.kt` (Send to, viewer), `Alerts.kt`, `Usage.kt`, `Markdown.kt` and `Highlight.kt` in that directory. Mac tokens remain in `mac/public/style.css`.
 
 Frontmatter uses Android dp and sp without converting them to CSS pixels. Light-prefixed component assignments show the light scheme; switch to the corresponding dark role when system appearance is dark. Native runtime tokens own disabled, pressed, focused and menu states. Sidecar HTML samples translate logical sizes to baseline CSS pixels solely for the documentation panel. They are previews of native components, not Android implementations. Their browser focus outline is a documentation-panel affordance; native focus uses Material state layers.
 
@@ -343,6 +355,12 @@ The Android palette pairs teal with warm neutrals; amber and red carry attention
 
 Syntax colours (keyword, string, comment, number, type, function, annotation) and diff line tints are theme tokens, each at least 4.5:1 on the code surface.
 
+### Agents and projects
+
+Each agent has three tokens (`Pocket.colors.claude`, `.codex`): `accent` for marks (usage rings, the 3dp edge on a chat row, the dot before a chat's folder, Settings and session glyphs), at least 3:1 on rows; `container` for the model pill and agent tiles, carrying on-surface text at 4.5:1; and `tint`, the chat row's fill, one small step off `row`. Colour never names the agent alone: rows show the model and the model pill names it.
+
+Projects without their own logo get a letter avatar from `Pocket.colors.projects`: eight tone 90/10 pairs in light and 30/90 in dark (blue, violet, pink, green, olive, cyan, mauve, slate). The pick is an FNV-1a hash of the project id, so a project keeps its colour everywhere. Teal, amber and red stay out of the palette because they mean Working, Needs your answer and Failed.
+
 Mac-prefixed tokens describe the existing browser client. Its accent is muted teal; sidebar and sunken fills distinguish navigation and code. Keep the Mac's separate values rather than substituting Android colors.
 
 **The Sender Rule.** On Android, teal bubbles identify the user. Replies have no bubble. Primary actions and links also use teal.
@@ -353,10 +371,11 @@ Android uses the platform sans-serif through Material 3 with firmer weights: hea
 
 ### Hierarchy
 
-- `headline-medium` titles list screens in the large app bar and introduces pairing.
+- `headline-medium` introduces pairing.
 - `headline-small` opens an empty conversation.
-- `title-large` names the usage sheet and empty states; the collapsed app bar uses it too.
-- `title-medium` carries list row headlines, the conversation title and card titles.
+- `title-large` names the usage sheet, empty states and top bars without a subtitle.
+- `title-medium` carries list row headlines, a top bar title with a subtitle, and card titles.
+- A top bar subtitle (a chat's folder, a project's path) is `label-medium` in Bold on `on-surface-variant`.
 - `reading` (16/26) carries reply paragraphs and list items; `body-large` carries prompts and the composer.
 - `body-medium` carries row supporting text, notices and tables.
 - `label-large` carries buttons, pills, step group titles, status words and section labels.
@@ -372,7 +391,7 @@ The Mac uses its existing system font stack with a 15px root. Conversation text 
 
 ## Layout
 
-Android is a single-column stack inside a Material `Scaffold`. List screens (Projects, a project's chats, Settings) use a large app bar that collapses as the list scrolls; pull down expands it before pull-to-refresh engages. Lists draw behind the navigation bar and pad their last row. The persistent connection banner sits under the app bar. The conversation keeps a compact app bar and the composer as its bottom bar, with navigation and keyboard insets.
+Android is a single-column stack inside a Material `Scaffold`. Every screen uses one compact 64dp top bar: the title sits top left with no empty large-title area above the content, and the bar takes `surface-container` once its list scrolls under it. Lists draw behind the navigation bar and pad their last row. The persistent connection banner sits under the app bar. The conversation keeps a compact app bar and the composer as its bottom bar, with navigation and keyboard insets.
 
 Spacing follows a 4dp grid (`Spacing`): 16dp page gutters, 16dp row padding, 12dp between conversation entries, 20dp above a section label. Section labels align with the text inside rows (32dp). Rows are at least 64dp; every control has a 48dp touch target. The New chat button shrinks to its icon once the chats list scrolls.
 
@@ -388,7 +407,7 @@ Motion uses Material 3 Expressive springs (`Motion.spatial`, `fastSpatial`, `eff
 
 ## Shapes
 
-Grouped rows use 20dp outer and 4dp inner corners. Prompt bubbles use 22dp corners with a 6dp tail at the bottom right. Question, plan and permission cards use 24dp. The composer and model panel use 28dp. Code blocks and tables use 14dp. Pills, chips, Send, Stop and filter chips are fully round. List tiles are 40dp with 12dp corners.
+Grouped rows use 20dp outer and 4dp inner corners; a chat row's agent edge follows the row's own corners. Prompt bubbles use 22dp corners with a 6dp tail at the bottom right. Question, plan and permission cards use 24dp. The composer and model panel use 28dp. Code blocks and tables use 14dp. Pills, chips, Send, Stop and filter chips are fully round. List tiles are 40dp with 12dp corners.
 
 The Mac retains its 6px small corners, 8px control corners and 12px container corners. Its connection badge is a capsule. Keep these browser shapes separate from the phone's message silhouettes.
 
@@ -400,13 +419,13 @@ Filled buttons confirm (Approve plan, Allow, Send answer, Install); outlined but
 
 ### Inputs / Fields
 
-The composer is one 28dp box: picked images, a borderless field that grows to eight lines with a spring, then a row with a round attach button, the pills (model, effort, permission mode) and Send or Stop. Pills are 34dp tonal capsules with a chevron that turns while their menu or panel is open; they dim when an unconfirmed prompt locks them, and fade out at the row's end when they run under Stop and Steer. Images sit above the text as 64dp tiles with 12dp corners and a hairline border: a scrim and spinner while uploading, an error-container tint with a retry mark after a failure, and a small dark remove mark on the corner. Send waits until every image is on the Mac. The pending-delivery state empties and locks the box with "Waiting for your Mac to confirm". Offline keeps drafts editable while disabling Send and Stop. Search and pairing fields are rounded; search is a full pill on the row colour.
+The composer is one 28dp box: picked images, a borderless field that grows to eight lines with a spring, then a row with a round attach button, the pills (model on its agent's container, effort, speed, permission mode) and Send or Stop. The speed pill shows only for a model whose catalog lists speeds (Codex's Fast today) and takes its name from the catalog: a toggle with a bolt that turns `secondary-container` when on, or a menu with Standard first when a model lists several. It is remembered per agent with the other last-used options and saved with each prompt's delivery id. Pills are 34dp tonal capsules with a chevron that turns while their menu or panel is open; they dim when an unconfirmed prompt locks them, and fade out at the row's end when they run under Stop and Steer. Images sit above the text as 64dp tiles with 12dp corners and a hairline border: a scrim and spinner while uploading, an error-container tint with a retry mark after a failure, and a small dark remove mark on the corner. Send waits until every image is on the Mac. The pending-delivery state empties and locks the box with "Waiting for your Mac to confirm". Offline keeps drafts editable while disabling Send and Stop. Search and pairing fields are rounded; search is a full pill on the row colour.
 
 Above the box a single quiet line shows the project's git state: a branch glyph and the branch (or short commit), then "+8 −2" in the diff tokens with their signs, the file count, and ↑/↓ only when the branch is ahead or behind. It keeps its last value while refreshing and taps open a plain tooltip that spells every number out. Typing "/" opens the agent's commands and skills in a 20dp panel sitting on the composer, without taking the keyboard: monospace names with their argument hint, one line of description, prefix matches first. A pick inserts "/name " with the cursor at the end; Back or Escape hides the list until the text changes.
 
 ### Navigation
 
-The phone starts at Projects when there is no reopened chat. Project selection opens its chats; the system back gesture from a conversation returns to them. Top bars hold only the title and actions: no back arrow, no "back to" label and no project subtitle in a conversation. During the back gesture the page scales to 90%, shifts 16dp toward the swipe and rounds its corners over a `surface-container-highest` backdrop. The model panel takes back first and shrinks with the gesture. Connection state shows as a small labelled pill beside the title only when not connected. The Mac retains its sidebar, selected chat border and narrow-window drawer.
+The phone starts at Projects when there is no reopened chat. Project selection opens its chats. Every screen but Projects has a standard back arrow as the top bar's navigation icon, and the system back gesture does the same; there is no "back to" label. Projects puts its title top left with the usage meter and Settings at the end. A project's chats show its logo or letter avatar, its name and, beneath, its compacted path. A conversation shows its title with the project's folder beneath, led by a dot in the agent's colour, then the context meter and the chat menu (Open in Claude Desktop, Rename, Delete). During the back gesture the page scales to 90%, shifts 16dp toward the swipe and rounds its corners over a `surface-container-highest` backdrop. The model panel takes back first and shrinks with the gesture. Connection state shows as a small labelled pill beside the title only when not connected. The Mac retains its sidebar, selected chat border and narrow-window drawer.
 
 ### Messages and steps
 
@@ -424,7 +443,7 @@ Question, plan and permission cards are 24dp `row` cards with a 1.5dp amber bord
 
 ### Lists and chat options
 
-Projects open with a pill search field, then Recent and All chips with Sort at the end. An Active group lists working or waiting chats from every project, each with its status in the leading tile (spinner on primary container, amber question mark on tertiary container) and in words. Project rows lead with a monogram tile, then the name and a compacted folder path (first two and last two parts), or the status when work runs. A project's chats list starts with its folder path; rows show the title, the last reply or status, and the time and model at the end. Long press opens Rename and Delete; the conversation menu offers the same. Drafts show Draft and unconfirmed first prompts show Not confirmed. When the Mac has Claude or Codex sessions in that folder that PocketBridge didn't start, an "On your Mac" section with its count and a turning chevron comes first: up to three grouped rows (agent glyph tile, title, one line of the last words, time and agent name), then "Show all N". A tap forks the session into a chat and opens it, and a "Chats" label introduces the rest. Empty states are an icon in a circle, a title and at most one line, with one action where it helps.
+Projects open with a pill search field, then Recent and All chips with Sort at the end. An Active group lists working or waiting chats from every project, each with its status in the leading tile (spinner on primary container, amber question mark on tertiary container) and in words, on its agent's tint. Project rows lead with the project's own logo when the Mac found one (on `surface-container-low`, fitted, 12dp corners), otherwise its letter on its palette colour, then the name and a compacted folder path (first two and last two parts); while work runs the status tile and word replace them. Chat rows carry their agent's tint and a 3dp accent edge at the start, and show the title, the last reply or status, and the time and model at the end. Long press opens Rename and Delete; the conversation menu offers the same. Drafts show Draft and unconfirmed first prompts show Not confirmed. When the Mac has Claude or Codex sessions in that folder that PocketBridge didn't start, an "On your Mac" section with its count and a turning chevron comes first: up to three grouped rows (agent glyph in its accent on its container, title, one line of the last words, time and agent name), then "Show all N". A tap forks the session into a chat and opens it, and a "Chats" label introduces the rest. Empty states are an icon in a circle, a title and at most one line, with one action where it helps.
 
 ### Model selector
 
@@ -432,7 +451,7 @@ The model pill opens a panel that rises from the composer, no taller than half t
 
 ### Usage
 
-When the Mac reports plan limits, the Projects app bar shows a meter: a ring and the percentage of the limit closest to running out, coloured by severity (primary, amber near a limit, red when full). It opens a sheet that sizes to its content: per agent, the plan as a chip, each limit as a bar with its percentage and "Resets in 2h 24m" or "Resets Thu", and credits when present. Settings repeats the same groups. Any chat the Mac reports context for, Claude or Codex, shows its context window fill as a small ring and percentage beside its title; tapping it shows the token counts. Without usage data from the Mac, all of these stay hidden.
+When the Mac reports plan limits, the Projects top bar shows a meter with one small ring per agent that is on: that agent's weekly limit closest to running out (never the 5-hour window), Claude first in orange, Codex in blue, each with its percentage. The number turns amber near a limit and red when full. With one agent on there is one ring. It opens a sheet that sizes to its content: per agent, the plan as a chip, each limit as a bar with its percentage and "Resets in 2h 24m" or "Resets Thu", credits when present, and for Codex its banked resets: "3 banked resets", "Next expires Thu" and a tonal Use button. Use asks first ("Use 1 of 3 resets?", "Resets your Codex limits now."), shows a spinner while the Mac works, then the outcome under the row for eight seconds (a check in primary, or an error mark in red; a snackbar would sit under the sheet). The spent credit leaves the count at once and the limits refresh. Settings repeats the same groups. Any chat the Mac reports context for, Claude or Codex, shows its context window fill as a small ring and percentage beside its title; tapping it shows the token counts. Without usage data from the Mac, all of these stay hidden.
 
 ### Images, sharing and alerts
 
@@ -444,9 +463,9 @@ Settings has one Alerts row with a switch ("Alerts when closed"); when on, one l
 
 ### App updates
 
-Settings lists Claude Code and Codex as grouped rows with a trailing switch; the whole row toggles it on the Mac. An off agent's row reads "Off. New chats and usage skip it." A missing CLI shows Missing instead of a switch. The model panel and New chat offer only agents that are installed and on. A saved chat whose agent is off shows "<Agent> is off" with a Turn on text button above the composer and keeps Send disabled.
+Settings lists Claude Code and Codex as grouped rows with their glyph on the agent's container, the CLI version in use, model count and default model, and a trailing switch; the whole row toggles it on the Mac. An off agent's row reads "Off. New chats and usage skip it." A missing CLI shows Missing instead of a switch. The model panel and New chat offer only agents that are installed and on. A saved chat whose agent is off shows "<Agent> is off" with a Turn on text button above the composer and keeps Send disabled.
 
-Settings ends with an Updates row: the installed version and status, with Check, then Download and Install for the public signed APK. Install uses Android's package-installer permission. That permission is separate from Mac pairing.
+Settings ends with an Updates row: the installed version and status, with Check, then Download and Install for the public signed APK. Install uses Android's package-installer permission. That permission is separate from Mac pairing. A downloaded APK is deleted at the next launch once that version is installed, and after three days if it never was.
 
 ### Mac controls
 
@@ -462,7 +481,7 @@ Keep project registration and Connect phone in the browser client. Its messages 
 - **Do** preserve selectable replies, copyable code, labelled controls and native question selection.
 - **Do** keep Mac project registration and phone pairing controls in the Mac client.
 - **Do** keep filter, sort and chat-option choices on compact menus, in place where they apply.
-- **Do** rely on the system back gesture instead of back buttons.
+- **Do** give every screen but Projects a standard back arrow, and keep the predictive back gesture.
 - **Do** check light, dark and 1.3x font scale.
 
 ### Don't:

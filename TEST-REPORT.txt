@@ -1,3 +1,35 @@
+PocketBridge 0.7.0 verification, 4 October 2026
+
+AUTOMATED CHECKS
+- Mac: pnpm test, 73 passed. New: newest-CLI selection, Codex speeds through
+  catalog, prompts, duplicates and turn/start serviceTier (including turning a
+  sticky tier off), migration of an older data folder, usage windows, reset credits
+  with all outcomes and idempotency (fake Codex only), project icons including ICO
+  and SVG conversion, symlink swaps after discovery, folder budgets, and options
+  rechecked after a catalog wait.
+- Android: assembleDebug, testDebugUnitTest and lintDebug passed; 118 JVM tests, 0
+  lint errors. New: speed in options and pending prompts, weekly ring selection,
+  reset key handling by status, project colour hashing, icon cache, APK cleanup.
+- Reviews: GPT-6-Sol twice on the Android changes (7 fixes) and GPT-6.1-Sol on the
+  Mac changes (8 findings: symlinked icon reads, speed from chat instead of prompt,
+  options merged without revalidation, tier tracking order, icon folder budget,
+  idle icon rescan, reset retry after a refusal, blob URL leaks). All fixed.
+
+REAL CLI CHECKS (read-only)
+- Codex CLI upgraded from 0.157.1 to 0.160.0 (pnpm); its model/list includes
+  GPT-6.1-Sol (default) and a "Fast" (priority) tier on visible models.
+  account/rateLimits/read lists 3 reset credits. No credit was consumed.
+- Claude CLI updated to 2.1.289.
+
+EMULATOR CHECKS (demo service on 8788)
+- Projects header, project colours and logos, project chats with back arrow,
+  conversation with folder subtitle, agent tints, Fast pill sent as speed
+  priority, two weekly rings, banked resets with confirmation (demo only), light
+  and dark. Back by arrow and by edge swipe, three times each.
+- Mac browser: folder line, Fast, rings, reset on the demo ledger, avatars.
+- Not tested: physical phone, the 1.3x font scale, APK cleanup after a real
+  in-place update.
+
 PocketBridge 0.6.2 verification, 4 October 2026
 
 - Mac: pnpm test, 61 passed. New: Open in Claude Desktop opens claude://resume for a

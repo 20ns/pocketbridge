@@ -1,3 +1,14 @@
+PocketBridge 0.7.0
+
+- Back arrows on every screen past Projects, alongside the back gesture. Headers are compact: "Projects" sits top-left, and a chat shows its project folder under the title.
+- Newest models, automatically: the Mac uses the newest installed Claude and Codex CLI, so new models (like GPT-6.1-Sol) and options appear without an app update.
+- Fast: a Codex speed toggle next to effort when the model offers it. It sticks per agent like the other options.
+- Banked resets: the usage sheet shows Codex reset credits and lets you use one, after a confirmation.
+- Usage rings show each enabled agent's weekly use, Claude in orange and Codex in blue. Chats carry a light tint of their agent's colour.
+- Projects get their own colours, and their own logo when the folder has one (favicon, app icon and similar).
+- Downloaded update APKs are deleted once installed, and caches for chats deleted elsewhere are cleared.
+- Under the hood: the Mac service, browser client and app were split into smaller modules, with review fixes for icon file safety, per-prompt speed and options, and reset retries.
+
 PocketBridge 0.6.2
 
 - Open in Claude Desktop: a Claude chat's menu (and a button in the Mac browser) hands the chat to the Claude desktop app on your Mac, the same way `/desktop` does in the terminal. It then appears in Desktop's list with its full history. Wait for a turn to finish first; both apps shouldn't work on one chat at the same time.

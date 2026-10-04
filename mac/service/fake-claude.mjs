@@ -5,7 +5,7 @@ import { writeFileSync, appendFileSync } from 'node:fs';
 import { spawn } from 'node:child_process';
 import { createInterface } from 'node:readline';
 const args = process.argv.slice(2);
-if (args.includes('--version')) { console.log('fake-claude'); process.exit(0); }
+if (args.includes('--version')) { console.log('2.1.0 (Claude Code)'); process.exit(0); }
 const emit = event => process.stdout.write(JSON.stringify(event) + '\n');
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 const efforts = ['low', 'medium', 'high', 'xhigh', 'max'];

@@ -116,8 +116,8 @@ fun agentProduct(agent: String) = if (agent == CODEX) "Codex" else "Claude Code"
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable fun GitStrip(model: BridgeModel, projectId: String) {
     val lifecycle = LocalLifecycleOwner.current.lifecycle
-    LaunchedEffect(projectId, lifecycle) { lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) { while (true) { model.refreshGit(projectId); delay(15_000) } } }
-    val info = model.git[projectId]
+    LaunchedEffect(projectId, lifecycle) { lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) { while (true) { model.details.refreshGit(projectId); delay(15_000) } } }
+    val info = model.details.git[projectId]
     AnimatedVisibility(info != null, enter = expandVertically(Motion.spatial(IntSize.VisibilityThreshold)) + fadeIn(Motion.effects()), exit = shrinkVertically(Motion.fastSpatial(IntSize.VisibilityThreshold)) + fadeOut(Motion.fastEffects())) {
         val git = info ?: return@AnimatedVisibility
         val colors = MaterialTheme.colorScheme

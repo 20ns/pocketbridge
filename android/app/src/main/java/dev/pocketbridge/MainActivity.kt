@@ -62,7 +62,7 @@ class MainActivity : ComponentActivity() {
         setContent { PocketTheme { BridgeApp(model) } }
     }
     override fun onNewIntent(intent: Intent) { super.onNewIntent(intent); setIntent(intent); handle(intent) }
-    override fun onResume() { super.onResume(); model.resumeUpdateInstall() }
+    override fun onResume() { super.onResume(); model.updates.resume() }
     // On screen, the app's own connection shows everything; closed with work running, the alerts service takes over.
     override fun onStart() { super.onStart(); Alerts.stop(this) }
     override fun onStop() { super.onStop(); if (!isChangingConfigurations) model.startAlerts() }
@@ -129,7 +129,7 @@ private enum class Screen(val depth: Int) { Pair(0), Projects(0), Chats(1), Sett
         }
     }
 
-    // Back is the system gesture alone. The page follows the finger, like Android's own back preview.
+    // The back arrow and the system gesture do the same; during the gesture the page follows the finger, like Android's own back preview.
     var backProgress by remember { mutableFloatStateOf(0f) }
     var leavingProgress by remember { mutableFloatStateOf(0f) }
     var backEdge by remember { mutableIntStateOf(BackEventCompat.EDGE_LEFT) }
@@ -185,14 +185,24 @@ private enum class Screen(val depth: Int) { Pair(0), Projects(0), Chats(1), Sett
                     Screen.Projects -> Page(
                         model, snackbar, title = "Projects", saved = model.projects.isNotEmpty(), onSettings = { settings = true },
                         actions = {
-                            UsageMeter(model.usage) { usage = true }
+                            UsageMeter(model) { usage = true }
                             IconButton(onClick = { settings = true }) { Icon(Icons.Default.Settings, "Settings") }
                         },
                     ) { insets -> Projects(model, insets, onOpenProject = { project = it }, onOpenChat = { chat -> project = chat.optString("projectId"); model.open(chat.optString("id")) }) }
-                    Screen.Chats -> ChatsPage(model, snackbar, project, onSettings = { settings = true })
-                    Screen.Settings -> Page(model, snackbar, title = "Settings") { insets -> Settings(model, insets) }
+                    Screen.Chats -> ChatsPage(model, snackbar, project, onBack = back, onSettings = { settings = true })
+                    Screen.Settings -> Page(model, snackbar, title = "Settings", onBack = back) { insets -> Settings(model, insets) }
                     Screen.Chat -> Page(
-                        model, snackbar, title = model.chat?.optString("title")?.ifBlank { null } ?: "New chat", large = false,
+                        model, snackbar, title = model.chat?.optString("title")?.ifBlank { null } ?: "New chat", onBack = back,
+                        // The folder under the title, with a dot in the agent's colour, so it's clear where and with what.
+                        subtitle = model.chat?.let { chat ->
+                            {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    AgentDot(model.options.agent)
+                                    Spacer(Modifier.width(Spacing.xs + Spacing.xxs))
+                                    Text(projectName(model, chat.optString("projectId")), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                }
+                            }
+                        },
                         saved = model.messages.isNotEmpty(), onSettings = { settings = true },
                         actions = {
                             // How full this chat's context is, beside the chat it belongs to.
@@ -213,75 +223,20 @@ private enum class Screen(val depth: Int) { Pair(0), Projects(0), Chats(1), Sett
     if (model.paired) SharePanel(model)
 }
 
-@Composable private fun ChatsPage(model: BridgeModel, snackbar: SnackbarHostState, project: String, onSettings: () -> Unit) {
+@Composable private fun ChatsPage(model: BridgeModel, snackbar: SnackbarHostState, project: String, onBack: () -> Unit, onSettings: () -> Unit) {
     var sort by rememberSaveable { mutableStateOf(ChatSort.Newest) }
     val list = rememberLazyListState()
     // The button shrinks to its icon once the list scrolls, leaving titles readable underneath.
     val extended by remember { derivedStateOf { list.firstVisibleItemIndex == 0 } }
+    val info = model.projects.find { it.optString("id") == project }
     Page(
-        model, snackbar, title = projectName(model, project), onSettings = onSettings,
+        model, snackbar, title = projectName(model, project), onBack = onBack, onSettings = onSettings,
+        leading = { ProjectAvatar(model, info, Sizes.headerAvatar) },
+        subtitle = info?.let { { Text(compactPath(it.optString("path")), maxLines = 1, overflow = TextOverflow.Ellipsis) } },
         saved = projectChats(model.chats, project, model.visibleDrafts()).isNotEmpty(),
         actions = { SortMenu(ChatSort.entries, sort, { it.label }) { sort = it } },
         fab = { NewChatButton(model, project, snackbar, extended) },
     ) { insets -> Chats(model, project, sort, list, insets) }
-}
-
-/**
- * One screen frame: top app bar, the persistent connection banner, then content. List screens use a large title
- * that collapses as the list scrolls; the conversation keeps a compact bar. [saved]: cached data to show offline.
- */
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable private fun Page(
-    model: BridgeModel,
-    snackbar: SnackbarHostState,
-    title: String,
-    large: Boolean = true,
-    actions: @Composable RowScope.() -> Unit = {},
-    onSettings: () -> Unit = {},
-    saved: Boolean = false,
-    fab: @Composable () -> Unit = {},
-    bottomBar: (@Composable () -> Unit)? = null,
-    overlay: @Composable BoxScope.() -> Unit = {},
-    dimTop: Boolean = false,
-    onDimTop: () -> Unit = {},
-    content: @Composable (PageInsets) -> Unit,
-) {
-    val colors = MaterialTheme.colorScheme
-    val scroll = if (large) TopAppBarDefaults.exitUntilCollapsedScrollBehavior() else null
-    Scaffold(
-        topBar = {
-            val heading = @Composable { Title(title, model) }
-            Box {
-                if (scroll != null) LargeTopAppBar(heading, actions = actions, scrollBehavior = scroll, colors = TopAppBarDefaults.largeTopAppBarColors(containerColor = colors.surface, scrolledContainerColor = colors.surfaceContainer))
-                else TopAppBar(heading, actions = actions, colors = TopAppBarDefaults.topAppBarColors(containerColor = colors.surface))
-                // A panel over the content dims the bar too, so only the panel and its composer stay lit.
-                AnimatedVisibility(dimTop, Modifier.matchParentSize(), enter = fadeIn(Motion.effects()), exit = fadeOut(Motion.fastEffects())) {
-                    Box(Modifier.fillMaxSize().background(colors.scrim.copy(alpha = 0.32f)).clickable(remember { MutableInteractionSource() }, null, onClick = onDimTop))
-                }
-            }
-        },
-        snackbarHost = { SnackbarHost(snackbar) },
-        floatingActionButton = fab,
-        bottomBar = bottomBar ?: {},
-    ) { inset ->
-        // Lists draw behind the navigation bar and pad their last row instead; the composer is opaque, so the conversation stops above it.
-        val bottom = inset.calculateBottomPadding()
-        Column(Modifier.fillMaxSize().padding(top = inset.calculateTopPadding()).consumeWindowInsets(inset)) {
-            ConnectionBanner(model, saved, onSettings)
-            Box(Modifier.weight(1f).padding(bottom = if (bottomBar != null) bottom else 0.dp)) {
-                // The list sits inside pull-to-refresh; collapsing the title first means a pull at the top expands it before refreshing.
-                content(PageInsets(scroll?.let { Modifier.nestedScroll(it.nestedScrollConnection) } ?: Modifier, if (bottomBar != null) 0.dp else bottom))
-                overlay()
-            }
-        }
-    }
-}
-
-@Composable private fun Title(title: String, model: BridgeModel) {
-    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(Spacing.md)) {
-        Text(title, Modifier.weight(1f, fill = false), maxLines = 1, overflow = TextOverflow.Ellipsis)
-        ConnectionDot(model)
-    }
 }
 
 @Composable private fun ConversationMenu(model: BridgeModel) {
@@ -323,43 +278,3 @@ private enum class Screen(val depth: Int) { Pair(0), Projects(0), Chats(1), Sett
 }
 
 fun projectName(model: BridgeModel, id: String?) = model.projects.find { it.optString("id") == id }?.optString("name") ?: "Project removed"
-
-/** Only a problem is worth a word. Connected stays silent; connecting and offline get a small labelled pill. */
-@Composable private fun ConnectionDot(model: BridgeModel) {
-    if (model.online) return
-    val colors = MaterialTheme.colorScheme
-    val (label, dot) = if (model.connectionIssue.isEmpty()) "Connecting" to colors.outline else "Offline" to colors.error
-    Surface(shape = CircleShape, color = colors.surfaceContainerHigh, modifier = Modifier.semantics(mergeDescendants = true) { liveRegion = LiveRegionMode.Polite }) {
-        Row(Modifier.padding(horizontal = Spacing.sm + Spacing.xxs, vertical = Spacing.xs), verticalAlignment = Alignment.CenterVertically) {
-            Box(Modifier.size(7.dp).background(dot, CircleShape))
-            Spacer(Modifier.width(Spacing.xs + Spacing.xxs))
-            Text(label, style = MaterialTheme.typography.labelMedium, color = colors.onSurfaceVariant)
-        }
-    }
-}
-
-@Composable private fun ConnectionBanner(model: BridgeModel, saved: Boolean, openSettings: () -> Unit) {
-    if (model.online || model.connectionIssue.isEmpty()) return
-    val colors = MaterialTheme.colorScheme
-    val revoked = model.revoked
-    Surface(
-        Modifier.padding(horizontal = Spacing.lg, vertical = Spacing.xs).fillMaxWidth(), shape = RoundedCornerShape(Corners.groupOuter),
-        color = if (revoked) colors.errorContainer else Pocket.colors.row, contentColor = if (revoked) colors.onErrorContainer else colors.onSurface,
-    ) {
-        Row(Modifier.padding(start = Spacing.lg, end = Spacing.sm, top = Spacing.md, bottom = Spacing.md).semantics { liveRegion = LiveRegionMode.Polite }, verticalAlignment = Alignment.CenterVertically) {
-            Icon(PocketIcons.Error, null, Modifier.size(20.dp), tint = if (revoked) colors.onErrorContainer else colors.error)
-            Column(Modifier.weight(1f).padding(horizontal = Spacing.md), verticalArrangement = Arrangement.spacedBy(Spacing.xxs)) {
-                Text(if (revoked) "Pairing removed" else "Can't reach your Mac", style = MaterialTheme.typography.titleSmall)
-                Text(
-                    if (revoked) model.connectionIssue else model.connectionIssue.removePrefix("Can't reach your Mac. ") + if (saved) " Showing saved copies." else "",
-                    style = MaterialTheme.typography.bodySmall, color = if (revoked) colors.onErrorContainer else colors.onSurfaceVariant,
-                )
-            }
-            when {
-                revoked -> TextButton(onClick = openSettings) { Text("Settings") }
-                model.refreshing -> Box(Modifier.size(Sizes.touch), contentAlignment = Alignment.Center) { CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp) }
-                else -> FilledTonalButton(onClick = model::retry) { Text("Retry") }
-            }
-        }
-    }
-}

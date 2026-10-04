@@ -18,6 +18,14 @@ import java.util.concurrent.TimeUnit
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.ResponseBody
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.mutableStateOf
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import org.json.JSONObject
 
 private const val LatestRelease = "https://api.github.com/repos/20ns/pocketbridge/releases/latest"
@@ -101,6 +109,15 @@ fun copyBounded(input: InputStream, output: OutputStream, maxBytes: Long, digest
     return total
 }
 
+/** Downloaded updates are kept this long at most; after that a fresh check downloads again. */
+const val UPDATE_KEEP_MILLIS = 3L * 24 * 60 * 60 * 1000
+
+/**
+ * Whether a downloaded APK can go: Android couldn't read it, this version or a newer one is installed (the update
+ * went in), or it has waited too long to be installed.
+ */
+fun staleUpdate(installedCode: Long, apkCode: Long?, ageMillis: Long) = apkCode == null || apkCode <= installedCode || ageMillis > UPDATE_KEEP_MILLIS
+
 fun sha256(bytes: ByteArray) = MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it) }
 
 class Updater(private val context: Context) {
@@ -131,6 +148,19 @@ class Updater(private val context: Context) {
             validateApk(apk)
         }.onFailure { apk.delete() }.getOrThrow()
         return UpdateStatus(latest = release.version, message = "Update ready to install.", release = release, apkPath = apk.absolutePath)
+    }
+
+    /** Deletes downloaded APKs that are installed, unreadable or stale, and any partial files. Runs on an IO thread. */
+    fun cleanup() {
+        val dir = File(context.cacheDir, "updates")
+        val files = dir.listFiles() ?: return
+        val pm = context.packageManager
+        val installed = runCatching { pm.getPackageInfo(BuildConfig.APPLICATION_ID, 0).longVersion() }.getOrNull() ?: return
+        files.forEach { file ->
+            val code = if (file.isFile && file.name.endsWith(".apk")) runCatching { pm.getPackageArchiveInfo(file.absolutePath, 0)?.longVersion() }.getOrNull() else null
+            if (staleUpdate(installed, code, System.currentTimeMillis() - file.lastModified())) file.deleteRecursively()
+        }
+        if (dir.listFiles().isNullOrEmpty()) dir.delete()
     }
 
     fun install(status: UpdateStatus): UpdateStatus {
@@ -196,3 +226,31 @@ class Updater(private val context: Context) {
 private fun PackageInfo.longVersion() = if (Build.VERSION.SDK_INT >= 28) longVersionCode else @Suppress("DEPRECATION") versionCode.toLong()
 private fun PackageInfo.certificates(): Set<String> = if (Build.VERSION.SDK_INT >= 28) signingInfo?.apkContentsSigners.orEmpty().map { sha256(it.toByteArray()) }.toSet()
 else @Suppress("DEPRECATION") signatures.orEmpty().map { sha256(it.toByteArray()) }.toSet()
+
+/** Settings' Updates row: check, download and install the public signed APK, one step at a time. */
+class UpdateModel(private val context: Context, private val scope: CoroutineScope) {
+    private val updater = Updater(context)
+    var busy by mutableStateOf(false); private set
+    var status by mutableStateOf(UpdateStatus()); private set
+
+    init { scope.launch(Dispatchers.IO) { runCatching { updater.cleanup() } } }
+
+    fun check() = step { status = withContext(Dispatchers.IO) { updater.check() } }
+    fun download() = step {
+        val release = status.release ?: error("Check for an update first.")
+        status = withContext(Dispatchers.IO) { updater.download(release) }
+    }
+    fun install() = step { status = updater.install(status) }
+    /** Back from Android's install permission screen: carry on if it was granted. */
+    fun resume() { if (status.waitingForPermission && !busy && context.packageManager.canRequestPackageInstalls()) install() }
+
+    private fun step(block: suspend () -> Unit) {
+        if (busy) return
+        busy = true
+        scope.launch {
+            try { block() } catch (cancelled: CancellationException) { throw cancelled }
+            catch (failure: Exception) { status = status.copy(message = failureReason(failure)) }
+            finally { busy = false }
+        }
+    }
+}

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {EventDecoder, safeLink, markdown, parseActivity, summariseInput, groupMessages, activitySummary, statusLabel, relativeTime, editDraft, prepareDelivery, afterDelivery, promptPayload, blankLocalDraft, withAttachments, slashMatches, turnPlacement, agentsFrom, usableAgent, newChatAgent, resolveOptions, supportedOptions, highlight, diffLines, resetLabel, modelName, effortName, modeHelp, liveStep, elapsedLabel} from '../public/support.mjs';
+import {EventDecoder, safeLink, markdown, parseActivity, summariseInput, groupMessages, activitySummary, statusLabel, relativeTime, editDraft, prepareDelivery, afterDelivery, promptPayload, blankLocalDraft, withAttachments, slashMatches, turnPlacement, agentsFrom, usableAgent, newChatAgent, resolveOptions, supportedOptions, highlight, diffLines, resetLabel, modelName, effortName, modeHelp, liveStep, elapsedLabel, modelSpeeds, speedName, effortLabel, weeklyLimit, headlineLimit, usageRings, nextCredit, resetAttempt, settleReset, resetPrompt, resetOutcomes, hashIndex, projectTone, projectTones, avatarLetter} from '../public/support.mjs';
 
 // A tiny DOM records writes. No browser or dependency is needed to assert the trust boundary.
 const fakeDoc = () => ({
@@ -105,7 +105,7 @@ test('draft delivery keeps an attempted id and its options, and sends the projec
   const changed = prepareDelivery(pending, 'different', {mode:'plan'});
   assert.notEqual(changed.id, pending.id);
   assert.deepEqual([changed.agent, changed.mode, changed.model, changed.effort], ['claude', 'plan', 'default', 'default']);
-  assert.deepEqual(promptPayload(pending, 'project-1'), {id: pending.id, text: 'hello!', agent:'codex', mode: 'auto', model: 'gpt-6-luna', effort: 'low', projectId: 'project-1'});
+  assert.deepEqual(promptPayload(pending, 'project-1'), {id: pending.id, text: 'hello!', agent:'codex', mode: 'auto', model: 'gpt-6-luna', effort: 'low', speed: null, projectId: 'project-1'});
   assert.equal('projectId' in promptPayload(pending), false);
   assert.notEqual(editDraft(pending, 'hello again').id, pending.id);
   assert.equal(editDraft(pending, 'hello!'), pending);
@@ -122,8 +122,8 @@ test('model catalogs resolve to concrete choices with real names', () => {
     {id:'haiku', name:'Haiku 4.5', efforts:[], defaultEffort:'default'}]};
   const codex = {id:'codex', name:'Codex', available:true, modes:['bypassPermissions', 'auto', 'readOnly'], defaultModel:'gpt-6-astra', defaultEffort:'xhigh', models:[
     {id:'gpt-6-astra', name:'GPT-6-Astra', efforts:['low', 'medium', 'high', 'xhigh', 'ultra'], defaultEffort:'medium'}]};
-  assert.deepEqual(resolveOptions(claude), {agent:'claude', mode:'bypassPermissions', model:'opus', effort:'high'});
-  assert.deepEqual(resolveOptions(codex, {mode:'plan', model:'opus', effort:'max'}), {agent:'codex', mode:'readOnly', model:'gpt-6-astra', effort:'xhigh'});
+  assert.deepEqual(resolveOptions(claude), {agent:'claude', mode:'bypassPermissions', model:'opus', effort:'high', speed:null});
+  assert.deepEqual(resolveOptions(codex, {mode:'plan', model:'opus', effort:'max'}), {agent:'codex', mode:'readOnly', model:'gpt-6-astra', effort:'xhigh', speed:null});
   assert.equal(resolveOptions(claude, {mode:'readOnly'}).mode, 'plan');
   assert.equal(resolveOptions(codex, {mode:'acceptEdits'}).mode, 'auto');
   assert.equal(resolveOptions(codex, {mode:'default'}).mode, 'readOnly');
@@ -211,7 +211,7 @@ test('drafts carry images, attempted deliveries keep theirs, and steer or interr
   assert.equal(blankLocalDraft(withAttachments(undefined, [{id:'u1'}])), false);
   const sent = prepareDelivery(draft, 'look', {agent:'claude', mode:'auto'}, 'steer');
   assert.deepEqual(sent.attachments, [{id:'u1', type:'image/png'}]);
-  assert.deepEqual(promptPayload(sent), {id: sent.id, text:'look', agent:'claude', mode:'auto', model:'default', effort:'default', attachments:['u1'], delivery:'steer'});
+  assert.deepEqual(promptPayload(sent), {id: sent.id, text:'look', agent:'claude', mode:'auto', model:'default', effort:'default', speed:null, attachments:['u1'], delivery:'steer'});
   const changed = withAttachments(sent, []);
   assert.notEqual(changed.id, sent.id); assert.equal(changed.text, 'look'); assert.equal(changed.attempted, false);
   assert.deepEqual(editDraft(sent, 'look more').attachments, [{id:'u1', type:'image/png'}]);
@@ -261,4 +261,90 @@ test('a named tool result after a steer joins its command in the earlier group',
   assert.deepEqual(items.map(item => item.type), ['activity', 'message', 'activity']);
   assert.equal(items[0].steps[0].result.id, 'c2:result');
   assert.deepEqual(items[2].steps.map(step => step.id), ['f1']);
+});
+
+test('the speed tier comes from the catalog, follows the model and is fixed with the delivery id', () => {
+  const fast = {id:'priority', name:'Fast', description:'1.5x speed, increased usage'};
+  const codex = {id:'codex', name:'Codex', available:true, modes:['bypassPermissions', 'auto', 'readOnly'], defaultModel:'gpt-6-astra', defaultEffort:'medium', models:[
+    {id:'gpt-6-astra', name:'GPT-6-Astra', efforts:['low', 'medium'], defaultEffort:'medium', speeds:[fast]},
+    {id:'gpt-6-luna', name:'GPT-6-Luna', efforts:['low', 'medium'], defaultEffort:'medium', speeds:[]}]};
+  assert.equal(resolveOptions(codex, {model:'gpt-6-astra', speed:'priority'}).speed, 'priority');
+  // Switching to a model without the tier drops it; an unknown tier is never sent.
+  assert.equal(resolveOptions(codex, {model:'gpt-6-luna', speed:'priority'}).speed, null);
+  assert.equal(resolveOptions(codex, {model:'gpt-6-astra', speed:'warp'}).speed, null);
+  assert.equal(supportedOptions(codex, {agent:'codex', mode:'auto', model:'gpt-6-luna', effort:'low', speed:'priority'}).speed, null);
+  const kept = {agent:'codex', mode:'auto', model:'gpt-6-astra', effort:'low', speed:'priority'};
+  assert.equal(supportedOptions(codex, kept), kept);
+  assert.deepEqual(modelSpeeds(codex, 'gpt-6-astra'), [fast]);
+  assert.deepEqual(modelSpeeds(codex, 'gpt-6-luna'), []);
+  assert.equal(speedName(fast), 'Fast');
+  assert.equal(speedName({id:'priority', name:''}), 'Fast');
+  assert.equal(speedName({id:'turbo', name:'Turbo'}), 'Turbo');
+  assert.equal(effortLabel('ultra'), 'Ultra');
+  assert.equal(effortLabel('galactic'), 'Galactic');
+
+  const pending = prepareDelivery(editDraft(undefined, 'go'), 'go', kept, 'steer');
+  assert.equal(pending.speed, 'priority');
+  assert.equal(promptPayload(pending).speed, 'priority');
+  // A retry repeats the attempted delivery even if the toggle has since been turned off.
+  assert.equal(prepareDelivery(pending, 'go', {...kept, speed:null}, 'steer'), pending);
+  assert.equal(promptPayload(prepareDelivery(pending, 'go', {...kept, speed:null}, 'steer')).speed, 'priority');
+  // Standard speed is sent explicitly; a draft attempted before speeds existed leaves the chat's value alone.
+  assert.equal(promptPayload(prepareDelivery(undefined, 'x', {agent:'codex', mode:'auto'})).speed, null);
+  const legacy = {id:'d1', text:'x', agent:'codex', mode:'auto', model:'gpt-6-astra', effort:'low', attempted:true};
+  assert.equal('speed' in promptPayload(legacy), false);
+});
+
+test('the header shows each enabled agent\'s fullest weekly window', () => {
+  const claude = {id:'claude', name:'Claude', limits:[
+    {id:'session', label:'5-hour session', percent:80, window:'session'},
+    {id:'weekly_all', label:'Weekly', percent:61, window:'weekly'},
+    {id:'weekly_scoped:Fable', label:'Weekly · Fable', percent:12, window:'weekly'}]};
+  const codex = {id:'codex', name:'Codex', limits:[{id:'primary', label:'5-hour', percent:90, window:'session'}, {id:'secondary', label:'Weekly', percent:39, window:'weekly'}]};
+  const off = {id:'codex', name:'Codex', limits:[]};
+  assert.deepEqual(usageRings([claude, codex]).map(ring => [ring.id, ring.limit.percent]), [['claude', 61], ['codex', 39]]);
+  assert.deepEqual(usageRings([claude, off]).map(ring => ring.id), ['claude']);
+  // An older Mac has no window field: the label names the weekly window. No weekly window shows the fullest one.
+  assert.equal(weeklyLimit({id:'primary', label:'Weekly'}), true);
+  assert.equal(weeklyLimit({id:'weekly', label:'x', window:'other'}), false);
+  assert.equal(headlineLimit([{id:'a', label:'5-hour', percent:20}, {id:'b', label:'Monthly', percent:70}]).id, 'b');
+  assert.equal(headlineLimit([]), null);
+});
+
+test('Codex resets use the soonest-expiring credit and one idempotency key per attempt', () => {
+  const resets = {available:3, credits:[{id:'c-late', expiresAt:2000}, {id:'c-none', expiresAt:null}, {id:'c-soon', expiresAt:1000}]};
+  assert.equal(nextCredit(resets).id, 'c-soon');
+  assert.equal(nextCredit({available:0, credits:[]}), null);
+  assert.equal(nextCredit(null), null);
+  const attempt = resetAttempt(null, 'c-soon');
+  assert.match(attempt.id, /^[0-9a-f-]{36}$/);
+  assert.equal(attempt.creditId, 'c-soon');
+  // A lost answer or a timeout keeps the attempt, so the retry sends the same key.
+  for (const error of [new Error('timeout'), Object.assign(new Error('x'), {status:408}), Object.assign(new Error('x'), {status:504})]) {
+    const kept = settleReset(attempt, error);
+    assert.equal(kept, attempt);
+    assert.equal(resetAttempt(kept, 'c-late').id, attempt.id);
+  }
+  // A definite answer, success or refusal, ends it; the next reset is a new attempt with a new key.
+  assert.equal(settleReset(attempt, null), null);
+  assert.equal(settleReset(attempt, Object.assign(new Error('Codex is off'), {status:409})), null);
+  // Codex refusing (for example an unknown credit) comes back as a 502 with its message: that is an answer too.
+  assert.equal(settleReset(attempt, Object.assign(new Error('Unknown reset credit'), {status:502})), null);
+  assert.equal(settleReset(attempt, Object.assign(new Error('Internal service error'), {status:500})), null);
+  assert.notEqual(resetAttempt(null, 'c-soon').id, attempt.id);
+  assert.equal(resetPrompt(3), 'Use 1 of 3 resets? Resets your Codex limits now.');
+  assert.equal(resetPrompt(1), 'Use 1 of 1 reset? Resets your Codex limits now.');
+  assert.deepEqual(Object.keys(resetOutcomes), ['reset', 'nothingToReset', 'noCredit', 'alreadyRedeemed']);
+});
+
+test('project colours are stable, spread across the palette and letters fall back sensibly', () => {
+  const ids = Array.from({length: 64}, (_, index) => `project-${index}`);
+  assert.equal(projectTone('4b7929fa-9d59-41fd-9427-9b82d34a51a8'), projectTone('4b7929fa-9d59-41fd-9427-9b82d34a51a8'));
+  assert.ok(ids.every(id => projectTone(id) >= 0 && projectTone(id) < projectTones));
+  assert.ok(new Set(ids.map(projectTone)).size >= 6);
+  assert.equal(hashIndex('', 8), hashIndex('', 8));
+  assert.equal(avatarLetter('pocketBridge'), 'P');
+  assert.equal(avatarLetter('  _my app'), 'M');
+  assert.equal(avatarLetter('édition'), 'É');
+  assert.equal(avatarLetter(''), '?');
 });

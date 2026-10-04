@@ -6,9 +6,13 @@ The service runs your official Claude Code or Codex CLI in registered project fo
 
 Install Node.js 22.13 or newer, PNPM and the official Claude Code CLI. Run `claude` once in Terminal and sign in through Claude's own login. Codex is optional: install the official Codex CLI and run `codex login`. PocketBridge does not read or copy either CLI's credentials.
 
-Plan usage comes from the same place: Claude's `get_usage` request (5-hour session, weekly and per-model weekly limits) and Codex's `account/rateLimits/read` (its windows and credit balance). The service asks at most once a minute and again after a turn ends. The browser header shows the fullest limit; click it for all of them. Claude and Codex chats also show how full their context window was after the last turn.
+Plan usage comes from the same place: Claude's `get_usage` request (5-hour session, weekly and per-model weekly limits) and Codex's `account/rateLimits/read` (its windows, credit balance and banked limit resets). The service asks at most once a minute and again after a turn ends. A banked Codex reset can be used from the usage sheet after a confirmation; it goes through Codex's own `account/rateLimitResetCredit/consume`, and a retried attempt cannot use a second one. The browser header shows the fullest limit; click it for all of them. Claude and Codex chats also show how full their context window was after the last turn.
 
-Model lists come from each CLI on this Mac. Claude's comes from its stream-json `initialize` handshake and Codex's from `codex app-server`. Neither call starts a turn or uses your quota. The service asks at startup and every 30 minutes, and keeps the last list it got.
+Model lists come from each CLI on this Mac. Claude's comes from its stream-json `initialize` handshake and Codex's from `codex app-server`, including each Codex model's speed tiers (Fast). Neither call starts a turn or uses your quota. The service asks at startup and every 30 minutes, and keeps the last list it got.
+
+Each agent uses the newest CLI installed on this Mac. For Claude that is the configured `claudePath` or `claude` on PATH. For Codex it also checks the copy inside the ChatGPT or Codex app (`/Applications/ChatGPT.app/Contents/Resources/codex-cli/bin/codex`), which often updates before a separately installed `codex`. The service compares `--version` at startup and with each model list refresh, so a CLI update and its new models appear on their own. Settings show the version in use.
+
+Projects show their own logo when the folder has one: a favicon, logo or app icon in the usual places, an Android launcher icon or an Xcode app icon. The service looks in the background, never follows symlinks out of the folder, converts ICO, ICNS and SVG to PNG with macOS's `sips` and Quick Look, and keeps a small copy in its data folder.
 
 From `mac/`, run `pnpm install`. Double-click `launcher/PocketBridge.command` to start the service and open the local browser client. Claude Code and Codex each have an on/off switch, in the browser sidebar under Agents and in the phone's Settings. Turn off the one you don't pay for: it stops being offered for new chats, its usage and model checks stop, and its folders are no longer discovered. Its chats stay readable and continue once it's back on.
 
@@ -16,7 +20,7 @@ Paste, drop or pick screenshots into the message box; they upload at once (large
 
 Register a folder, create a chat and send a prompt. Model, effort and permission mode sit under the message box. A new chat can switch between Claude and Codex until its first prompt. Bypass permissions is the default. Claude's Auto depends on your installed Claude configuration. Codex offers Bypass permissions, Auto (writes only inside the project folder, never asks) and Read only. Changing a mode never silently falls back to another mode.
 
-The launcher uses your installed Node executable. Installing startup records absolute executable paths for Node, Claude and Codex, so launchd does not depend on an interactive shell or an open Terminal window. If you install Codex after startup, add `codexPath` to `config.json` or run the installer again.
+The launcher uses your installed Node executable. Installing startup records absolute executable paths for Node, Claude and Codex, so launchd does not depend on an interactive shell or an open Terminal window. If you install Codex after startup, add `codexPath` to `config.json` or run the installer again. The Codex app's bundled CLI is found without either.
 
 When rebuilding from source, copy `android/app/build/outputs/apk/release/app-release.apk` to `mac/public/PocketBridge.apk` to enable the built-in phone download link. Use the personal signing key described in the root README; the installed build already includes the signed APK.
 
@@ -67,7 +71,7 @@ The app wraps an unmodified official CLI. It does not guarantee Anthropic's appr
 
 ## Checks
 
-Run the 61 service and browser-helper tests with `pnpm test` from `mac/`. They use fake Claude and Codex CLIs and never touch your real installs. Browser stream parsing and safe text formatting checks are also available directly:
+Run the 73 service and browser-helper tests with `pnpm test` from `mac/`. They use fake Claude and Codex CLIs and never touch your real installs: only the CLI paths a test names are asked for their version, and a banked Codex reset is only ever redeemed against the fake. Browser stream parsing and safe text formatting checks are also available directly:
 
 ```sh
 node --test mac/scripts/*.test.mjs

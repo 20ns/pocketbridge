@@ -156,4 +156,66 @@ class AgentsTest {
         cache.clear()
         assertFalse(dir.exists())
     }
+
+    private val fastCatalog = parseAgents(JSONObject("""
+        {"agents":[{"id":"codex","name":"Codex","available":true,"version":"0.130.0","modes":["bypassPermissions","auto","readOnly"],"defaultModel":"gpt-6-astra","defaultEffort":"high","models":[
+          {"id":"gpt-6-astra","name":"GPT-6-Astra","efforts":["low","high"],"defaultEffort":"high","speeds":[{"id":"priority","name":"Fast","description":"1.5x speed, increased usage"}]},
+          {"id":"gpt-6-luna","name":"GPT-6-Luna","efforts":["low"],"defaultEffort":"low","speeds":[]}]},
+         {"id":"claude","name":"Claude","available":true,"modes":["bypassPermissions"],"defaultModel":"opus","defaultEffort":"high","models":[{"id":"opus","name":"Opus 5.5","efforts":["high"],"defaultEffort":"high","speeds":[]}]}]}
+    """))
+    private val fastCodex = fastCatalog.first { it.id == CODEX }
+
+    @Test fun `speeds come from the catalog with their own names`() {
+        val astra = fastCodex.model("gpt-6-astra")!!
+        assertEquals(listOf(SpeedInfo("priority", "Fast", "1.5x speed, increased usage")), astra.speeds)
+        assertTrue(fastCodex.model("gpt-6-luna")!!.speeds.isEmpty())
+        assertEquals("0.130.0", fastCodex.version)
+        assertEquals("", claude.version)
+        assertTrue(claude.models.all { it.speeds.isEmpty() })
+        // A catalog entry without a name still reads as a word, never a raw tier id.
+        val unnamed = parseAgents(JSONObject("""{"agents":[{"id":"codex","models":[{"id":"m","name":"M","speeds":[{"id":"priority"}]}]}]}"""))
+        assertEquals("Fast", unnamed.single().models.single().speeds.single().name)
+    }
+
+    @Test fun `speed carries over only to models that offer it`() {
+        val fast = ChatOptions("bypassPermissions", "gpt-6-astra", "high", CODEX, "priority")
+        assertEquals("priority", resolveOptions(fastCodex, fast).speed)
+        assertNull(resolveOptions(fastCodex, fast.copy(model = "gpt-6-luna")).speed)
+        assertNull(resolveOptions(fastCatalog.first { it.id == CLAUDE }, fast.copy(agent = CLAUDE, model = "opus")).speed)
+        assertNull(resolveOptions(fastCodex, fast.copy(speed = "turbo")).speed)
+        // Saved options drop a speed the model no longer lists; the Mac would refuse it.
+        assertNull(supportedOptions(fastCodex, fast.copy(model = "gpt-6-luna", effort = "low")).speed)
+        assertEquals("priority", supportedOptions(fastCodex, fast).speed)
+        // Unknown catalog: keep what was chosen.
+        assertEquals("priority", supportedOptions(null, fast).speed)
+    }
+
+    @Test fun `last used options, drafts and chats remember speed`() {
+        val fast = ChatOptions("auto", "gpt-6-astra", "high", CODEX, "priority")
+        assertEquals(fast, ChatOptions.parse(fast.store()))
+        assertEquals(fast.copy(speed = null), ChatOptions.parse(fast.copy(speed = null).store()))
+        assertTrue(JSONObject(fast.copy(speed = null).store()).isNull("speed"))
+        // Options saved before 0.7 have no speed.
+        assertNull(ChatOptions.parse("""{"agent":"codex","mode":"auto","model":"gpt-6-astra","effort":"high"}""").speed)
+        val draft = DraftChat.of("chat", "project", fast, 5)
+        assertEquals(draft, DraftChat.parse("chat", draft.store()))
+        assertEquals(fast, draft.options)
+        assertEquals("priority", chatOptions(draft.json()).speed)
+        // The Mac reports standard as null, which is not the word "null".
+        assertNull(chatOptions(JSONObject("""{"agent":"codex","speed":null}""")).speed)
+        // A new chat starts from the last options used with that agent.
+        assertEquals(fast, resolveOptions(fastCodex, ChatOptions.parse(fast.store())))
+    }
+
+    @Test fun `a prompt's speed is part of its immutable delivery record`() {
+        val prompt = PendingPrompt("id", "go", "auto", "gpt-6-astra", "high", "project", CODEX, speed = "priority")
+        assertEquals("priority", prompt.json().getString("speed"))
+        assertEquals(prompt, PendingPrompt.parse(prompt.json().toString()))
+        assertEquals("priority", prompt.options.speed)
+        // Standard is sent explicitly, so a retry never adopts a speed chosen later.
+        val standard = prompt.copy(speed = null)
+        assertTrue(standard.json().has("speed") && standard.json().isNull("speed"))
+        assertNull(PendingPrompt.parse(standard.json().toString()).speed)
+        assertNull(PendingPrompt.parse("""{"id":"old","text":"hi"}""").speed)
+    }
 }

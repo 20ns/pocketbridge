@@ -30,9 +30,9 @@ Pairing should persist. The Mac keeps working when the phone disconnects or clos
   wholesale; the owner can explicitly continue one, which forks it and copies only its last exchange.
 - New chats stay local drafts until their first prompt. Preserve agent, model, effort and
   permission mode with the immutable delivery ID. Deleted chats cannot be recreated by a retry.
-- Show real model names from the catalog. Model, effort and mode sit in the composer, not a
+- Show real model names from the catalog, pulled from the newest installed CLI; never hard-code model or tier lists. Model, effort and mode sit in the composer, not a
   separate panel. New chats start from the last options used with that agent.
-- Navigation is the system back gesture. No back buttons or "back to" labels.
+- Navigation uses the system back gesture plus a back arrow in the top bar. A chat shows its project folder under its title.
 - A prompt sent while a turn runs steers it by default; "send now" interrupts and runs next.
 - Keep this a simple chat controller. A compact git branch and line count is fine; diffs,
   code review and IDE features are outside scope.

@@ -272,8 +272,17 @@ export function resolveOptions(agent, wanted = {}) {
     : info.efforts.includes(wanted.effort) ? wanted.effort
     : model === agent.defaultModel && info.efforts.includes(agent.defaultEffort) ? agent.defaultEffort
     : info.defaultEffort;
-  return {agent: agent.id, mode: equivalentMode(wanted.mode, agent.modes), model, effort};
+  return {agent: agent.id, mode: equivalentMode(wanted.mode, agent.modes), model, effort, speed: offeredSpeed(info, wanted.speed)};
 }
+
+/** A speed tier (Codex "Fast") the model offers, else null for standard. Without a catalog entry the choice stands. */
+function offeredSpeed(info, speed) {
+  if (!info) return speed ?? null;
+  return (info.speeds ?? []).some(item => item.id === speed) ? speed : null;
+}
+export const modelSpeeds = (agent, model) => findModel(agent, model)?.speeds ?? [];
+/** The catalog's name for a speed; "Fast" only as a fallback for a nameless priority tier. */
+export const speedName = speed => speed?.name || (speed?.id === 'priority' ? 'Fast' : speed?.id ?? '');
 
 // Moving a chat between agents never widens what it may do: Plan and Read only map to each other, Accept edits to
 // Auto, Manual to Read only, and anything else unknown to the most restrictive mode on offer.
@@ -290,12 +299,15 @@ export function equivalentMode(mode, modes) {
 /** Saved options with an effort the model doesn't list (chats from older clients) send the model's own default. */
 export function supportedOptions(agent, options) {
   const info = findModel(agent, options.model);
-  if (!info || options.effort === 'default' || info.efforts.includes(options.effort)) return options;
-  return {...options, effort: info.efforts.length ? info.defaultEffort : 'default'};
+  const speed = offeredSpeed(info, options.speed);
+  if (!info || options.effort === 'default' || info.efforts.includes(options.effort)) return speed === (options.speed ?? null) ? options : {...options, speed};
+  return {...options, effort: info.efforts.length ? info.defaultEffort : 'default', speed};
 }
 
 export const modeLabels = {bypassPermissions:'Bypass permissions', auto:'Auto', acceptEdits:'Accept edits', plan:'Plan', default:'Manual', readOnly:'Read only'};
 export const effortLabels = {default:'Auto', minimal:'Minimal', low:'Low', medium:'Medium', high:'High', xhigh:'Extra high', max:'Max', ultra:'Ultra'};
+/** Display names for effort ids; an id the labels don't know yet is shown capitalised. */
+export const effortLabel = effort => effortLabels[effort] ?? (effort ? effort[0].toUpperCase() + effort.slice(1) : '');
 export function modeHelp(agent, mode) {
   return {
     bypassPermissions: agent === 'codex' ? 'No sandbox and no prompts.' : 'Runs commands and edits files without asking.',
@@ -309,10 +321,10 @@ export function modeHelp(agent, mode) {
 /** "Default" is never shown: an unlisted default is the catalog's first model, else the agent itself. */
 export const modelName = (agent, id) => findModel(agent, id)?.name ?? (id === 'default' ? agent?.models?.[0]?.name ?? agent?.name ?? 'Claude' : id);
 export function effortName(agent, model, effort) {
-  if (effort !== 'default') return effortLabels[effort] ?? effort;
+  if (effort !== 'default') return effortLabel(effort);
   const info = findModel(agent, model);
   if (!info?.efforts.length) return 'Auto';
-  if (info.efforts.includes(agent.defaultEffort)) return effortLabels[agent.defaultEffort] ?? agent.defaultEffort;
+  if (info.efforts.includes(agent.defaultEffort)) return effortLabel(agent.defaultEffort);
   return effortLabels[info.defaultEffort] ?? 'Auto';
 }
 
@@ -349,15 +361,18 @@ export function blankLocalDraft(draft) {
 }
 
 // A retry keeps its id only for the same text and delivery: the Mac rejects a recorded id sent with other content.
+// The options, speed included, are fixed with the id, so a retry repeats exactly what was first sent.
 export function prepareDelivery(draft, text, options = {}, delivery = null) {
   if (draft?.attempted && draft.text === text && (draft.delivery ?? null) === delivery) return draft;
   const id = draft && !draft.attempted ? draft.id : crypto.randomUUID();
   const attachments = (draft?.attachments ?? []).filter(item => item.id).map(({id: uploadId, type}) => ({id: uploadId, type}));
-  return {...(draft?.projectId ? {projectId: draft.projectId} : {}), text, id, agent: options.agent ?? 'claude', mode: options.mode ?? 'bypassPermissions', model: options.model || 'default', effort: options.effort || 'default', attachments, ...(delivery ? {delivery} : {}), attempted: true};
+  return {...(draft?.projectId ? {projectId: draft.projectId} : {}), text, id, agent: options.agent ?? 'claude', mode: options.mode ?? 'bypassPermissions', model: options.model || 'default', effort: options.effort || 'default', speed: options.speed ?? null, attachments, ...(delivery ? {delivery} : {}), attempted: true};
 }
 
 export function promptPayload(draft, projectId) {
   const body = {id: draft.id, text: String(draft.text ?? '').trim(), agent: draft.agent ?? 'claude', mode: draft.mode, model: draft.model || 'default', effort: draft.effort || 'default'};
+  // Drafts attempted before speeds existed omit it, which keeps the chat's own value.
+  if (draft.speed !== undefined) body.speed = draft.speed;
   if (draft.attachments?.length) body.attachments = draft.attachments.map(item => item.id);
   if (draft.delivery) body.delivery = draft.delivery;
   if (projectId) body.projectId = projectId;
@@ -402,3 +417,36 @@ export function resetLabel(resetsAt, now = Date.now(), locale = undefined) {
   const day = minutes < 7 * 24 * 60 ? date.toLocaleDateString(locale, {weekday:'short'}) : date.toLocaleDateString(locale, {month:'short', day:'numeric'});
   return `Resets ${day} ${date.toLocaleTimeString(locale, {hour:'numeric', minute:'2-digit'})}`;
 }
+
+/** Weekly windows from the Mac's window field; an older Mac only names them. */
+export const weeklyLimit = limit => limit.window ? limit.window === 'weekly' : /week/i.test(`${limit.id} ${limit.label}`);
+/** The limit a header ring shows for an agent: its fullest weekly window, else its fullest limit. */
+export function headlineLimit(limits = []) {
+  const weekly = limits.filter(weeklyLimit);
+  return [...(weekly.length ? weekly : limits)].sort((a, b) => b.percent - a.percent)[0] ?? null;
+}
+/** One ring per agent that reports limits; an agent that is off reports none. */
+export const usageRings = agentsUsage => agentsUsage.filter(agent => agent.limits?.length).map(agent => ({id: agent.id, name: agent.name, limit: headlineLimit(agent.limits)}));
+
+/** Codex reset credits: the one expiring soonest is used first. */
+export function nextCredit(resets) {
+  const credits = [...(resets?.credits ?? [])];
+  return credits.sort((a, b) => (a.expiresAt ?? Infinity) - (b.expiresAt ?? Infinity))[0] ?? null;
+}
+/** One idempotency key per attempt: a retry after a lost answer reuses the pending attempt and its key. */
+export const resetAttempt = (pending, creditId = null) => pending ?? {id: crypto.randomUUID(), creditId};
+/** Only an unknown result (no answer, a timeout or a gateway timeout) keeps the attempt for a retry with the same key.
+ * Any other answer, including Codex refusing with a 502, is definite: the attempt ends and the next one gets a new key. */
+export const settleReset = (pending, error) => error && (error.status === undefined || error.status === 408 || error.status === 504) ? pending : null;
+export const resetPrompt = available => `Use 1 of ${available} ${available === 1 ? 'reset' : 'resets'}? Resets your Codex limits now.`;
+export const resetOutcomes = {reset: 'Codex limits reset.', nothingToReset: 'Nothing to reset. No reset was used.', noCredit: 'No resets left.', alreadyRedeemed: 'That reset was already used.'};
+
+/** A stable palette slot for an id (FNV-1a), so a project keeps its colour everywhere. */
+export function hashIndex(text, size) {
+  let hash = 0x811c9dc5;
+  for (const char of String(text)) hash = Math.imul((hash ^ char.codePointAt(0)) >>> 0, 0x01000193) >>> 0;
+  return hash % size;
+}
+export const projectTones = 8;
+export const projectTone = id => hashIndex(id, projectTones);
+export const avatarLetter = name => (/[\p{L}\p{N}]/u.exec(name ?? '')?.[0] ?? '?').toUpperCase();

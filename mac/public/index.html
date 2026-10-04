@@ -6,6 +6,13 @@
   <meta name="color-scheme" content="light dark">
   <title>PocketBridge</title>
   <link rel="stylesheet" href="/style.css">
+  <link rel="modulepreload" href="/support.mjs">
+  <link rel="modulepreload" href="/core.mjs">
+  <link rel="modulepreload" href="/sidebar.mjs">
+  <link rel="modulepreload" href="/conversation.mjs">
+  <link rel="modulepreload" href="/composer.mjs">
+  <link rel="modulepreload" href="/usage.mjs">
+  <link rel="modulepreload" href="/pairing.mjs">
   <script type="module" src="/app.mjs"></script>
 </head>
 <body>
@@ -14,7 +21,7 @@
     <a class="brand" href="/" aria-label="PocketBridge home"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 17V7a3 3 0 0 1 3-3h4M20 7v10a3 3 0 0 1-3 3h-4M8 12h8m-3-3 3 3-3 3"/></svg><span>PocketBridge</span></a>
     <div class="header-actions">
       <span id="connection" class="connection" data-state="connecting" role="status"><span class="dot" aria-hidden="true"></span><span id="connection-text">Connecting to Mac…</span></span>
-      <button id="usage-toggle" class="quiet usage-toggle" popovertarget="usage-panel" aria-label="Plan usage" hidden><span class="usage-meter" aria-hidden="true"><span id="usage-fill"></span></span><span id="usage-summary">Usage</span></button>
+      <button id="usage-toggle" class="quiet usage-toggle" popovertarget="usage-panel" aria-label="Plan usage" hidden></button>
       <button id="settings-toggle" class="quiet" aria-haspopup="dialog" aria-expanded="false" aria-controls="settings"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="7" y="3" width="10" height="18" rx="2.5"/><path d="M11 17.5h2"/></svg><span class="button-text">Connect phone</span></button>
     </div>
   </header>
@@ -68,7 +75,7 @@
         <button type="submit">Register project</button>
       </form>
       <label class="sr-only" for="project-select">Project</label>
-      <select id="project-select" disabled><option value="">Loading projects…</option></select>
+      <div class="project-picker"><span id="project-avatar" class="avatar medium" hidden></span><select id="project-select" disabled><option value="">Loading projects…</option></select></div>
       <button id="new-chat" class="new-chat" disabled><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>New chat</button>
       <div id="sessions" class="sessions" hidden>
         <div class="section-title sessions-heading"><h2>On this Mac</h2></div>
@@ -87,6 +94,7 @@
         <div class="chat-heading">
           <h1 id="chat-title">Your Mac, from anywhere</h1>
           <form id="rename-form" class="rename-form" hidden><label class="sr-only" for="rename-input">Chat name</label><input id="rename-input" maxlength="160" autocomplete="off"></form>
+          <p id="chat-folder" class="chat-folder" hidden></p>
           <p id="chat-meta" class="chat-meta">Choose a project to start a chat.</p>
         </div>
         <div class="chat-actions">
@@ -113,6 +121,8 @@
               <input id="file" type="file" accept="image/png,image/jpeg,image/webp,image/gif" multiple hidden>
               <label class="sr-only" for="model">Model</label><select id="model" class="pill" disabled></select>
               <label class="sr-only" for="effort">Effort</label><select id="effort" class="pill" disabled></select>
+              <button id="speed" class="pill speed" type="button" aria-pressed="false" disabled hidden><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M13 3 5 14h6l-1 7 8-11h-6z"/></svg><span id="speed-label"></span></button>
+              <select id="speed-select" class="pill" aria-label="Speed" disabled hidden></select>
               <label class="sr-only" for="mode">Permissions</label><select id="mode" class="pill" disabled></select>
             </div>
             <div class="composer-actions">

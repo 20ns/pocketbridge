@@ -1,7 +1,9 @@
 #!/usr/bin/env node
-// Test double for the official Codex CLI app-server: catalogs, usage, skills and session lists, and scripted turns
-// with streaming replies, tools, sub-agents, steering, interrupts and image input.
-import { appendFileSync, writeFileSync } from 'node:fs';
+// Test double for the official Codex CLI app-server: catalogs with speed tiers, usage with banked resets and their
+// redemption, skills and session lists, and scripted turns with streaming replies, tools, sub-agents, steering,
+// interrupts and image input. FAKE_CODEX_VERSION makes a newer copy that also lists gpt-test-nova;
+// FAKE_CODEX_LIST_DELAY_MS makes model/list slow.
+import { appendFileSync, writeFileSync, readFileSync } from 'node:fs';
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { createInterface } from 'node:readline';
@@ -9,10 +11,22 @@ const args = process.argv.slice(2);
 const emit = event => process.stdout.write(JSON.stringify(event) + '\n');
 const note = (method, params) => emit({ method, params });
 const sleep = ms => new Promise(r => setTimeout(r, ms));
-if (args.includes('--version')) { console.log('codex-cli test'); process.exit(0); }
+const version = process.env.FAKE_CODEX_VERSION ?? '0.150.0';
+if (args.includes('--version')) { console.log(`codex-cli ${version}`); process.exit(0); }
 if (args[0] !== 'app-server') { console.error('fake codex only speaks app-server'); process.exit(2); }
 const efforts = ['low', 'medium', 'high', 'xhigh', 'max', 'ultra'].map(reasoningEffort => ({ reasoningEffort, description: reasoningEffort }));
-const log = entry => appendFileSync('codex-calls.ndjson', JSON.stringify(entry) + '\n');
+const log = entry => appendFileSync('codex-calls.ndjson', JSON.stringify({ ...entry, version }) + '\n');
+const fast = [{ id: 'priority', name: 'Fast', description: '1.5x speed, increased usage' }];
+// Banked resets and per-thread speed tiers outlive one app-server process, as they do for the real account and threads.
+const load = (file, fallback) => { try { return JSON.parse(readFileSync(file, 'utf8')); } catch { return fallback; } };
+const resetsFile = 'codex-resets.json', threadsFile = 'codex-threads.json';
+const resets = () => load(resetsFile, { reset: false, keys: {}, credits: [
+  { id: 'credit-a', resetType: 'codexRateLimits', status: 'available', grantedAt: 1790000000, expiresAt: 1792702115, title: 'Full reset', description: 'One free rate limit reset.' },
+  { id: 'credit-b', resetType: 'codexRateLimits', status: 'available', grantedAt: 1790100000, expiresAt: null, title: null, description: null },
+  { id: 'credit-old', resetType: 'codexRateLimits', status: 'redeemed', grantedAt: 1780000000, expiresAt: null, title: 'Used', description: null },
+] });
+const tiers = () => load(threadsFile, {});
+const saveTier = (threadId, tier) => writeFileSync(threadsFile, JSON.stringify({ ...tiers(), [threadId]: tier ?? null }));
 let thread = null, turn = null;
 const item = (id, type, fields) => ({ id, type, ...fields });
 async function runTurn(threadId, input, turnId) {
@@ -83,13 +97,31 @@ for await (const line of createInterface({ input: process.stdin })) {
   const params = message.params ?? {};
   switch (message.method) {
     case 'initialize': reply({ userAgent: 'fake' }); break;
-    case 'model/list': reply({ data: [
-      { id: 'gpt-test-astra', model: 'gpt-test-astra', displayName: 'GPT-Test-Astra', description: 'Frontier', hidden: false, isDefault: true, defaultReasoningEffort: 'medium', supportedReasoningEfforts: efforts },
+    case 'model/list': setTimeout(reply, Number(process.env.FAKE_CODEX_LIST_DELAY_MS ?? 0), { data: [
+      ...(process.env.FAKE_CODEX_VERSION ? [{ id: 'gpt-test-nova', model: 'gpt-test-nova', displayName: 'GPT-Test-Nova', description: 'Newest', hidden: false, isDefault: false, defaultReasoningEffort: 'medium', supportedReasoningEfforts: efforts, serviceTiers: fast, additionalSpeedTiers: ['fast'] }] : []),
+      { id: 'gpt-test-astra', model: 'gpt-test-astra', displayName: 'GPT-Test-Astra', description: 'Frontier', hidden: false, isDefault: true, defaultReasoningEffort: 'medium', supportedReasoningEfforts: efforts, serviceTiers: fast, additionalSpeedTiers: ['fast'] },
       { id: 'gpt-test-luna', model: 'gpt-test-luna', displayName: 'GPT-Test-Luna', description: 'Fast', hidden: false, isDefault: false, defaultReasoningEffort: 'low', supportedReasoningEfforts: efforts.slice(0, 3) },
       { id: 'gpt-hidden', model: 'gpt-hidden', displayName: 'Hidden', description: '', hidden: true, isDefault: false, defaultReasoningEffort: 'low', supportedReasoningEfforts: efforts },
     ], nextCursor: null }); break;
     case 'config/read': reply({ config: { model: 'not-listed', model_reasoning_effort: 'xhigh' } }); break;
-    case 'account/rateLimits/read': reply({ rateLimits: { planType: 'prolite', primary: { usedPercent: 39, windowDurationMins: 10080, resetsAt: 1791580292 }, secondary: { usedPercent: 92, windowDurationMins: 300, resetsAt: 1791000000 }, credits: { hasCredits: true, unlimited: false, balance: '2353.7232000000' } } }); break;
+    case 'account/rateLimits/read': {
+      const banked = resets(), available = banked.credits.filter(credit => credit.status === 'available');
+      reply({ rateLimits: { planType: 'prolite', primary: { usedPercent: banked.reset ? 0 : 39, windowDurationMins: 10080, resetsAt: 1791580292 }, secondary: { usedPercent: banked.reset ? 0 : 92, windowDurationMins: 300, resetsAt: 1791000000 }, credits: { hasCredits: true, unlimited: false, balance: '2353.7232000000' } },
+        rateLimitResetCredits: { availableCount: available.length, credits: banked.credits } });
+      break;
+    }
+    case 'account/rateLimitResetCredit/consume': {
+      log({ method: message.method, params });
+      const banked = resets(), key = params.idempotencyKey;
+      if (typeof key !== 'string' || !key) { emit({ id: message.id, error: { code: -32602, message: 'idempotencyKey is required' } }); break; }
+      if (params.creditId && params.creditId !== 'nothing' && !banked.credits.some(credit => credit.id === params.creditId)) { emit({ id: message.id, error: { code: -32600, message: 'Unknown reset credit' } }); break; }
+      let outcome = banked.keys[key] ? 'alreadyRedeemed' : null;
+      const credit = banked.credits.find(item => item.status === 'available' && (!params.creditId || item.id === params.creditId));
+      if (!outcome) outcome = params.creditId === 'nothing' ? 'nothingToReset' : credit ? 'reset' : 'noCredit';
+      if (outcome === 'reset') { credit.status = 'redeemed'; banked.reset = true; banked.keys[key] = credit.id; }
+      writeFileSync(resetsFile, JSON.stringify(banked));
+      reply({ outcome }); break;
+    }
     case 'skills/list': reply({ data: [{ cwd: params.cwds?.[0], errors: [], skills: [{ name: 'ship-it', description: 'Long description', shortDescription: 'Ship the build', path: '/skills/ship-it/SKILL.md', enabled: true, scope: 'repo' }, { name: 'off', description: 'Disabled', path: '/skills/off', enabled: false, scope: 'repo' }, { name: 'ship-it', description: 'User copy', path: '/user/ship-it/SKILL.md', enabled: true, scope: 'user' }] }] }); break;
     case 'thread/list': reply({ data: [
       { id: 'codex-thread-1', name: 'Fix the login page', preview: 'Make the login page load faster', updatedAt: 1791000000, cwd: params.cwd, threadSource: 'user' },
@@ -104,9 +136,10 @@ for await (const line of createInterface({ input: process.stdin })) {
     case 'thread/start': case 'thread/resume': case 'thread/fork':
       thread = message.method === 'thread/resume' ? params.threadId : randomUUID();
       log({ method: message.method, params });
-      reply({ thread: { id: thread } }); break;
+      reply({ thread: { id: thread }, serviceTier: tiers()[thread] ?? null }); break;
     case 'turn/start':
       log({ method: 'turn/start', params });
+      if ('serviceTier' in params) saveTier(params.threadId, params.serviceTier);
       { const turnId = randomUUID(); reply({ turn: { id: turnId, status: 'inProgress' } }); runTurn(params.threadId, params.input ?? [], turnId); }
       break;
     case 'turn/steer':

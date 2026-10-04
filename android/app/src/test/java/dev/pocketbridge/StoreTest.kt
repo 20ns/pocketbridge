@@ -57,6 +57,25 @@ class StoreTest {
         assertEquals("", store.get("attachments:chat"))
     }
 
+    @Test fun `a late reset answer clears only its own attempt in its own pairing`() {
+        val store = Store(Preferences().value)
+        val first = ResetAttempt("key-1", "c1")
+        val session = store.session()
+        store.commit("codexReset", first.store(), session)
+        // A newer attempt replaced it: the old answer leaves the new key in place.
+        store.commit("codexReset", ResetAttempt("key-2", "c1").store(), session)
+        store.removeIfSame("codexReset", first.store(), session)
+        assertEquals("key-2", ResetAttempt.parse(store.get("codexReset"))?.id)
+        // After re-pairing, an answer from the old pairing touches nothing.
+        store.clear()
+        val next = ResetAttempt("key-3", null)
+        store.commit("codexReset", next.store(), store.session())
+        store.removeIfSame("codexReset", next.store(), session)
+        assertEquals(next, ResetAttempt.parse(store.get("codexReset")))
+        store.removeIfSame("codexReset", next.store(), store.session())
+        assertEquals("", store.get("codexReset"))
+    }
+
     @Test fun `old requests cannot write delivery state after disconnect`() {
         val store = Store(Preferences().value)
         val session = store.session()

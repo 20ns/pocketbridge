@@ -1,7 +1,8 @@
 import test from 'node:test';
 import http from 'node:http';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, rmSync, readFileSync, existsSync, writeFileSync, utimesSync, statSync, realpathSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, rmSync, readFileSync, existsSync, writeFileSync, utimesSync, statSync, realpathSync, symlinkSync } from 'node:fs';
+import { deflateSync, crc32 } from 'node:zlib';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -9,19 +10,21 @@ import { DatabaseSync } from 'node:sqlite';
 import { randomUUID } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { createService } from './server.mjs';
+import { newestCli, compareVersions } from './agents.mjs';
+import { findIcons, measure, renderIcon } from './icons.mjs';
 const here = dirname(fileURLToPath(import.meta.url));
 const wait = async predicate => {
   const end = Date.now() + 4000;
   while (Date.now() < end) { const result = await predicate(); if (result) return result; await new Promise(r => setTimeout(r, 20)); }
   throw new Error('Condition did not complete');
 };
-async function fixture(t) {
+async function fixture(t, extra = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'pocketbridge-'));
   const projectPath = join(dir, 'project'); mkdirSync(projectPath);
   const claudeProjectsDir = join(dir, 'claude-projects'); mkdirSync(claudeProjectsDir);
   const codexSessionsDir = join(dir, 'codex-sessions');
   const opened = [];
-  const options = () => ({ openUrl: async url => { opened.push(url); return true; }, port: 0, dataDir: join(dir, 'data'), claudePath: join(here, 'fake-claude.mjs'), codexPath: join(here, 'fake-codex.mjs'), codexSessionsDir, stopTimeoutMs: 50, claudeProjectsDir, discoverIntervalMs: 60_000, writtenGraceMs: 400 });
+  const options = () => ({ openUrl: async url => { opened.push(url); return true; }, port: 0, dataDir: join(dir, 'data'), claudePath: join(here, 'fake-claude.mjs'), codexPath: join(here, 'fake-codex.mjs'), codexSessionsDir, stopTimeoutMs: 50, claudeProjectsDir, discoverIntervalMs: 60_000, writtenGraceMs: 400, ...extra });
   let service = await createService(options()); await service.ready;
   t.after(async () => { await service.close(); rmSync(dir, { recursive: true, force: true }); });
   let token = (await (await fetch(service.url + '/api/local-session')).json()).token;
@@ -929,4 +932,264 @@ test('a finished Claude chat opens in Claude Desktop through its resume link; ot
   await turnWith(f, codexChat, 'hello', { agent: 'codex', projectId: project.id }); await f.finished({ id: codexChat });
   assert.equal((await f.request(`/api/chats/${codexChat}/desktop`, {})).status, 409);
   assert.equal(f.opened.length, 1);
+});
+
+const pngOf = (width, height) => {
+  const chunk = (type, data) => { const length = Buffer.alloc(4); length.writeUInt32BE(data.length); const body = Buffer.concat([Buffer.from(type), data]); const crc = Buffer.alloc(4); crc.writeUInt32BE(crc32(body)); return Buffer.concat([length, body, crc]); };
+  const header = Buffer.alloc(13); header.writeUInt32BE(width, 0); header.writeUInt32BE(height, 4); header[8] = 8; header[9] = 6;
+  const row = Buffer.alloc(1 + width * 4); for (let x = 0; x < width; x++) { row[1 + x * 4] = 200; row[4 + x * 4] = 255; }
+  return Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), chunk('IHDR', header), chunk('IDAT', deflateSync(Buffer.concat(Array(height).fill(row)))), chunk('IEND', Buffer.alloc(0))]);
+};
+/** A Vista-style ICO holding one PNG image. */
+const icoOf = image => {
+  const header = Buffer.alloc(22), side = image.readUInt32BE(16); header.writeUInt16LE(1, 2); header.writeUInt16LE(1, 4);
+  header[6] = side >= 256 ? 0 : side; header[7] = side >= 256 ? 0 : side; header.writeUInt16LE(1, 10); header.writeUInt16LE(32, 12); header.writeUInt32LE(image.length, 14); header.writeUInt32LE(22, 18);
+  return Buffer.concat([header, image]);
+};
+/** A copy of the fake Codex CLI that reports another version, read from a file so a test can "update" it in place. */
+const fakeCodexCopy = (dir, name, version, env = {}) => {
+  const path = join(dir, name), versionFile = join(dir, `${name}.version`);
+  writeFileSync(versionFile, version);
+  writeFileSync(path, `#!/usr/bin/env node\nObject.assign(process.env, ${JSON.stringify(env)});\nprocess.env.FAKE_CODEX_VERSION = require('node:fs').readFileSync(${JSON.stringify(versionFile)}, 'utf8').trim();\nimport(${JSON.stringify(join(here, 'fake-codex.mjs'))});\n`.replace("require('node:fs')", "process.getBuiltinModule('node:fs')"), { mode: 0o755 });
+  return { path, update: next => writeFileSync(versionFile, next) };
+};
+
+test('the newest installed CLI runs: versions are compared, duplicates asked once, and an update is picked up on refresh', async t => {
+  const dir = mkdtempSync(join(tmpdir(), 'pocketbridge-cli-')); t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const newer = fakeCodexCopy(dir, 'codex-app', '0.160.0'), older = fakeCodexCopy(dir, 'codex-old', '0.9.0');
+  symlinkSync(newer.path, join(dir, 'codex-link'));
+  assert.ok(compareVersions('0.160.0', '0.157.1') > 0 && compareVersions('2.1.10', '2.1.9') > 0 && compareVersions('1.0', '1.0.0') === 0);
+  assert.deepEqual(await newestCli([join(here, 'fake-codex.mjs'), older.path, join(dir, 'codex-link'), newer.path, join(dir, 'missing')]), { path: join(dir, 'codex-link'), version: '0.160.0' });
+  assert.equal(await newestCli([join(dir, 'missing')]), null);
+  // Configured path first: a tie keeps it.
+  assert.equal((await newestCli([join(here, 'fake-codex.mjs'), fakeCodexCopy(dir, 'same', '0.150.0').path])).path, join(here, 'fake-codex.mjs'));
+
+  const f = await fixture(t, { cliCandidates: { codex: [older.path, newer.path] } }), project = (await f.request('/api/state')).data.projects[0];
+  let [claude, codex] = (await f.request('/api/state')).data.capabilities.agents;
+  assert.equal(claude.version, '2.1.0'); assert.equal(codex.version, '0.160.0');
+  assert.equal(codex.models[0].id, 'gpt-test-nova');
+  const chatId = randomUUID();
+  assert.equal((await f.request(`/api/chats/${chatId}/prompts`, { id: randomUUID(), text: 'hello', agent: 'codex', model: 'gpt-test-nova', projectId: project.id })).status, 202);
+  await f.finished({ id: chatId });
+  const calls = readFileSync(join(f.projectPath, 'codex-calls.ndjson'), 'utf8').trim().split('\n').map(JSON.parse);
+  assert.ok(calls.every(call => call.version === '0.160.0'));
+  // The app's copy updates in place; turning Codex on again (or the 30-minute refresh) asks every candidate again.
+  newer.update('0.161.2');
+  await f.request('/api/agents/codex', { enabled: true });
+  await wait(async () => (await f.request('/api/state')).data.capabilities.agents[1].version === '0.161.2');
+  // Without a working candidate the last good choice stays.
+  newer.update('broken'); writeFileSync(newer.path, '#!/bin/sh\nexit 1\n');
+  await f.request('/api/agents/codex', { enabled: true });
+  await new Promise(r => setTimeout(r, 300));
+  [, codex] = (await f.request('/api/state')).data.capabilities.agents;
+  assert.equal(codex.available, true);
+});
+
+test('Codex speed tiers come from model/list, are saved per chat and prompt, and reach turn/start as serviceTier', async t => {
+  const f = await fixture(t), state = (await f.request('/api/state')).data, project = state.projects[0];
+  const [claude, codex] = state.capabilities.agents;
+  assert.ok(claude.models.every(model => Array.isArray(model.speeds) && model.speeds.length === 0));
+  assert.deepEqual(codex.models.find(model => model.id === 'gpt-test-astra').speeds, [{ id: 'priority', name: 'Fast', description: '1.5x speed, increased usage' }]);
+  assert.deepEqual(codex.models.find(model => model.id === 'gpt-test-luna').speeds, []);
+  // New chats and drafts.
+  const draft = await f.request('/api/chats', { projectId: project.id, agent: 'codex', model: 'gpt-test-astra', speed: 'priority' });
+  assert.equal(draft.status, 201); assert.equal(draft.data.speed, 'priority');
+  assert.equal((await f.request('/api/chats', { projectId: project.id })).data.speed, null);
+  const refused = await f.request('/api/chats', { projectId: project.id, agent: 'codex', model: 'gpt-test-luna', speed: 'priority' });
+  assert.equal(refused.status, 400); assert.equal(refused.data.error, 'Unsupported speed for this model');
+  assert.equal((await f.request('/api/chats', { projectId: project.id, agent: 'claude', speed: 'priority' })).status, 400);
+  assert.equal((await f.request('/api/chats', { projectId: project.id, agent: 'codex', speed: 42 })).status, 400);
+  // The default model's tiers apply when no model is named.
+  assert.equal((await f.request('/api/chats', { projectId: project.id, agent: 'codex', speed: 'priority' })).status, 201);
+
+  const chatId = randomUUID(), first = { id: randomUUID(), text: 'hello', agent: 'codex', model: 'gpt-test-astra', speed: 'priority', projectId: project.id };
+  assert.equal((await f.request(`/api/chats/${chatId}/prompts`, first)).status, 202);
+  assert.equal((await f.request(`/api/chats/${chatId}/prompts`, first)).data.duplicate, true);
+  assert.equal((await f.request(`/api/chats/${chatId}/prompts`, { ...first, speed: null })).status, 409);
+  await f.finished({ id: chatId });
+  assert.equal((await f.request('/api/state')).data.chats.find(chat => chat.id === chatId).speed, 'priority');
+  // A model without the tier runs at standard speed, and Codex is told so because the thread was fast.
+  const luna = await f.request(`/api/chats/${chatId}/prompts`, { id: randomUUID(), text: 'again', model: 'gpt-test-luna' });
+  assert.equal(luna.status, 202); await f.finished({ id: chatId });
+  assert.equal((await f.request('/api/state')).data.chats.find(chat => chat.id === chatId).speed, null);
+  await f.request(`/api/chats/${chatId}/prompts`, { id: randomUUID(), text: 'third' }); await f.finished({ id: chatId });
+  assert.equal((await f.request(`/api/chats/${chatId}/prompts`, { id: randomUUID(), text: 'fast', model: 'gpt-test-astra', speed: 'priority' })).status, 202);
+  await f.finished({ id: chatId });
+  const turns = readFileSync(join(f.projectPath, 'codex-calls.ndjson'), 'utf8').trim().split('\n').map(JSON.parse).filter(call => call.method === 'turn/start');
+  assert.deepEqual(turns.map(turn => 'serviceTier' in turn.params ? turn.params.serviceTier : 'omitted'), ['priority', null, 'omitted', 'priority']);
+  const db = new DatabaseSync(join(f.dir, 'data/data.sqlite'), { readOnly: true });
+  assert.deepEqual(db.prepare('SELECT speed FROM prompts WHERE chatId=? ORDER BY rowid').all(chatId).map(row => row.speed), ['priority', null, null, 'priority']);
+  db.close();
+  // Clients before 0.7 send no speed and keep the chat's.
+  const keep = await f.request(`/api/chats/${chatId}/prompts`, { id: randomUUID(), text: 'keep' });
+  assert.equal(keep.status, 202); await f.finished({ id: chatId });
+  assert.equal((await f.request('/api/state')).data.chats.find(chat => chat.id === chatId).speed, 'priority');
+});
+
+test('a data folder from before 0.7 gains speed and icon columns and keeps its chats', async t => {
+  const f = await fixture(t), chat = await f.createChat();
+  await f.service.close();
+  const db = new DatabaseSync(join(f.dir, 'data/data.sqlite'));
+  for (const [table, column] of [['chats', 'speed'], ['prompts', 'speed'], ['projects', 'icon'], ['projects', 'iconType'], ['projects', 'iconSource'], ['projects', 'iconCheckedAt']]) db.exec(`ALTER TABLE ${table} DROP COLUMN ${column}`);
+  db.close();
+  await f.restart();
+  const state = (await f.request('/api/state')).data;
+  assert.equal(state.chats.find(item => item.id === chat.id).speed, null);
+  assert.equal(state.projects[0].icon, null);
+  assert.equal((await f.send(chat, 'hello')).status, 202); await f.finished(chat);
+});
+
+test('usage marks weekly and session windows, lists Codex resets, and redeems one reset per attempt', async t => {
+  const f = await fixture(t);
+  const usage = async () => (await f.request('/api/usage')).data.agents;
+  let [claude, codex] = await usage();
+  assert.deepEqual(claude.limits.map(limit => limit.window), ['session', 'weekly', 'weekly']);
+  assert.equal(claude.resets, undefined);
+  assert.deepEqual(codex.limits.map(limit => [limit.id, limit.window]), [['primary', 'weekly'], ['secondary', 'session']]);
+  assert.deepEqual(codex.resets, { available: 2, credits: [
+    { id: 'credit-a', title: 'Full reset', description: 'One free rate limit reset.', expiresAt: 1792702115000 },
+    { id: 'credit-b', title: null, description: null, expiresAt: null },
+  ] });
+  const reset = body => f.request('/api/usage/codex/reset', body);
+  assert.equal((await reset({ id: 'not-a-uuid' })).status, 400);
+  assert.equal((await reset({ id: randomUUID(), creditId: 'bad id!' })).status, 400);
+  assert.equal((await reset({ id: randomUUID(), creditId: 'nothing' })).data.outcome, 'nothingToReset');
+  const unknown = await reset({ id: randomUUID(), creditId: 'credit-zzz' });
+  assert.equal(unknown.status, 502); assert.equal(unknown.data.error, 'Unknown reset credit');
+  // Concurrent retries of one attempt redeem once.
+  const attempt = randomUUID();
+  const answers = await Promise.all([reset({ id: attempt, creditId: 'credit-a' }), reset({ id: attempt, creditId: 'credit-a' })]);
+  assert.deepEqual(answers.map(answer => [answer.status, answer.data.outcome]), [[200, 'reset'], [200, 'reset']]);
+  assert.equal((await reset({ id: attempt, creditId: 'credit-a' })).data.outcome, 'alreadyRedeemed');
+  await wait(async () => (await usage())[1].resets.available === 1);
+  [, codex] = await usage();
+  assert.deepEqual(codex.resets.credits.map(credit => credit.id), ['credit-b']);
+  assert.deepEqual(codex.limits.map(limit => limit.percent), [0, 0]);
+  assert.equal((await reset({ id: randomUUID() })).data.outcome, 'reset');
+  assert.equal((await reset({ id: randomUUID() })).data.outcome, 'noCredit');
+  const consumed = readFileSync(join(f.dir, 'data', 'codex-calls.ndjson'), 'utf8').trim().split('\n').map(JSON.parse).filter(call => call.method === 'account/rateLimitResetCredit/consume');
+  assert.equal(consumed.filter(call => call.params.idempotencyKey === attempt).length, 2);
+  assert.deepEqual(consumed[0].params, { idempotencyKey: consumed[0].params.idempotencyKey, creditId: 'nothing' });
+  await f.request('/api/agents/codex', { enabled: false });
+  assert.equal((await reset({ id: randomUUID() })).status, 409);
+  assert.equal((await usage())[1].resets, null);
+});
+
+test('project icons: the best square logo inside the folder, converted when needed, served by tag and never through symlinks', async t => {
+  const f = await fixture(t, { iconIntervalMs: 0 });
+  const plain = (await f.request('/api/state')).data.projects[0];
+  assert.equal(plain.icon, null);
+  assert.equal((await f.request(`/api/projects/${plain.id}/icon`)).status, 404);
+  const outside = join(f.dir, 'outside'), folder = join(f.dir, 'site'); mkdirSync(outside); writeFileSync(join(outside, 'logo.png'), pngOf(512, 512));
+  mkdirSync(join(folder, 'public'), { recursive: true }); mkdirSync(join(folder, 'docs'));
+  symlinkSync(join(outside, 'logo.png'), join(folder, 'logo.png'));
+  symlinkSync(outside, join(folder, 'static'));
+  writeFileSync(join(folder, 'public', 'favicon.ico'), icoOf(pngOf(48, 48)));
+  writeFileSync(join(folder, 'public', 'apple-touch-icon.png'), pngOf(180, 180));
+  writeFileSync(join(folder, 'docs', 'logo-wide.png'), pngOf(400, 100));
+  const project = (await f.request('/api/projects', { path: folder })).data;
+  assert.equal(project.icon, null);
+  const tagged = async previous => wait(async () => { const icon = (await f.request('/api/state')).data.projects.find(item => item.id === project.id).icon; return icon && icon !== previous ? icon : null; });
+  const icon = () => fetch(`${f.service.url}/api/projects/${project.id}/icon`, { headers: { Authorization: `Bearer ${f.token}` } });
+  const first = await tagged(null), served = await icon();
+  assert.equal(served.status, 200); assert.equal(served.headers.get('content-type'), 'image/png'); assert.equal(served.headers.get('cache-control'), 'private, max-age=86400');
+  assert.ok(Buffer.from(await served.arrayBuffer()).equals(pngOf(180, 180)));
+  // Only the ICO and a wide logo left: the ICO becomes a PNG of its own size.
+  rmSync(join(folder, 'public', 'apple-touch-icon.png'));
+  const second = await tagged(first);
+  assert.deepEqual(measure(Buffer.from(await (await icon()).arrayBuffer()), 'png'), { width: 48, height: 48 });
+  assert.notEqual(second, first);
+  // No icon left: the tag clears and the route says so.
+  rmSync(join(folder, 'public'), { recursive: true }); rmSync(join(folder, 'docs'), { recursive: true });
+  await wait(async () => (await f.request('/api/state')).data.projects.find(item => item.id === project.id).icon === null);
+  assert.equal((await icon()).status, 404);
+});
+
+test('icon search reads image headers, finds Android and Xcode app icons and stays within its folder budget', async t => {
+  const dir = mkdtempSync(join(tmpdir(), 'pocketbridge-icons-')); t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const res = join(dir, 'android', 'app', 'src', 'main', 'res'); mkdirSync(join(res, 'mipmap-xxxhdpi'), { recursive: true }); mkdirSync(join(res, 'mipmap-mdpi'));
+  writeFileSync(join(res, 'mipmap-xxxhdpi', 'ic_launcher.png'), pngOf(192, 192)); writeFileSync(join(res, 'mipmap-mdpi', 'ic_launcher.png'), pngOf(48, 48));
+  writeFileSync(join(res, 'mipmap-xxxhdpi', 'ic_launcher_foreground.png'), pngOf(432, 432));
+  const appIcon = join(dir, 'ios', 'Runner', 'Assets.xcassets', 'AppIcon.appiconset'); mkdirSync(appIcon, { recursive: true });
+  writeFileSync(join(appIcon, 'Icon-1024.png'), pngOf(1024, 1024));
+  mkdirSync(join(dir, 'node_modules', 'pkg', 'res', 'mipmap-xxxhdpi'), { recursive: true }); writeFileSync(join(dir, 'node_modules', 'pkg', 'res', 'mipmap-xxxhdpi', 'ic_launcher.png'), pngOf(512, 512));
+  writeFileSync(join(dir, 'favicon.svg'), '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 50"></svg>');
+  const found = await findIcons(dir);
+  assert.equal(found[0].rel, join('ios', 'Runner', 'Assets.xcassets', 'AppIcon.appiconset', 'Icon-1024.png'));
+  assert.ok(found.some(item => item.rel.endsWith(join('mipmap-xxxhdpi', 'ic_launcher.png'))));
+  assert.ok(!found.some(item => item.rel.includes('node_modules') || item.rel.includes('foreground')));
+  assert.ok(found.find(item => item.ext === 'svg').score < found.find(item => item.rel.includes('mipmap-mdpi')).score);
+  assert.deepEqual((await findIcons(dir, { budget: 2 })).map(item => item.ext), ['svg']);
+  const jpeg = Buffer.from('ffd8ffe000104a46494600010100000100010000ffc0001108002a003803012200021101031101', 'hex');
+  assert.deepEqual(measure(jpeg, 'jpg'), { width: 56, height: 42 });
+  assert.deepEqual(measure(Buffer.from('GIF89a\x20\x00\x10\x00', 'latin1'), 'gif'), { width: 32, height: 16 });
+  assert.equal(measure(Buffer.from('not an image at all'), 'png'), null);
+  // Large rasters shrink to 256 px; SVG is drawn by Quick Look.
+  const big = (await renderIcon(found[0], dir)).data;
+  assert.deepEqual(measure(big, 'png'), { width: 256, height: 256 });
+  writeFileSync(join(dir, 'logo.svg'), '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><circle cx="32" cy="32" r="30" fill="#e60"/></svg>');
+  const drawn = await renderIcon((await findIcons(dir)).find(item => item.rel === 'logo.svg'), dir);
+  // Quick Look may be unavailable on a headless CI runner; then the SVG is simply not used.
+  if (drawn || !process.env.CI) { assert.equal(drawn.type, 'image/png'); assert.ok(Math.max(...Object.values(measure(drawn.data, 'png'))) <= 256); }
+});
+
+test('review regressions: each Codex turn uses its own prompt speed, a tier is cleared even when a turn ends at once, and merged options are revalidated', async t => {
+  const f = await fixture(t), project = (await f.request('/api/state')).data.projects[0];
+  const turns = () => readFileSync(join(f.projectPath, 'codex-calls.ndjson'), 'utf8').trim().split('\n').map(JSON.parse).filter(call => call.method === 'turn/start');
+  // A Fast first turn, then a standard steer sent before Codex has even started: the steer becomes the next turn.
+  const chatId = randomUUID();
+  assert.equal((await f.request(`/api/chats/${chatId}/prompts`, { id: randomUUID(), text: 'hello', agent: 'codex', model: 'gpt-test-astra', speed: 'priority', projectId: project.id })).status, 202);
+  assert.equal((await f.request(`/api/chats/${chatId}/prompts`, { id: randomUUID(), text: 'second', delivery: 'steer', speed: null })).status, 202);
+  await f.finished({ id: chatId });
+  assert.deepEqual(turns().map(turn => [turn.params.input[0].text, 'serviceTier' in turn.params ? turn.params.serviceTier : 'omitted']), [['hello', 'priority'], ['second', null]]);
+  // And the other way round: a standard first prompt stays standard although a Fast steer changed the chat meanwhile.
+  const other = randomUUID();
+  await f.request(`/api/chats/${other}/prompts`, { id: randomUUID(), text: 'steer-wait', agent: 'codex', model: 'gpt-test-astra', projectId: project.id });
+  await f.request(`/api/chats/${other}/prompts`, { id: randomUUID(), text: 'go fast', delivery: 'steer', speed: 'priority' });
+  await f.finished({ id: other });
+  assert.ok(!('serviceTier' in turns().find(turn => turn.params.input[0].text === 'steer-wait').params));
+
+  // Two steers wait on a slow catalog: one moves to a model without speeds, the next asks for Fast without a model.
+  const dir = join(f.dir, 'slow-list'); mkdirSync(join(dir, 'project'), { recursive: true });
+  const slow = fakeCodexCopy(dir, 'codex', '0.150.0', { FAKE_CODEX_LIST_DELAY_MS: '700' });
+  const service = await createService({ port: 0, dataDir: join(dir, 'data'), claudePath: join(here, 'fake-claude.mjs'), codexPath: slow.path, claudeProjectsDir: f.claudeProjectsDir, stopTimeoutMs: 50 });
+  t.after(() => service.close());
+  const token = (await (await fetch(service.url + '/api/local-session')).json()).token;
+  const post = async (route, data) => { const response = await fetch(service.url + route, { method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, body: JSON.stringify(data) }); return { status: response.status, data: await response.json() }; };
+  const registered = (await post('/api/projects', { path: join(dir, 'project') })).data, busy = randomUUID();
+  assert.equal((await post(`/api/chats/${busy}/prompts`, { id: randomUUID(), text: 'hang', agent: 'codex', projectId: registered.id })).status, 202);
+  const luna = post(`/api/chats/${busy}/prompts`, { id: randomUUID(), text: 'use luna', delivery: 'steer', model: 'gpt-test-luna' });
+  await new Promise(r => setTimeout(r, 50));
+  const fast = post(`/api/chats/${busy}/prompts`, { id: randomUUID(), text: 'go fast', delivery: 'steer', speed: 'priority' });
+  const [first, second] = await Promise.all([luna, fast]);
+  assert.equal(first.status, 202); assert.equal(second.status, 400); assert.equal(second.data.error, 'Unsupported speed for this model');
+  await post(`/api/chats/${busy}/stop`, {});
+  const db = new DatabaseSync(join(dir, 'data', 'data.sqlite'), { readOnly: true });
+  assert.deepEqual({ ...db.prepare('SELECT model,speed FROM chats WHERE id=?').get(busy) }, { model: 'gpt-test-luna', speed: null });
+  assert.ok(db.prepare('SELECT model,speed FROM prompts WHERE chatId=?').all(busy).every(row => !(row.model === 'gpt-test-luna' && row.speed)));
+  db.close();
+});
+
+test('review regressions: icons are reread inside the project at render time, app icon folders count against the budget, and idle projects are rechecked', async t => {
+  const dir = mkdtempSync(join(tmpdir(), 'pocketbridge-icons-')); t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const root = join(dir, 'project'), secret = join(dir, 'private'); mkdirSync(join(root, 'public'), { recursive: true }); mkdirSync(secret);
+  writeFileSync(join(secret, 'key.png'), pngOf(64, 64)); writeFileSync(join(secret, 'big.png'), pngOf(600, 600));
+  writeFileSync(join(root, 'logo.png'), pngOf(128, 128)); writeFileSync(join(root, 'public', 'icon.png'), pngOf(700, 700));
+  const found = await findIcons(root), logo = found.find(item => item.rel === 'logo.png'), big = found.find(item => item.rel === join('public', 'icon.png'));
+  assert.ok(logo && big);
+  // Swapped for links after the scan: neither the served copy nor the converter's input may come from outside.
+  rmSync(logo.path); symlinkSync(join(secret, 'key.png'), logo.path);
+  assert.equal(await renderIcon(logo, dir), null);
+  rmSync(join(root, 'public'), { recursive: true }); symlinkSync(secret, join(root, 'public')); writeFileSync(join(secret, 'icon.png'), pngOf(600, 600));
+  assert.equal(await renderIcon(big, dir), null);
+  // Thousands of icon folders side by side still stop at the folder budget.
+  const res = join(dir, 'many'); mkdirSync(res);
+  for (let index = 0; index < 20; index++) { mkdirSync(join(res, `mipmap-${index}`)); writeFileSync(join(res, `mipmap-${index}`, 'ic_launcher.png'), pngOf(48, 48)); }
+  assert.equal((await findIcons(res, { budget: 3 })).length, 2);
+
+  const f = await fixture(t, { iconIntervalMs: 200 }), project = (await f.request('/api/state')).data.projects[0];
+  await new Promise(r => setTimeout(r, 300));
+  writeFileSync(join(f.projectPath, 'favicon.png'), pngOf(64, 64));
+  // Nothing asks for state here; the timer finds the new logo.
+  await wait(async () => (await fetch(`${f.service.url}/api/projects/${project.id}/icon`, { headers: { Authorization: `Bearer ${f.token}` } })).status === 200);
 });

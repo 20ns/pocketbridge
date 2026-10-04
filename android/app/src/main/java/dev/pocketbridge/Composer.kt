@@ -53,6 +53,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.selectable
+import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -87,33 +88,6 @@ import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import kotlin.coroutines.cancellation.CancellationException
 
-private val versionNumber = Regex("\\d+(?:[.-]\\d+)*")
-
-/** A model name's family words and version: "GPT-6-Astra" is {gpt, astra} 6, "Sonnet 4.6" is {sonnet} 4.6. */
-private fun modelVersion(name: String): Pair<Set<String>, List<Int>>? {
-    val version = versionNumber.find(name)?.value?.split('.', '-')?.mapNotNull(String::toIntOrNull)?.takeIf { it.isNotEmpty() } ?: return null
-    val family = name.lowercase().split(Regex("[^a-z0-9]+")).filter { it.isNotEmpty() && it.none(Char::isDigit) }.toSet()
-    return if (family.isEmpty()) null else family to version
-}
-
-private fun compareVersion(left: List<Int>, right: List<Int>): Int {
-    for (i in 0 until maxOf(left.size, right.size)) (left.getOrElse(i) { 0 }).compareTo(right.getOrElse(i) { 0 }).let { if (it != 0) return it }
-    return 0
-}
-
-/**
- * The catalog split into current models and older versions, each in catalog order. A model is older when another of
- * its family (or a broader name containing its words, as GPT-6-Astra contains GPT) has a higher version.
- */
-fun modelTiers(models: List<ModelInfo>): Pair<List<ModelInfo>, List<ModelInfo>> {
-    val versions = models.map { modelVersion(it.name) }
-    val older = models.indices.filter { i ->
-        val (family, version) = versions[i] ?: return@filter false
-        versions.indices.any { j -> j != i && versions[j]?.let { (other, newer) -> other.containsAll(family) && compareVersion(newer, version) > 0 } == true }
-    }.toSet()
-    return models.filterIndexed { i, _ -> i !in older } to models.filterIndexed { i, _ -> i in older }
-}
-
 /**
  * The git strip, then one box: images, prompt, and a row of attach, model, effort and permission pills with Send or
  * Stop. While a turn runs and something is typed, Steer joins Stop, with Send now in its menu. Fixed above the
@@ -147,9 +121,9 @@ fun modelTiers(models: List<ModelInfo>): Pair<List<ModelInfo>, List<ModelInfo>> 
     var slashHidden by remember { mutableStateOf<String?>(null) }
     val query = slashQuery(shownDraft)?.takeIf { shownDraft != slashHidden && !locked }
     val commandKey = "$projectId:${options.agent}"
-    LaunchedEffect(query != null, commandKey) { if (query != null) model.loadCommands(projectId, options.agent) }
-    val matches = query?.let { filterCommands(model.commands[commandKey].orEmpty(), it) }.orEmpty()
-    val loadingCommands = query != null && commandKey in model.commandsLoading && model.commands[commandKey] == null
+    LaunchedEffect(query != null, commandKey) { if (query != null) model.details.loadCommands(projectId, options.agent) }
+    val matches = query?.let { filterCommands(model.details.commands[commandKey].orEmpty(), it) }.orEmpty()
+    val loadingCommands = query != null && commandKey in model.details.commandsLoading && model.details.commands[commandKey] == null
     val slashOpen = query != null && (matches.isNotEmpty() || loadingCommands)
     BackHandler(slashOpen) { slashHidden = shownDraft }
     var boxWidth by remember { mutableIntStateOf(0) }
@@ -174,12 +148,14 @@ fun modelTiers(models: List<ModelInfo>): Pair<List<ModelInfo>, List<ModelInfo>> 
                             val pills = rememberScrollState()
                             Row(Modifier.weight(1f).fadeEnd(pills).horizontalScroll(pills), horizontalArrangement = Arrangement.spacedBy(Spacing.xs + Spacing.xxs), verticalAlignment = Alignment.CenterVertically) {
                                 AttachButton(canAttach) { pick.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) }
-                                Pill(modelName(agent, options.model), "Model", !locked, modelsOpen) { keyboard?.hide(); focus.clearFocus(); onModels() }
+                                // The model pill carries the agent's hint colour: orange for Claude, blue for Codex.
+                                Pill(modelName(agent, options.model), "Model", !locked, modelsOpen, agentColors(options.agent).container) { keyboard?.hide(); focus.clearFocus(); onModels() }
                                 if (info == null || info.efforts.isNotEmpty()) PillMenu(effortName(agent, options.model, options.effort), "Effort", !locked) { close ->
                                     (info?.efforts ?: listOf(options.effort)).forEach { effort ->
                                         MenuChoice(effortLabel(effort), selected = effort == options.effort) { model.updateOptions(options.copy(effort = effort)); close() }
                                     }
                                 }
+                                info?.speeds?.takeIf { it.isNotEmpty() }?.let { speeds -> SpeedPill(speeds, options.speed, !locked) { model.updateOptions(options.copy(speed = it)) } }
                                 PillMenu(modeShort(options.mode), "Permissions", !locked) { close ->
                                     (agent?.modes ?: listOf(options.mode)).forEach { mode ->
                                         MenuChoice(modeLabel(mode), modeHelp(options.agent, mode), mode == options.mode) { model.updateOptions(options.copy(mode = mode)); close() }
@@ -238,138 +214,10 @@ private fun Modifier.fadeEnd(scroll: ScrollState) = graphicsLayer { compositingS
     }
 }
 
-/**
- * Send when idle. While work runs: Stop, and once something is typed a split Steer button beside it. Steer is one
- * tap; its arrow (or a long press) opens Steer and, below it, Send now.
- */
-@Composable private fun SendControls(working: Boolean, sending: Boolean, ready: Boolean, stopEnabled: Boolean, onSend: (String?) -> Unit, onStop: () -> Unit) {
-    val colors = MaterialTheme.colorScheme
-    AnimatedContent(
-        working,
-        transitionSpec = { (scaleIn(Motion.fastSpatial(), initialScale = 0.7f) + fadeIn(Motion.fastEffects())) togetherWith (scaleOut(Motion.fastSpatial(), targetScale = 0.7f) + fadeOut(Motion.fastEffects())) },
-        label = "send",
-    ) { live ->
-        if (live) Row(verticalAlignment = Alignment.CenterVertically) {
-            FilledIconButton(
-                onClick = onStop, enabled = stopEnabled, modifier = Modifier.size(Sizes.sendButton),
-                colors = IconButtonDefaults.filledIconButtonColors(containerColor = colors.errorContainer, contentColor = colors.onErrorContainer),
-            ) { Icon(PocketIcons.Stop, "Stop") }
-            AnimatedVisibility(ready, enter = expandHorizontally(Motion.fastSpatial(IntSize.VisibilityThreshold), Alignment.Start) + fadeIn(Motion.fastEffects()), exit = shrinkHorizontally(Motion.fastSpatial(IntSize.VisibilityThreshold), Alignment.Start) + fadeOut(Motion.fastEffects())) {
-                SteerButton(Modifier.padding(start = Spacing.sm), onSend)
-            }
-        }
-        else FilledIconButton(
-            onClick = { onSend(null) }, enabled = ready, modifier = Modifier.size(Sizes.sendButton),
-            colors = IconButtonDefaults.filledIconButtonColors(disabledContainerColor = Pocket.colors.pill, disabledContentColor = colors.onSurfaceVariant.copy(alpha = 0.55f)),
-        ) {
-            if (sending) CircularProgressIndicator(Modifier.size(Sizes.smallIcon).semantics { contentDescription = "Sending" }, strokeWidth = 2.dp, color = colors.onSurfaceVariant)
-            else Icon(PocketIcons.ArrowUp, "Send", Modifier.size(22.dp))
-        }
-    }
-}
-
-/** M3 split button: "Steer" leads; the arrow segment opens the two ways to send while a turn runs. */
-@OptIn(ExperimentalFoundationApi::class)
-@Composable private fun SteerButton(modifier: Modifier, onSend: (String?) -> Unit) {
-    val colors = MaterialTheme.colorScheme
-    val haptics = LocalHapticFeedback.current
-    var menu by remember { mutableStateOf(false) }
-    val outer = Sizes.sendButton / 2
-    Row(modifier.height(Sizes.sendButton), horizontalArrangement = Arrangement.spacedBy(Spacing.xxs)) {
-        Row(
-            Modifier.fillMaxHeight().clip(RoundedCornerShape(outer, Corners.groupInner, Corners.groupInner, outer)).background(colors.primary)
-                .combinedClickable(onClickLabel = "Steer the running turn", role = Role.Button, onLongClickLabel = "More ways to send", onLongClick = { haptics.performHapticFeedback(HapticFeedbackType.LongPress); menu = true }) { onSend(STEER) }
-                .padding(start = Spacing.md, end = Spacing.md),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Icon(PocketIcons.ArrowUp, null, Modifier.size(Sizes.smallIcon), tint = colors.onPrimary)
-            Spacer(Modifier.width(Spacing.xs + Spacing.xxs))
-            Text("Steer", style = MaterialTheme.typography.labelLarge, color = colors.onPrimary, maxLines = 1)
-        }
-        Box {
-            val turn by animateFloatAsState(if (menu) 180f else 0f, Motion.fastSpatial(), label = "steer-chevron")
-            Box(
-                Modifier.fillMaxHeight().width(Sizes.pill).clip(RoundedCornerShape(Corners.groupInner, outer, outer, Corners.groupInner)).background(colors.primary)
-                    .clickable(onClickLabel = "More ways to send", role = Role.Button) { menu = true },
-                contentAlignment = Alignment.Center,
-            ) { Icon(Icons.Default.ArrowDropDown, "Send options", Modifier.rotate(turn), tint = colors.onPrimary) }
-            DropdownMenu(menu, { menu = false }, Modifier.widthIn(min = 220.dp, max = 300.dp), shape = RoundedCornerShape(Corners.groupOuter), containerColor = Pocket.colors.panel, shadowElevation = 8.dp) {
-                Text("Send", Modifier.padding(start = Spacing.lg, end = Spacing.lg, top = Spacing.xs, bottom = Spacing.xs).semantics { heading() }, style = MaterialTheme.typography.labelMedium, color = colors.onSurfaceVariant)
-                SendChoice(PocketIcons.ArrowUp, "Steer", "Joins the turn at its next step") { menu = false; onSend(STEER) }
-                SendChoice(PocketIcons.SkipNext, "Send now", "Interrupts and runs this next") { menu = false; onSend(INTERRUPT) }
-            }
-        }
-    }
-}
-
-@Composable private fun SendChoice(icon: ImageVector, label: String, detail: String, onClick: () -> Unit) {
-    val colors = MaterialTheme.colorScheme
-    DropdownMenuItem(
-        text = {
-            Column(Modifier.padding(vertical = Spacing.xs), verticalArrangement = Arrangement.spacedBy(Spacing.xxs)) {
-                Text(label, style = MaterialTheme.typography.bodyLarge, color = colors.onSurface)
-                Text(detail, style = MaterialTheme.typography.bodySmall, color = colors.onSurfaceVariant)
-            }
-        },
-        leadingIcon = { Icon(icon, null, Modifier.size(20.dp), tint = colors.onSurfaceVariant) },
-        onClick = onClick,
-        modifier = Modifier.padding(horizontal = Spacing.xs).clip(RoundedCornerShape(Corners.groupInner * 3)),
-    )
-}
-
-/** Picked images above the prompt: each shows its upload, can be removed, and retries on tap when it failed. */
-@Composable private fun AttachmentStrip(model: BridgeModel, attachments: List<Attachment>) {
-    val open = LocalImageViewer.current
-    val uploaded = attachments.filter { it.state == UploadState.Ready }.map { it.upload }
-    Row(
-        Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(start = Spacing.md, end = Spacing.md, top = Spacing.md),
-        horizontalArrangement = Arrangement.spacedBy(Spacing.sm),
-    ) {
-        attachments.forEachIndexed { index, item -> key(item.key) { AttachmentTile(model, item, index, attachments.size) { uploaded.indexOf(item.upload).takeIf { it >= 0 }?.let { open(uploaded, it) } } } }
-    }
-}
-
-@Composable private fun AttachmentTile(model: BridgeModel, item: Attachment, index: Int, count: Int, onView: () -> Unit) {
-    val colors = MaterialTheme.colorScheme
-    val size = with(LocalDensity.current) { Sizes.thumbnail.roundToPx() }
-    val label = "Image ${index + 1} of $count, " + when (item.state) { UploadState.Uploading -> "uploading"; UploadState.Failed -> "didn't upload"; UploadState.Ready -> "ready" }
-    // The remove mark overlaps the corner, so the tile sits inside a slightly larger box.
-    Box(Modifier.size(Sizes.thumbnail + Spacing.sm)) {
-        Box(
-            Modifier.align(Alignment.BottomStart).size(Sizes.thumbnail).clip(RoundedCornerShape(Corners.groupInner * 3)).border(1.dp, Pocket.colors.composerBorder, RoundedCornerShape(Corners.groupInner * 3))
-                .clickable(onClickLabel = if (item.state == UploadState.Failed) "Retry upload" else "View image", enabled = item.state != UploadState.Uploading) {
-                    if (item.state == UploadState.Failed) model.retryAttachment(item.key) else onView()
-                }
-                .semantics(mergeDescendants = true) { contentDescription = label },
-            contentAlignment = Alignment.Center,
-        ) {
-            if (item.preparing) Box(Modifier.fillMaxSize().background(colors.surfaceContainerHigh))
-            else LocalImage(model, item.file, size, Modifier.fillMaxSize(), description = null)
-            when (item.state) {
-                UploadState.Uploading -> Box(Modifier.fillMaxSize().background(colors.scrim.copy(alpha = 0.35f)), contentAlignment = Alignment.Center) {
-                    CircularProgressIndicator(Modifier.size(20.dp), color = Color.White, strokeWidth = 2.dp)
-                }
-                UploadState.Failed -> Box(Modifier.fillMaxSize().background(colors.errorContainer.copy(alpha = 0.88f)), contentAlignment = Alignment.Center) {
-                    Icon(Icons.Default.Refresh, null, Modifier.size(22.dp), tint = colors.onErrorContainer)
-                }
-                UploadState.Ready -> Unit
-            }
-        }
-        Box(
-            Modifier.align(Alignment.TopEnd).size(Sizes.pill - Spacing.xs).clip(CircleShape).clickable(onClickLabel = "Remove image ${index + 1}", role = Role.Button) { model.removeAttachment(item.key) },
-            contentAlignment = Alignment.Center,
-        ) {
-            Box(Modifier.size(20.dp).background(colors.inverseSurface, CircleShape), contentAlignment = Alignment.Center) {
-                Icon(Icons.Default.Close, "Remove image ${index + 1}", Modifier.size(14.dp), tint = colors.inverseOnSurface)
-            }
-        }
-    }
-}
-
 /** A compact choice in the composer. Its chevron turns while its menu or panel is open. */
-@Composable private fun Pill(label: String, description: String, enabled: Boolean, open: Boolean, onClick: () -> Unit) {
+@Composable private fun Pill(label: String, description: String, enabled: Boolean, open: Boolean, closed: Color = Pocket.colors.pill, onClick: () -> Unit) {
     val colors = MaterialTheme.colorScheme
-    val container by animateColorAsState(if (open) colors.secondaryContainer else Pocket.colors.pill, Motion.effects(), label = "pill")
+    val container by animateColorAsState(if (open) colors.secondaryContainer else closed, Motion.effects(), label = "pill")
     val turn by animateFloatAsState(if (open) 180f else 0f, Motion.fastSpatial(), label = "chevron")
     Surface(
         onClick = onClick, enabled = enabled, shape = CircleShape, color = container, contentColor = if (open) colors.onSecondaryContainer else colors.onSurface,
@@ -396,111 +244,32 @@ private fun Modifier.fadeEnd(scroll: ScrollState) = graphicsLayer { compositingS
     }
 }
 
-/** One menu row: label, optional one-line detail, a check on the current choice. */
-@Composable fun MenuChoice(label: String, detail: String = "", selected: Boolean, onClick: () -> Unit) {
-    val colors = MaterialTheme.colorScheme
-    DropdownMenuItem(
-        text = {
-            Column(Modifier.padding(vertical = Spacing.xs), verticalArrangement = Arrangement.spacedBy(Spacing.xxs)) {
-                Text(label, style = MaterialTheme.typography.bodyLarge, color = if (selected) colors.primary else colors.onSurface)
-                if (detail.isNotEmpty()) Text(detail, style = MaterialTheme.typography.bodySmall, color = colors.onSurfaceVariant)
-            }
-        },
-        onClick = onClick,
-        trailingIcon = { if (selected) Icon(Icons.Default.Check, "Selected", tint = colors.primary) },
-        modifier = Modifier.padding(horizontal = Spacing.xs).clip(RoundedCornerShape(Corners.groupInner * 3)).then(if (selected) Modifier.background(colors.secondaryContainer.copy(alpha = 0.6f)) else Modifier),
-    )
-}
-
 /**
- * Models rise from the composer in a panel no taller than half the screen: current models first, older versions
- * below, its own scroll. An unsent chat switches agent at the top. One tap picks and closes. Back follows the gesture.
+ * The model's faster service tier, named by the CLI (Codex calls it Fast). One speed is a toggle: tonal with a bolt
+ * when on. Several open a menu with Standard first. Hidden for models without speeds.
  */
-@Composable fun BoxScope.ModelPanel(model: BridgeModel, visible: Boolean, onDismiss: () -> Unit) {
-    var back by remember { mutableFloatStateOf(0f) }
-    LaunchedEffect(visible) { if (visible) back = 0f }
-    PredictiveBackHandler(enabled = visible) { events ->
-        try { events.collect { back = it.progress }; onDismiss() } catch (cancelled: CancellationException) { back = 0f; throw cancelled }
-    }
-    AnimatedVisibility(visible, enter = fadeIn(Motion.effects()), exit = fadeOut(Motion.fastEffects())) {
-        Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.scrim.copy(alpha = 0.32f)).clickable(remember { MutableInteractionSource() }, null, onClickLabel = "Close models", onClick = onDismiss))
-    }
-    val maxHeight = (LocalConfiguration.current.screenHeightDp * 0.5f).dp
-    AnimatedVisibility(
-        visible, Modifier.align(Alignment.BottomCenter),
-        enter = expandVertically(Motion.spatial(IntSize.VisibilityThreshold), expandFrom = Alignment.Bottom) + fadeIn(Motion.effects()),
-        exit = shrinkVertically(Motion.fastSpatial(IntSize.VisibilityThreshold), shrinkTowards = Alignment.Bottom) + fadeOut(Motion.fastEffects()),
-    ) {
-        Surface(
-            Modifier.padding(horizontal = Spacing.sm, vertical = Spacing.xs).fillMaxWidth().heightIn(max = maxHeight)
-                .graphicsLayer { val p = back; transformOrigin = TransformOrigin(0.5f, 1f); scaleX = 1f - 0.06f * p; scaleY = 1f - 0.06f * p; translationY = p * 16.dp.toPx() },
-            shape = RoundedCornerShape(Corners.composer), color = Pocket.colors.panel, shadowElevation = 8.dp, border = BorderStroke(1.dp, Pocket.colors.composerBorder),
-        ) { ModelList(model, onDismiss) }
-    }
-}
-
-@Composable private fun ModelList(model: BridgeModel, onDismiss: () -> Unit) {
-    val options = model.options
-    val agents = if (model.canSwitchAgent) model.agents.filter { it.usable && it.models.isNotEmpty() } else listOfNotNull(model.agent(options.agent))
-    var tab by remember { mutableStateOf(options.agent.takeIf { id -> agents.any { it.id == id } } ?: agents.firstOrNull()?.id ?: options.agent) }
-    val agent = agents.find { it.id == tab }
-    val selected = model.agent(options.agent)?.model(options.model)?.id ?: options.model
-    val (latest, older) = remember(agent) { modelTiers(agent?.models.orEmpty()) }
-    // An older model in use opens scrolled to it, with the row above it for context.
-    val olderIndex = if (tab == options.agent) older.indexOfFirst { it.id == selected } else -1
-    val list = remember(tab) { LazyListState(if (olderIndex >= 0) latest.size + olderIndex else 0) }
-    Column {
-        if (agents.size > 1) AgentSwitch(agents, tab) { tab = it }
-        else Text(agent?.name ?: "Models", Modifier.padding(start = Spacing.xl, end = Spacing.xl, top = Spacing.lg, bottom = Spacing.xs).semantics { heading() }, style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary)
-        LazyColumn(Modifier.fillMaxWidth(), list, PaddingValues(start = Spacing.sm, end = Spacing.sm, top = Spacing.xs, bottom = Spacing.sm)) {
-            if (agent == null || agent.models.isEmpty()) item {
-                Text("Model list unavailable. Check ${agent?.name ?: "the agent"} on your Mac.", Modifier.padding(Spacing.md), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            }
-            items(latest, key = { "latest:" + it.id }) { entry -> ModelRow(entry, tab == options.agent && entry.id == selected) { pick(model, agent!!, entry); onDismiss() } }
-            if (older.isNotEmpty()) item(key = "older") {
-                Row(Modifier.padding(start = Spacing.md, end = Spacing.md, top = Spacing.md, bottom = Spacing.xs), verticalAlignment = Alignment.CenterVertically) {
-                    Text("Older versions", Modifier.semantics { heading() }, style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    HorizontalDivider(Modifier.padding(start = Spacing.md), color = MaterialTheme.colorScheme.outlineVariant)
-                }
-            }
-            items(older, key = { "older:" + it.id }) { entry -> ModelRow(entry, tab == options.agent && entry.id == selected) { pick(model, agent!!, entry); onDismiss() } }
-        }
-    }
-}
-
-private fun pick(model: BridgeModel, agent: AgentInfo, entry: ModelInfo) {
-    model.updateOptions(resolveOptions(agent, model.options.copy(model = entry.id, agent = agent.id)))
-}
-
-@Composable private fun ModelRow(entry: ModelInfo, chosen: Boolean, onPick: () -> Unit) {
+@Composable private fun SpeedPill(speeds: List<SpeedInfo>, selected: String?, enabled: Boolean, onPick: (String?) -> Unit) {
     val colors = MaterialTheme.colorScheme
-    Row(
-        Modifier.fillMaxWidth().clip(RoundedCornerShape(Corners.groupOuter - Spacing.xs)).background(if (chosen) colors.secondaryContainer else Color.Transparent)
-            .selectable(chosen, role = Role.RadioButton, onClick = onPick).heightIn(min = 56.dp).padding(horizontal = Spacing.md, vertical = Spacing.sm + Spacing.xxs),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(Spacing.xxs)) {
-            Text(entry.name, style = MaterialTheme.typography.titleSmall, color = if (chosen) colors.onSecondaryContainer else colors.onSurface)
-            if (entry.description.isNotBlank()) Text(entry.description, style = MaterialTheme.typography.bodySmall, color = if (chosen) colors.onSecondaryContainer else colors.onSurfaceVariant, maxLines = 2, overflow = TextOverflow.Ellipsis)
+    val chosen = speeds.find { it.id == selected }
+    if (speeds.size > 1) {
+        PillMenu(chosen?.name ?: "Standard", "Speed", enabled) { close ->
+            MenuChoice("Standard", selected = chosen == null) { onPick(null); close() }
+            speeds.forEach { speed -> MenuChoice(speed.name, speed.description, speed.id == selected) { onPick(speed.id); close() } }
         }
-        if (chosen) Icon(Icons.Default.Check, "Selected", Modifier.padding(start = Spacing.sm), tint = colors.onSecondaryContainer)
+        return
     }
-}
-
-/** Claude or Codex, for a chat that hasn't been sent. A tonal track with the chosen agent filled. */
-@Composable private fun AgentSwitch(agents: List<AgentInfo>, selected: String, onSelect: (String) -> Unit) {
-    val colors = MaterialTheme.colorScheme
-    Row(
-        Modifier.padding(start = Spacing.md, end = Spacing.md, top = Spacing.md, bottom = Spacing.xs).fillMaxWidth()
-            .background(Pocket.colors.pill, CircleShape).padding(Spacing.xs).selectableGroup(),
+    val speed = speeds.single()
+    val on = chosen != null
+    val container by animateColorAsState(if (on) colors.secondaryContainer else Pocket.colors.pill, Motion.effects(), label = "speed")
+    Surface(
+        shape = CircleShape, color = container, contentColor = if (on) colors.onSecondaryContainer else colors.onSurfaceVariant,
+        modifier = Modifier.alpha(if (enabled) 1f else 0.45f).toggleable(on, enabled = enabled, role = Role.Switch) { onPick(if (it) speed.id else null) }
+            .semantics { contentDescription = speed.name + if (speed.description.isNotBlank()) ", " + speed.description else "" },
     ) {
-        agents.forEach { agent ->
-            val on = agent.id == selected
-            val fill by animateColorAsState(if (on) colors.secondaryContainer else Color.Transparent, Motion.effects(), label = "agent")
-            Box(
-                Modifier.weight(1f).heightIn(min = 40.dp).clip(CircleShape).background(fill).selectable(on, role = Role.Tab) { onSelect(agent.id) },
-                contentAlignment = Alignment.Center,
-            ) { Text(agent.name, style = MaterialTheme.typography.labelLarge, color = if (on) colors.onSecondaryContainer else colors.onSurfaceVariant) }
+        Row(Modifier.heightIn(min = 34.dp).padding(start = Spacing.sm + Spacing.xxs, end = Spacing.md), verticalAlignment = Alignment.CenterVertically) {
+            Icon(PocketIcons.Bolt, null, Modifier.size(Sizes.smallIcon), tint = if (on) colors.onSecondaryContainer else colors.onSurfaceVariant)
+            Spacer(Modifier.width(Spacing.xxs))
+            Text(speed.name, style = MaterialTheme.typography.labelLarge, maxLines = 1, color = if (on) colors.onSecondaryContainer else colors.onSurface)
         }
     }
 }

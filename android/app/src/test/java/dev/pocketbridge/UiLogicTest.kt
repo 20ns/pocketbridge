@@ -39,11 +39,7 @@ class UiLogicTest {
         assertEquals("Resets Oct 15", resetLabel(now + 12L * 86_400_000, now, utc, Locale.US))
     }
 
-    @Test fun `the meter shows the tightest limit and full limits are critical`() {
-        val claude = AgentUsage("claude", "Claude", "Max", listOf(UsageLimit("session", "5-hour session", 34, 0, "normal"), UsageLimit("weekly", "Weekly", 61, 0, "normal")), null, 0)
-        val codex = AgentUsage("codex", "Codex", "Pro Lite", listOf(UsageLimit("secondary", "5-hour", 82, 0, "warning")), 2353.72, 0)
-        assertEquals("5-hour", tightestLimit(listOf(claude, codex))?.second?.label)
-        assertNull(tightestLimit(emptyList()))
+    @Test fun `full limits are critical`() {
         assertEquals("critical", limitSeverity(UsageLimit("w", "Weekly", 100, 0, "warning")))
         assertEquals("warning", limitSeverity(UsageLimit("w", "Weekly", 82, 0, "warning")))
     }

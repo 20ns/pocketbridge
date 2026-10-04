@@ -113,9 +113,11 @@ data class PendingPrompt(
     val attachments: List<String> = emptyList(),
     /** "steer" or "interrupt" when written while a turn ran; null starts a turn. Retry keeps it. */
     val delivery: String? = null,
+    /** A speed id from the model's catalog, or null for standard. Always sent, so a retry can't pick up the chat's later choice. */
+    val speed: String? = null,
 ) {
-    val options get() = ChatOptions(mode, model, effort, agent)
-    fun json() = JSONObject().put("id", id).put("text", text).put("agent", agent).put("mode", mode).put("model", model).put("effort", effort).apply {
+    val options get() = ChatOptions(mode, model, effort, agent, speed)
+    fun json() = JSONObject().put("id", id).put("text", text).put("agent", agent).put("mode", mode).put("model", model).put("effort", effort).put("speed", speed ?: JSONObject.NULL).apply {
         if (projectId.isNotBlank()) put("projectId", projectId)
         if (attachments.isNotEmpty()) put("attachments", JSONArray(attachments))
         if (delivery != null) put("delivery", delivery)
@@ -132,6 +134,7 @@ data class PendingPrompt(
                 it.optString("agent", CLAUDE),
                 it.optJSONArray("attachments").strings(),
                 it.optString("delivery").takeIf { delivery -> delivery == STEER || delivery == INTERRUPT },
+                it.textOrNull("speed"),
             )
         }
     }

@@ -56,10 +56,23 @@ private val Dark = darkColorScheme(
     val annotation: Color, val added: Color, val removed: Color, val addedLine: Color, val removedLine: Color,
 )
 
+/**
+ * One agent's hint colour. [accent] marks (rings, the row edge, the header dot) at 3:1 or more on rows; [container] fills
+ * the model pill and tiles with on-surface text at 4.5:1; [tint] is the row behind a chat, a step off [PocketColors.row].
+ */
+@Immutable data class AgentColors(val accent: Color, val container: Color, val tint: Color)
+
+/** A project's letter avatar: tone 90 / 10 in light, 30 / 90 in dark. */
+@Immutable data class ProjectColors(val container: Color, val content: Color)
+
 /** Roles Material doesn't name: grouped list rows, the two sides of a conversation, the composer and code. */
 @Immutable data class PocketColors(
     val row: Color, val userBubble: Color, val onUserBubble: Color, val composer: Color, val composerBorder: Color, val pill: Color, val panel: Color,
     val code: Color, val codeHeader: Color, val codeBorder: Color, val inlineCode: Color, val syntax: SyntaxColors,
+    /** Claude is orange, Codex blue: subtle hints on their chats, the model pill and usage rings. */
+    val claude: AgentColors, val codex: AgentColors,
+    /** Project avatars. Teal, amber and red stay out: they mean Working, Needs your answer and Failed. */
+    val projects: List<ProjectColors>,
 )
 
 private val LightPocket = PocketColors(
@@ -71,6 +84,14 @@ private val LightPocket = PocketColors(
         function = Color(0xFF2F5BAE), annotation = Color(0xFF8B5000), added = Color(0xFF1E6B33), removed = Color(0xFFA3261F),
         addedLine = Color(0xFFDFF3E3), removedLine = Color(0xFFFCE3E1),
     ),
+    claude = AgentColors(accent = Color(0xFFC4612C), container = Color(0xFFFBE4D6), tint = Color(0xFFFFF7F2)),
+    codex = AgentColors(accent = Color(0xFF2F6BD6), container = Color(0xFFDCE6FA), tint = Color(0xFFF4F7FE)),
+    projects = listOf(
+        ProjectColors(Color(0xFFD6E3FF), Color(0xFF001B3E)), ProjectColors(Color(0xFFE9DDFF), Color(0xFF22005D)),
+        ProjectColors(Color(0xFFFFD8E8), Color(0xFF3B0024)), ProjectColors(Color(0xFFC4EFAB), Color(0xFF072100)),
+        ProjectColors(Color(0xFFE6E6A8), Color(0xFF1D1D00)), ProjectColors(Color(0xFFC3E8FF), Color(0xFF001E2C)),
+        ProjectColors(Color(0xFFF7D8FF), Color(0xFF2C0A39)), ProjectColors(Color(0xFFDCE2F9), Color(0xFF141B2C)),
+    ),
 )
 private val DarkPocket = PocketColors(
     row = Color(0xFF1A2120), userBubble = Color(0xFF005048), onUserBubble = Color(0xFFA0F2E2), composer = Color(0xFF1A2120), composerBorder = Color(0xFF2C3533),
@@ -81,6 +102,14 @@ private val DarkPocket = PocketColors(
         function = Color(0xFFA0C2FF), annotation = Color(0xFFFFB86F), added = Color(0xFFA0D58B), removed = Color(0xFFFFB0A8),
         addedLine = Color(0xFF173323), removedLine = Color(0xFF3D1D1C),
     ),
+    claude = AgentColors(accent = Color(0xFFF0A070), container = Color(0xFF4A3122), tint = Color(0xFF242523)),
+    codex = AgentColors(accent = Color(0xFF8AB4FF), container = Color(0xFF243652), tint = Color(0xFF1C2529)),
+    projects = listOf(
+        ProjectColors(Color(0xFF284777), Color(0xFFD6E3FF)), ProjectColors(Color(0xFF4F378B), Color(0xFFE9DDFF)),
+        ProjectColors(Color(0xFF7B2950), Color(0xFFFFD8E8)), ProjectColors(Color(0xFF235107), Color(0xFFC4EFAB)),
+        ProjectColors(Color(0xFF47470E), Color(0xFFE6E6A8)), ProjectColors(Color(0xFF004C69), Color(0xFFC3E8FF)),
+        ProjectColors(Color(0xFF5E3A6D), Color(0xFFF7D8FF)), ProjectColors(Color(0xFF3C4459), Color(0xFFDCE2F9)),
+    ),
 )
 private val LocalPocketColors = staticCompositionLocalOf { LightPocket }
 
@@ -88,6 +117,18 @@ private val LocalPocketColors = staticCompositionLocalOf { LightPocket }
 object Pocket {
     val colors: PocketColors @Composable @ReadOnlyComposable get() = LocalPocketColors.current
 }
+
+/** Claude's orange or Codex's blue for [agent]; anything else reads as Claude, the default agent. */
+@Composable @ReadOnlyComposable fun agentColors(agent: String?): AgentColors = if (agent == CODEX) Pocket.colors.codex else Pocket.colors.claude
+
+/** FNV-1a over the id: the same project gets the same colour on every phone and every launch. */
+fun projectHue(id: String, size: Int): Int {
+    var hash = 0x811C9DC5.toInt()
+    id.toByteArray(Charsets.UTF_8).forEach { hash = (hash xor (it.toInt() and 0xFF)) * 0x01000193 }
+    return Integer.remainderUnsigned(hash, size)
+}
+
+@Composable @ReadOnlyComposable fun projectColors(id: String): ProjectColors = Pocket.colors.projects.let { it[projectHue(id, it.size)] }
 
 // The Material 3 scale with firmer titles and tighter body tracking for long replies.
 private val Base = Typography()
@@ -140,6 +181,10 @@ object Sizes {
     val touch = 48.dp; val smallIcon = 18.dp; val pill = 36.dp; val sendButton = 44.dp; val tile = 40.dp
     /** Composer image tiles and prompt image grids. */
     val thumbnail = 64.dp; val promptImage = 96.dp; val tinyIcon = 14.dp
+    /** A project's avatar beside its name in the top bar; the agent edge on chat rows; the dot before a chat's folder. */
+    val headerAvatar = 28.dp; val agentEdge = 3.dp; val agentDot = 6.dp
+    /** Usage rings in the top bar. */
+    val ring = 18.dp
 }
 
 /** Material 3 Expressive springs. Animator duration scale 0 (Remove animations) settles them at once. */
@@ -182,6 +227,8 @@ object PocketIcons {
     val SkipNext = icon("SkipNext", "M6 18l8.5-6L6 6v12zM16 6v12h2V6h-2z")
     val StopCircle = icon("StopCircle", "M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm4 14H8V8h8v8z")
     val Branch = outline("Branch", "M8.25 5.5a2.25 2.25 0 1 1-4.5 0a2.25 2.25 0 1 1 4.5 0zM8.25 18.5a2.25 2.25 0 1 1-4.5 0a2.25 2.25 0 1 1 4.5 0zM20.25 5.5a2.25 2.25 0 1 1-4.5 0a2.25 2.25 0 1 1 4.5 0zM6 7.75v8.5M18 7.75v1c0 2.5-2 4-4.5 4h-3c-2.6 0-4.5 1.4-4.5 3.5")
+    val Bolt = icon("Bolt", "M11 21h-1l1-7H7.5c-.58 0-.57-.32-.38-.66.19-.34.05-.08.07-.12C8.48 10.94 10.42 7.54 13 3h1l-1 7h3.5c.49 0 .56.33.47.51l-.07.15C12.96 17.55 11 21 11 21z")
+    val Reset = icon("Reset", "M13 3c-4.97 0-9 4.03-9 9H1l3.89 3.89.07.14L9 12H6c0-3.87 3.13-7 7-7s7 3.13 7 7-3.13 7-7 7c-1.93 0-3.68-.79-4.94-2.06l-1.42 1.42C8.27 19.99 10.51 21 13 21c4.97 0 9-4.03 9-9s-4.03-9-9-9z")
     /** Claude's mark in lists: a plain spark, not the brand logo. Codex uses [Terminal]. */
     val Spark = outline("Spark", "M12 3.5v17M3.5 12h17M6 6l12 12M18 6L6 18")
 }

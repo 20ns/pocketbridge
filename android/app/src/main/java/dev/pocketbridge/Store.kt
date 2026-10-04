@@ -30,6 +30,10 @@ class Store internal constructor(private val prefs: SharedPreferences) {
         requireSession(session)
         check(prefs.edit().putString(key, value).commit()) { "Could not save prompt delivery state." }
     }
+    /** Removes [key] only while it still holds [value] and the pairing is unchanged, so a late answer can't clear newer state. */
+    @Synchronized fun removeIfSame(key: String, value: String, session: Int) {
+        if (session == generation && get(key) == value) prefs.edit().remove(key).apply()
+    }
     @Synchronized fun completePrompt(id: String, prompt: PendingPrompt, session: Int, accepted: Boolean) {
         requireSession(session)
         val edit = prefs.edit().remove("pending:$id")
