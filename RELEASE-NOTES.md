@@ -1,3 +1,7 @@
+PocketBridge 0.8.1
+
+- Fixed a flash when going back from a project or a chat: the page you leave no longer redraws empty while it animates away.
+
 PocketBridge 0.8.0
 
 - New chat from anywhere: a + next to Projects offers New project, General chat, or a chat in any project.

@@ -1,3 +1,13 @@
+PocketBridge 0.8.1 verification, 4 October 2026
+
+- The back flash reproduced on 0.8.0 with animations slowed 10x: going back from a
+  project showed "Project removed / No chats yet" for a moment, and going back from
+  a chat showed an empty "New chat". The leaving page now keeps its project, and a
+  chat closes only once its page has finished animating away. Both checked at 10x
+  and normal speed on the emulator; opening, switching and leaving chats still work.
+- Android: assembleDebug, testDebugUnitTest and lintDebug passed (125 tests, 0 lint
+  errors). No Mac changes.
+
 PocketBridge 0.8.0 verification, 4 October 2026
 
 AUTOMATED CHECKS

@@ -94,6 +94,8 @@ class MainActivity : ComponentActivity() {
 
 /** Depth drives the slide direction: deeper screens enter from the end, Back reverses it. */
 private enum class Screen(val depth: Int) { Pair(0), Projects(0), Chats(1), Settings(1), Chat(2) }
+/** What a page shows. A page that is leaving keeps its own project, so it doesn't redraw empty while it animates away. */
+private data class Destination(val screen: Screen, val project: String)
 
 @Composable private fun BridgeApp(model: BridgeModel) {
     val owner = LocalLifecycleOwner.current
@@ -129,17 +131,19 @@ private enum class Screen(val depth: Int) { Pair(0), Projects(0), Chats(1), Sett
     // Asked once, on the first send, so a turn can report back after the app closes.
     val askAlerts = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { model.alertsAsked(it) }
     LaunchedEffect(model.askAlerts) { if (model.askAlerts && Build.VERSION.SDK_INT >= 33) askAlerts.launch(Manifest.permission.POST_NOTIFICATIONS) }
+    // Leaving a chat shows the list first and closes the chat once its page has animated away, so it never redraws empty.
+    var closing by remember { mutableStateOf("") }
     val screen = when {
         !model.paired -> Screen.Pair
         settings -> Screen.Settings
-        model.selected.isNotEmpty() -> Screen.Chat
+        model.selected.isNotEmpty() && model.selected != closing -> Screen.Chat
         project.isNotEmpty() -> Screen.Chats
         else -> Screen.Projects
     }
     val back: () -> Unit = {
         when (screen) {
             Screen.Settings -> settings = false
-            Screen.Chat -> model.open("")
+            Screen.Chat -> closing = model.selected
             Screen.Chats -> project = ""
             else -> Unit
         }
@@ -182,19 +186,25 @@ private enum class Screen(val depth: Int) { Pair(0), Projects(0), Chats(1), Sett
     CompositionLocalProvider(LocalImageViewer provides { ids, index -> viewer = ids to index }) {
     Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.surfaceContainerHighest)) {
         AnimatedContent(
-            screen,
+            Destination(screen, project),
+            contentKey = { it.screen },
             transitionSpec = {
                 // Shared axis: the new page slides a little from the side it belongs to while the old one makes way.
-                val direction = if (targetState.depth >= initialState.depth) 1 else -1
+                val direction = if (targetState.screen.depth >= initialState.screen.depth) 1 else -1
                 (slideInHorizontally(Motion.spatial(IntOffset.VisibilityThreshold)) { width -> direction * width / 10 } + fadeIn(tween(210, delayMillis = 60, easing = Motion.Emphasized))) togetherWith
                     (slideOutHorizontally(Motion.spatial(IntOffset.VisibilityThreshold)) { width -> -direction * width / 14 } + fadeOut(tween(90)))
             },
             label = "screen",
-        ) { target ->
+        ) { destination ->
+            val target = destination.screen
             // The page a gesture sent away keeps its shrink only while it leaves; the next change of page starts flat.
             if (target == screen) {
                 val settled = transition.currentState == transition.targetState
-                LaunchedEffect(settled) { if (settled) leavingProgress = 0f }
+                LaunchedEffect(settled) {
+                    if (!settled) return@LaunchedEffect
+                    leavingProgress = 0f
+                    if (closing.isNotEmpty()) { if (model.selected == closing) model.open(""); closing = "" }
+                }
             }
             val progress = FastOutSlowInEasing.transform(if (target == screen) backProgress else leavingProgress)
             Box(Modifier.fillMaxSize().graphicsLayer {
@@ -223,7 +233,7 @@ private enum class Screen(val depth: Int) { Pair(0), Projects(0), Chats(1), Sett
                             }
                         },
                     ) { insets -> Projects(model, insets, positions.of("projects"), onOpenProject = { project = it }, onOpenChat = { chat -> project = chat.optString("projectId"); model.open(chat.optString("id")) }) }
-                    Screen.Chats -> ChatsPage(model, snackbar, project, positions.of("chats:$project"), onBack = back, onSettings = { settings = true })
+                    Screen.Chats -> ChatsPage(model, snackbar, destination.project, positions.of("chats:${destination.project}"), onBack = back, onSettings = { settings = true })
                     Screen.Settings -> Page(model, snackbar, title = "Settings", onBack = back) { insets -> Settings(model, insets) }
                     Screen.Chat -> Page(
                         model, snackbar, title = model.chat?.optString("title")?.ifBlank { null } ?: "New chat", onBack = back,
