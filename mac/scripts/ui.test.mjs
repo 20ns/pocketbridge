@@ -1,5 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import {readdirSync} from 'node:fs';
+import {spawnSync} from 'node:child_process';
+import {fileURLToPath} from 'node:url';
+import {copyableReplies} from '../public/support.mjs';
 import {EventDecoder, mergeTranscript, safeLink, markdown, parseActivity, summariseInput, groupMessages, activitySummary, statusLabel, relativeTime, editDraft, prepareDelivery, afterDelivery, promptPayload, blankLocalDraft, withAttachments, slashMatches, turnPlacement, agentsFrom, usableAgent, newChatAgent, resolveOptions, supportedOptions, highlight, diffLines, resetLabel, modelName, effortName, modeHelp, liveStep, elapsedLabel, modelSpeeds, speedName, effortLabel, weeklyLimit, headlineLimit, usageRings, nextCredit, resetAttempt, settleReset, resetPrompt, resetOutcomes, hashIndex, projectTone, projectTones, avatarLetter, projectNameProblem, newProjectAttempt, unknownResult, settleProjectAttempt, projectChoices} from '../public/support.mjs';
 
 // A tiny DOM records writes. No browser or dependency is needed to assert the trust boundary.
@@ -10,6 +14,14 @@ const fakeDoc = () => ({
 });
 const nodes = fragment => { const all = []; const walk = node => { all.push(node); node.children?.forEach(walk); }; walk(fragment); return all; };
 const text = node => node.textContent ?? (node.children ?? []).map(text).join('');
+
+test('every browser module parses', () => {
+  const directory = new URL('../public/', import.meta.url);
+  for (const file of readdirSync(directory).filter(file => file.endsWith('.mjs'))) {
+    const result = spawnSync(process.execPath, ['--check', fileURLToPath(new URL(file, directory))], {encoding:'utf8'});
+    assert.equal(result.status, 0, `${file}: ${result.stderr}`);
+  }
+});
 
 test('SSE handles split CRLF frames, comments, multi-line data and malformed ids', () => {
   const decoder = new EventDecoder();
@@ -249,6 +261,33 @@ test('turn timing lands after the last message of each turn and sub-agents group
   assert.deepEqual([...ends.keys()], [3, 5]);
   assert.equal(ends.get(3).endedAt, 5000);
   assert.equal(agents.get('p1').length, 2);
+});
+
+test('copy eligibility skips activity and keeps the final reply hidden while working', () => {
+  const items = groupMessages([
+    {id:'u', role:'user', text:'go'},
+    {id:'a1', role:'assistant', text:'Starting'},
+    {id:'tool', role:'activity', text:'Shell\n{"command":"pwd"}'},
+    {id:'a2', role:'assistant', text:'Ready'},
+    {id:'steer', role:'user', kind:'steer', text:'also this'},
+    {id:'tool:result', role:'activity', text:'Tool result\nok'},
+    {id:'empty', role:'assistant', text:'   '},
+    {id:'a3', role:'assistant', text:'Done'},
+    {id:'note', role:'activity', text:'Finished'},
+  ]);
+  assert.deepEqual([...copyableReplies(items, true)], ['a2']);
+  assert.deepEqual([...copyableReplies(items, false)], ['a3', 'a2']);
+  assert.deepEqual([...copyableReplies([], false)], []);
+});
+
+test('copy eligibility reads long histories once instead of copying every tail', () => {
+  let visits = 0;
+  const items = Array.from({length:10_000}, (_, index) => ({
+    get type() { visits++; return 'message'; },
+    message:{id:String(index), role:index % 2 ? 'assistant' : 'user', text:'reply'},
+  }));
+  assert.equal(copyableReplies(items, false).size, 5000);
+  assert.equal(visits, items.length);
 });
 
 test('a named tool result after a steer joins its command in the earlier group', () => {

@@ -38,12 +38,19 @@ export async function createService(options = {}) {
   if (publicUrl) { const address = new URL(publicUrl); if (!['http:', 'https:'].includes(address.protocol) || address.username || address.password || address.search || address.hash || address.pathname !== '/') throw new Error('POCKETBRIDGE_PUBLIC_URL must be an HTTP(S) origin'); publicUrl = address.origin; }
   ctx.publicUrl = publicUrl;
 
-  const lastSeq = ctx.lastSeq = () => Number(get('SELECT COALESCE(MAX(seq),0) AS n FROM events').n);
+  const lastSeq = ctx.lastSeq = () => Number(get("SELECT seq FROM sqlite_sequence WHERE name='events'")?.seq ?? 0);
   ctx.replay = client => {
     if (ctx.closed || client.replaying || client.response.destroyed || client.response.writableEnded) return;
     client.replaying = true;
     const batch = () => {
       if (ctx.closed || client.response.destroyed || client.response.writableEnded) return;
+      // Hints older than retention are replaced by a snapshot hint, including on status-only streams.
+      const first = get('SELECT MIN(seq) AS seq FROM events').seq;
+      if (client.seq < (first ?? lastSeq() + 1) - 1) {
+        const event = { seq: lastSeq(), chatId: null, type: 'state', reset: true };
+        const ready = client.response.write(`id: ${event.seq}\nevent: change\ndata: ${JSON.stringify(event)}\n\n`); client.seq = event.seq;
+        if (!ready) { client.response.once('drain', batch); return; }
+      }
       const events = all('SELECT * FROM events WHERE seq>? ORDER BY seq LIMIT 128', client.seq);
       for (const event of events) {
         // A status-only stream (background alerts) skips the many message events streaming text produces.
@@ -83,7 +90,7 @@ export async function createService(options = {}) {
       chats: all(`SELECT id,projectId,agent,title,mode,model,effort,speed,status,updatedAt,error,contextTokens,contextWindow,activity,
         (SELECT substr(text,1,400) FROM messages m WHERE m.chatId=chats.id AND m.role!='activity' ORDER BY m.rowid DESC LIMIT 1) AS preview
         FROM chats ORDER BY updatedAt DESC`).map(chatRow),
-      lastSeq: lastSeq(), capabilities: { modes: agentModes.claude, models: legacyModels, efforts: legacyEfforts, agents: agentIds.map(agents.agentCatalog) },
+      lastSeq: lastSeq(), capabilities: { modes: agentModes.claude, models: legacyModels, efforts: legacyEfforts, agents: agentIds.map(agents.agentCatalog), promptStatus: true },
       server: { claudeAvailable: agents.available.claude, codexAvailable: agents.available.codex, publicUrl: ctx.publicUrl, experiments: experimentsDir ? experimentsDir.replace(homedir(), '~') : null },
     };
   };
@@ -111,6 +118,10 @@ export async function createService(options = {}) {
   } catch (error) { db.close(); throw error; }
   const releaseOwner = () => run('DELETE FROM settings WHERE key=? AND value=?', 'serviceOwner', owner);
   try {
+    // Retention never removes conversation messages, prompt delivery records or the AUTOINCREMENT high-water mark.
+    run('DELETE FROM events WHERE seq<?', lastSeq() - 9999);
+    run("DELETE FROM raw_events WHERE id < COALESCE((SELECT seq FROM sqlite_sequence WHERE name='raw_events'),0)-199");
+    run('UPDATE raw_events SET json=substr(json,1,200000) WHERE length(json)>200000');
     // A crashed service may leave its detached CLI running. Kill only the same OS process, never a reused PID.
     for (const runtime of all('SELECT * FROM runtimes')) if (runtime.startTime && processStamp(runtime.pid) === runtime.startTime) await terminateGroup(runtime.pid, options.stopTimeoutMs ?? 1000);
     run('DELETE FROM runtimes');

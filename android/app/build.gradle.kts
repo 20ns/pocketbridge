@@ -2,7 +2,10 @@ plugins { id("com.android.application"); id("org.jetbrains.kotlin.android"); id(
 android {
     namespace = "dev.pocketbridge"
     compileSdk = 36
-    defaultConfig { applicationId = "dev.pocketbridge"; minSdk = 26; targetSdk = 36; versionCode = 15; versionName = "0.8.4" }
+    useLibrary("android.test.runner", false)
+    useLibrary("android.test.base", false)
+    defaultConfig { applicationId = "dev.pocketbridge"; minSdk = 26; targetSdk = 36; versionCode = 16; versionName = "0.8.5" }
+    defaultConfig.testInstrumentationRunnerArguments["class"] = "dev.pocketbridge.ImageOrientationTest"
     val signingKey = System.getenv("POCKETBRIDGE_SIGNING_KEY")
     if (!signingKey.isNullOrBlank()) {
         signingConfigs.create("personal") {

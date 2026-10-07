@@ -1,3 +1,15 @@
+PocketBridge 0.8.5
+
+- Background alerts reconcile saved delivery IDs once acceptance is proved. Uncertain sends keep Retry, with a bounded background check that cannot hide another turn ending.
+- Streaming no longer rewrites the full transcript cache for every update. Tool grouping runs off the UI thread, with hidden summaries prepared when needed.
+- Browser chats load correctly and use a linear pass to decide which replies offer Copy.
+- Large photos resize before EXIF rotation, reducing peak memory for upload and display.
+- Stop adds a notice for queued prompts that never ran.
+- Old streaming hints and diagnostic records have bounded retention. Clients reconcile expired cursors without losing saved replies.
+- Unchanged downloaded APKs avoid repeated verification on ordinary resumes; installation still rechecks checksum, package, version and signer.
+
+Update the Mac service too for the prompt-status lookup and event recovery. Install the APK over the existing app to preserve pairing.
+
 PocketBridge 0.8.4
 
 - Streaming fetches only changed messages, keeping long-chat network traffic small while preserving replies, late tool results and live thinking.

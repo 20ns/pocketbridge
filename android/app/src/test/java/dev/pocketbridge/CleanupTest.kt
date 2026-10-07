@@ -1,10 +1,42 @@
 package dev.pocketbridge
 
 import java.nio.file.Files
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicReference
 import org.junit.Assert.*
 import org.junit.Test
 
 class CleanupTest {
+    @Test fun `a stale deferred snapshot cannot overwrite a newer save or resurrect a cleared chat`() {
+        val dir = Files.createTempDirectory("transcripts").toFile()
+        try {
+            val cache = TranscriptCache(dir)
+            val current = AtomicReference("old")
+            val entered = CountDownLatch(1)
+            val proceed = CountDownLatch(1)
+            val delayed = Thread {
+                cache.write("chat", "{\"messages\":[\"old\"],\"cursor\":\"old\"}") {
+                    entered.countDown()
+                    proceed.await(5, TimeUnit.SECONDS) && current.get() == "old"
+                }
+            }
+            delayed.start()
+            assertTrue(entered.await(5, TimeUnit.SECONDS))
+            current.set("new")
+            proceed.countDown()
+            val newest = "{\"messages\":[\"final\"],\"cursor\":\"new\"}"
+            cache.write("chat", newest) { current.get() == "new" }
+            delayed.join(5000)
+            assertFalse(delayed.isAlive)
+            assertEquals(newest, cache.read("chat"))
+            current.set("")
+            cache.clear()
+            cache.write("chat", newest) { current.get() == "new" }
+            assertEquals("", cache.read("chat"))
+        } finally { dir.deleteRecursively() }
+    }
+
     @Test fun `distinct transcript snapshots with matching string hashes are saved`() {
         val dir = Files.createTempDirectory("transcripts").toFile()
         try {

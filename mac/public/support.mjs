@@ -105,6 +105,20 @@ export function groupMessages(messages) {
   return items;
 }
 
+/** Replies followed by a prompt (skipping activity), or the final reply once work stops. */
+export function copyableReplies(items, live) {
+  const ids = new Set();
+  let nextRole = live ? null : 'user';
+  for (let index = items.length - 1; index >= 0; index--) {
+    const item = items[index];
+    if (item.type !== 'message') continue;
+    const message = item.message;
+    if (message.role === 'assistant' && message.text.trim() && nextRole === 'user') ids.add(message.id);
+    nextRole = message.role;
+  }
+  return ids;
+}
+
 /** The tool call still running at the end of a transcript, for the working line. */
 export function liveStep(items) {
   const last = items.at(-1);

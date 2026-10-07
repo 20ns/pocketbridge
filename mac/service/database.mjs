@@ -58,6 +58,13 @@ export function openDatabase(dataDir) {
     END;
     CREATE TRIGGER IF NOT EXISTS messages_delete_revision AFTER DELETE ON messages BEGIN
       UPDATE message_clock SET generation=lower(hex(randomblob(16))),revision=revision+1 WHERE id=1;
+    END;
+    CREATE TRIGGER IF NOT EXISTS events_retention AFTER INSERT ON events BEGIN
+      DELETE FROM events WHERE seq<NEW.seq-9999;
+    END;
+    CREATE TRIGGER IF NOT EXISTS raw_events_retention AFTER INSERT ON raw_events BEGIN
+      UPDATE raw_events SET json=substr(json,1,200000) WHERE id=NEW.id AND length(json)>200000;
+      DELETE FROM raw_events WHERE id<NEW.id-199;
     END;`);
   // ponytail: deletion invalidates every chat cursor; use per-chat deletion revisions if bulk deletion becomes common.
   const get = (sql, ...params) => db.prepare(sql).get(...params);

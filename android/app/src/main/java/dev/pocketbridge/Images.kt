@@ -122,6 +122,19 @@ private fun fit(bitmap: Bitmap, maxSide: Int): Bitmap {
     return if (width == bitmap.width && height == bitmap.height) bitmap else bitmap.scale(width, height)
 }
 
+/** Owns [bitmap]; shrink before EXIF copies it, then recycle every replaced intermediate. */
+internal fun fitUpright(bitmap: Bitmap, orientation: Int, maxSide: Int): Bitmap {
+    var image = bitmap
+    try {
+        val fitted = fit(image, maxSide)
+        if (fitted !== image) image.recycle()
+        image = fitted
+        val rotated = upright(image, orientation)
+        if (rotated !== image) image.recycle()
+        return rotated
+    } catch (failure: Throwable) { image.recycle(); throw failure }
+}
+
 private fun orientation(open: () -> java.io.InputStream?) = runCatching {
     open()?.use { ExifInterface(it).getAttributeInt(ExifInterface.TAG_ORIENTATION, ExifInterface.ORIENTATION_NORMAL) }
 }.getOrNull() ?: ExifInterface.ORIENTATION_NORMAL
@@ -135,14 +148,9 @@ fun prepareImage(resolver: ContentResolver, uri: Uri, out: File): Boolean = runC
     val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
     open()?.use { BitmapFactory.decodeStream(it, null, bounds) }
     if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return false
-    var image = decode(open, sampleSize(bounds.outWidth, bounds.outHeight, UPLOAD_MAX_SIDE)) ?: return false
+    val decoded = decode(open, sampleSize(bounds.outWidth, bounds.outHeight, UPLOAD_MAX_SIDE)) ?: return false
+    var image = fitUpright(decoded, orientation(open), UPLOAD_MAX_SIDE)
     try {
-        val rotated = upright(image, orientation(open))
-        if (rotated !== image) image.recycle()
-        image = rotated
-        val fitted = fit(image, UPLOAD_MAX_SIDE)
-        if (fitted !== image) image.recycle()
-        image = fitted
         // JPEG has no transparency; a transparent PNG sits on white instead.
         if (image.hasAlpha()) {
             val flat = createBitmap(image.width, image.height)
@@ -188,7 +196,7 @@ class ImageCache(private val dir: File) {
                 BitmapFactory.decodeFile(file.path, bounds)
                 if (bounds.outWidth <= 0) return@runCatching null
                 val decoded = decode({ file.inputStream() }, sampleSize(bounds.outWidth, bounds.outHeight, maxPx)) ?: return@runCatching null
-                fit(upright(decoded, orientation { file.inputStream() }), maxPx)
+                fitUpright(decoded, orientation { file.inputStream() }, maxPx)
             }.getOrNull()
         }?.also { memory.put(key, it) }
     }

@@ -58,6 +58,11 @@ async function runTurn(threadId, input, turnId) {
     while (!turn.interrupted) await sleep(20);
     child.kill(); return done('interrupted');
   }
+  if (text === 'stop-queue') {
+    command('cmd_queue', 'waiting for interrupt', '');
+    while (!turn.interrupted) await sleep(20);
+    await sleep(200); return done('interrupted');
+  }
   if (text === 'fail') {
     note('error', { error: { message: 'Reconnecting... 1/5' }, willRetry: true });
     return done('failed', { message: 'Codex usage limit reached' });
@@ -142,6 +147,7 @@ for await (const line of createInterface({ input: process.stdin })) {
       { id: 'a1', type: 'agentMessage', text: 'Login now loads in 300 ms.' },
     ] }] : [], nextCursor: null }); break;
     case 'thread/start': case 'thread/resume': case 'thread/fork':
+      await sleep(Number(process.env.FAKE_CODEX_THREAD_DELAY_MS ?? 0));
       thread = message.method === 'thread/resume' ? params.threadId : randomUUID();
       log({ method: message.method, params });
       reply({ thread: { id: thread }, serviceTier: tiers()[thread] ?? null }); break;

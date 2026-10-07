@@ -1,5 +1,5 @@
 // The open conversation: its header, transcript, tool activity, sub-agents and pending answers.
-import {markdown, turnPlacement, groupMessages, activitySummary, effortLabel, liveStep, elapsedLabel, mergeTranscript} from './support.mjs';
+import {markdown, turnPlacement, groupMessages, copyableReplies, activitySummary, effortLabel, liveStep, elapsedLabel, mergeTranscript} from './support.mjs';
 import {$, el, app, drafts, localChats, overrides, persist, persistDrafts, persistLocalChats, notice, api, imageUrl, currentChat, storedChat, projectFor, projectName, agentName, busy, statusBadge, projectAvatar} from './core.mjs';
 import {refresh, controls} from './app.mjs';
 import {renderOptions, clearPrompt} from './composer.mjs';
@@ -160,8 +160,8 @@ export async function loadMessages() {
   if (!storedChat(id)) { showPendingChat(); return; }
   const generation = ++messagesGeneration;
   const previous = transcriptChat === id ? transcript : null;
-  const since = previous?.cursor ? `?since=${encodeURIComponent(previous.cursor)}` : '';
-  const response = await api(`/chats/${encodeURIComponent(id)}/messages${since}`);
+  const query = previous?.cursor ? `?since=${encodeURIComponent(previous.cursor)}` : '';
+  const response = await api(`/chats/${encodeURIComponent(id)}/messages${query}`);
   if (id !== app.selected || generation !== messagesGeneration) return;
   const result = mergeTranscript(previous, response);
   transcriptChat = id; transcript = result;
@@ -177,21 +177,20 @@ export async function loadMessages() {
   target.replaceChildren();
   if (!result.messages.length && !busy(chat)) { showPendingChat(); return; }
   const items = groupMessages(result.messages), live = busy(chat);
+  const copyable = copyableReplies(items, live);
   const {ends, agents: subagentsByTurn} = turnPlacement(result.messages, result.turns, result.subagents);
+  const turnIds = new Set(result.turns?.map(turn => turn.id));
   const indexOf = new Map(result.messages.map((message, index) => [message.id, index]));
   const lastIndexOf = item => item.type === 'message' ? indexOf.get(item.message.id) : Math.max(...item.steps.flatMap(step => [indexOf.get(step.id), step.result ? indexOf.get(step.result.id) ?? -1 : -1]));
   let shownImported = false, turnPrompt = null;
   items.forEach((item, index) => {
     if (item.type === 'message' && item.message.kind === 'imported' && !shownImported) { shownImported = true; target.append(el('p', 'imported-divider', `Continued from ${chat.agent === 'codex' ? 'Codex' : 'Claude Code'}`)); }
-    if (item.type === 'message' && item.message.role === 'user' && result.turns?.some(turn => turn.id === item.message.id)) turnPrompt = item.message.id;
+    if (item.type === 'message' && item.message.role === 'user' && turnIds.has(item.message.id)) turnPrompt = item.message.id;
     const end = ends.get(lastIndexOf(item));
     if (item.type !== 'message') target.append(renderActivity(item, open));
     else {
-      // A reply that closes a turn gets Copy: the next message is a prompt, or work has stopped.
-      const next = items.slice(index + 1).find(other => other.type === 'message');
-      const copyable = item.message.role === 'assistant' && Boolean(item.message.text.trim()) && (next ? next.message.role === 'user' : !live);
       const finished = end?.endedAt && !(live && end === result.turns?.at(-1));
-      target.append(renderMessage(item.message, agentName(chat), copyable, finished ? end.endedAt - end.startedAt : null));
+      target.append(renderMessage(item.message, agentName(chat), copyable.has(item.message.id), finished ? end.endedAt - end.startedAt : null));
     }
     if (end && subagentsByTurn.get(end.id)?.length) target.append(renderSubagents(subagentsByTurn.get(end.id)));
     else if (index === items.length - 1 && turnPrompt && subagentsByTurn.get(turnPrompt)?.length && !end) target.append(renderSubagents(subagentsByTurn.get(turnPrompt)));

@@ -41,6 +41,9 @@ class BridgeModel(application: Application) : AndroidViewModel(application) {
     private var refreshJob: Job? = null
     private var cachedMessagesJob: Job? = null
     private var transcript: JSONObject? = null
+    private var transcriptWriteJob: Job? = null
+    private var transcriptClearJob: Job? = null
+    private val transcriptWrites = ConcurrentHashMap<String, Pair<Api, JSONObject>>()
     private val changes = MutableSharedFlow<Unit>(extraBufferCapacity = 1, onBufferOverflow = BufferOverflow.DROP_OLDEST)
     private val pendingSync = AtomicInteger(0)
     private val cursor = EventCursor()
@@ -65,6 +68,7 @@ class BridgeModel(application: Application) : AndroidViewModel(application) {
     var projects by mutableStateOf<List<JSONObject>>(emptyList()); private set
     var chats by mutableStateOf<List<JSONObject>>(emptyList()); private set
     var messages by mutableStateOf<List<JSONObject>>(emptyList()); private set
+    var messageEntries by mutableStateOf<List<Entry>>(emptyList()); private set
     var approvals by mutableStateOf<List<JSONObject>>(emptyList()); private set
     var agents by mutableStateOf<List<AgentInfo>>(emptyList()); private set
     /** The open chat's turn timing, sub-agents and the agent's own line about what it's doing now. */
@@ -147,6 +151,11 @@ class BridgeModel(application: Application) : AndroidViewModel(application) {
         agents = parseAgents(state.optJSONObject("capabilities")).map { agent -> agentSwitching[agent.id]?.let { agent.copy(enabled = it) } ?: agent }
         claudeAvailable = state.optJSONObject("server")?.optBoolean("claudeAvailable", true) ?: true
         experiments = state.optJSONObject("server")?.textOrNull("experiments").orEmpty()
+        if (pending?.id !in Alerts.inFlight && pending != null && store.get("pending:$selected").isEmpty()) {
+            attachmentLists.remove(selected)
+            pending = null; draft = store.get("draft:$selected"); attachments = attachmentsOf(selected); applyOptionsFromSelection()
+            cleanOutbox()
+        }
     }
     private fun draftChat(id: String) = store.get("draftChat:$id").takeIf { it.isNotEmpty() }?.let {
         runCatching { DraftChat.parse(id, it) }.onFailure { store.remove("draftChat:$id") }.getOrNull()
@@ -174,26 +183,62 @@ class BridgeModel(application: Application) : AndroidViewModel(application) {
     private fun loadMessages(id: String) {
         cachedMessagesJob?.cancel()
         transcript = null
-        messages = emptyList(); approvals = emptyList(); turns = emptyList(); subagents = emptyList(); activity = ""; thinking = ""; loadedChat = ""
+        messages = emptyList(); messageEntries = emptyList(); approvals = emptyList(); turns = emptyList(); subagents = emptyList(); activity = ""; thinking = ""; loadedChat = ""
         if (id.isEmpty()) return
         val cacheSession = store.session()
+        val latest = transcriptWrites[id]?.takeIf { api === it.first }?.second
         cachedMessagesJob = viewModelScope.launch {
-            val result = withContext(Dispatchers.IO) { transcripts.read(id).takeIf { it.isNotEmpty() }?.let { runCatching { JSONObject(it) }.getOrNull() } }
+            val result = withContext(Dispatchers.IO) {
+                val snapshot = latest ?: transcripts.read(id).takeIf { it.isNotEmpty() }?.let { saved ->
+                    runCatching { JSONObject(saved) }.getOrNull()
+                }
+                snapshot?.let {
+                    runCatching {
+                        snapshot to transcript(snapshot.getJSONArray("messages").objects().map(::said))
+                    }.getOrNull()
+                }
+            }
             if (result != null && selected == id && store.session() == cacheSession) {
-                runCatching { applyMessages(result); loadedChat = id }
+                runCatching { applyMessages(result.first, result.second); loadedChat = id }
             }
         }
     }
-    private fun applyMessages(result: JSONObject) {
+    private fun applyMessages(result: JSONObject, entries: List<Entry>) {
         transcript = result
+        messageEntries = entries
         messages = result.getJSONArray("messages").objects(); approvals = result.optJSONArray("approvals")?.objects().orEmpty()
         turns = parseTurns(result); subagents = parseSubagents(result)
         activity = if (result.isNull("activity")) "" else result.optString("activity")
         thinking = if (result.isNull("thinking")) "" else result.optString("thinking")
     }
+    /** A saved cursor always travels with its full transcript. Streaming snapshots coalesce; final replies flush now. */
+    private fun cacheTranscript(id: String, result: JSONObject, flush: Boolean = false) {
+        val currentApi = api ?: return
+        transcriptWrites[id] = currentApi to result
+        writeTranscripts(flush)
+    }
+    private fun writeTranscripts(flush: Boolean) {
+        if (flush) transcriptWriteJob?.cancel()
+        else if (transcriptWriteJob?.isActive == true) return
+        transcriptWriteJob = viewModelScope.launch {
+            if (!flush) delay(5000)
+            withContext(Dispatchers.IO) {
+                transcriptClearJob?.join()
+                transcriptWrites.entries.toList().forEach { (id, snapshot) ->
+                    ensureActive()
+                    if (api === snapshot.first && transcriptWrites[id] === snapshot) {
+                        transcripts.write(id, snapshot.second.toString()) { api === snapshot.first && transcriptWrites[id] === snapshot }
+                    }
+                    transcriptWrites.remove(id, snapshot)
+                }
+            }
+        }
+    }
     fun open(id: String) {
+        if (id != selected) writeTranscripts(flush = true)
         if (id != selected) discardEmptyDraft(selected)
         selected = id; store.put("selected", id); Alerts.viewing = id
+        if (attachmentLists[id].orEmpty().none { it.preparing || it.state == UploadState.Uploading }) attachmentLists.remove(id)
         draft = store.get("draft:$id"); pending = loadPending(id); applyOptionsFromSelection(); loadMessages(id); attachments = attachmentsOf(id)
         if (id.isNotEmpty()) Alerts.dismiss(getApplication(), id)
         refresh()
@@ -221,22 +266,24 @@ class BridgeModel(application: Application) : AndroidViewModel(application) {
     fun disconnect() {
         // The client goes first so a sync already on the IO thread can't write this pairing's transcript again.
         api = null; actionJob?.cancel(); refreshJob?.cancel(); cachedMessagesJob?.cancel(); stopConnection(); store.clear()
-        viewModelScope.launch(Dispatchers.IO) { syncMutex.withLock { transcripts.clear() } }
+        transcriptClearJob = viewModelScope.launch(Dispatchers.IO) { syncMutex.withLock { transcripts.clear() } }
         paired = false; online = false; usage.clear(); selected = ""; messages = emptyList(); chats = emptyList(); projects = emptyList(); draft = ""; pending = null; localDraftIds = emptyList(); error = ""; connectionIssue = ""; revoked = false
         forgetPairingData()
         Alerts.stop(getApplication()); Alerts.clear(getApplication())
     }
     /** Mac-specific caches belong to one pairing. */
     private fun forgetPairingData() {
+        transcriptWriteJob?.cancel(); transcriptWriteJob = null; transcriptWrites.clear(); messageEntries = emptyList()
         transcript = null; loadedChat = ""
         cancelShare()
-        Alerts.deliveries.clear()
+        Alerts.deliveries.clear(); Alerts.inFlight.clear()
         turns = emptyList(); subagents = emptyList(); activity = ""; thinking = ""; attachments = emptyList(); attachmentLists.clear(); shared = emptyList()
         details.clear(); acceptedAt.clear(); alertsOn = true
         deleting = null; deletions = emptyMap(); agentSwitching = emptyMap(); experiments = ""; projectError = ""; newChatRequested = false; showChat = false
         viewModelScope.launch(Dispatchers.IO) { outbox.deleteRecursively(); images.clear() }
     }
     fun foreground(active: Boolean) {
+        if (!active) writeTranscripts(flush = true)
         foreground = active; Alerts.foreground = active
         if (active && paired) start() else if (!active) stopConnection()
     }
@@ -285,6 +332,7 @@ class BridgeModel(application: Application) : AndroidViewModel(application) {
             if (System.currentTimeMillis() - transcriptsPrunedAt > 10 * 60_000) {
                 transcriptsPrunedAt = System.currentTimeMillis()
                 val listed = chats.map { it.optString("id") }.toSet()
+                transcriptWrites.keys.retainAll(listed)
                 withContext(Dispatchers.IO) { transcripts.keepOnly(listed) }
             }
             val server = chats.find { it.optString("id") == id }
@@ -299,14 +347,21 @@ class BridgeModel(application: Application) : AndroidViewModel(application) {
         }
         if (fetchMessages && id.isNotEmpty() && chats.any { it.optString("id") == id }) {
             val previous = transcript.takeIf { loadedChat == id }
+            val previousEntries = messageEntries
             val since = previous?.textOrNull("cursor")?.let { "?since=" + java.net.URLEncoder.encode(it, "UTF-8") }.orEmpty()
-            val result = withContext(Dispatchers.IO) {
-                mergeTranscript(previous, currentApi.request("/api/chats/$id/messages$since")).also { if (api === currentApi) transcripts.write(id, it.toString()) }
+            val (result, entries) = withContext(Dispatchers.IO) {
+                val response = currentApi.request("/api/chats/$id/messages$since")
+                val unchanged = previous != null && !response.optBoolean("full", true) && response.getJSONArray("messages").length() == 0
+                val merged = mergeTranscript(previous, response)
+                merged to if (unchanged) previousEntries else transcript(merged.getJSONArray("messages").objects().map(::said))
             }
             if (api !== currentApi) return@withLock
+            val lastTurn = parseTurns(result).lastOrNull()
+            val ended = lastTurn?.endedAt != null && lastTurn != previous?.let(::parseTurns)?.lastOrNull()
+            cacheTranscript(id, result, flush = selected != id || !isWorking(chats.find { it.optString("id") == id }?.optString("status")) || ended)
             if (selected == id) {
                 cachedMessagesJob?.cancel()
-                applyMessages(result); loadedChat = id
+                applyMessages(result, entries); loadedChat = id
                 // Accepted, but the answer to its POST was lost: settle it exactly as a confirmed send would, never resend.
                 pending?.takeIf { deliveredPrompt(messages, it.id) }?.let { prompt ->
                     withContext(Dispatchers.IO) { store.completePrompt(id, prompt, deliverySession, accepted = true) }
@@ -415,12 +470,13 @@ class BridgeModel(application: Application) : AndroidViewModel(application) {
         require(prompt.text.isNotEmpty() || prompt.attachments.isNotEmpty()) { "Write a prompt first." }
         askForAlerts()
         acceptedAt.remove(id)
-        Alerts.deliveries[id] = prompt.id
-        if (selected == id) pending = prompt
-        withContext(Dispatchers.IO) { store.commit("pending:$id", prompt.json().toString(), deliverySession) }
-        if (api !== currentApi) return@action
+        val watch = DeliveryWatch(prompt.id, System.currentTimeMillis() + DELIVERY_WATCH_MILLIS)
+        Alerts.deliveries[id] = watch
+        Alerts.inFlight.add(prompt.id)
         if (selected == id) pending = prompt
         try {
+            withContext(Dispatchers.IO) { store.savePrompt(id, prompt, watch.until, deliverySession) }
+            if (api !== currentApi) return@action
             withContext(Dispatchers.IO) {
                 val result = currentApi.request("/api/chats/$id/prompts", prompt.json())
                 check(result.optBoolean("accepted")) { "The Mac did not confirm delivery. Retry with the same prompt ID." }
@@ -432,7 +488,7 @@ class BridgeModel(application: Application) : AndroidViewModel(application) {
             // Timeouts and server failures may follow execution. Keep their delivery IDs.
             if (api !== currentApi) return@action
             if (failure.definitiveRejection) {
-                Alerts.deliveries.remove(id, prompt.id)
+                Alerts.deliveries.remove(id, watch)
                 withContext(Dispatchers.IO) { store.completePrompt(id, prompt, deliverySession, accepted = false) }
                 if (selected == id) pending = null
                 if (failure.status == 410 && local != null) {
@@ -446,6 +502,9 @@ class BridgeModel(application: Application) : AndroidViewModel(application) {
                 }
             }
             throw failure
+        } finally {
+            Alerts.inFlight.remove(prompt.id)
+            if (store.get("pending:$id").isEmpty() && acceptedAt[id] == null) Alerts.deliveries.remove(id, watch)
         }
         sync()
     }
@@ -599,6 +658,7 @@ class BridgeModel(application: Application) : AndroidViewModel(application) {
                 withContext(Dispatchers.IO) {
                     currentApi.request("/api/chats/$id/delete", JSONObject())
                     store.commitChatRemoval(id, removalSession)
+                    transcriptWrites.remove(id)
                     transcripts.remove(id)
                 }
                 chats = chats.filter { it.optString("id") != id }
@@ -780,7 +840,7 @@ class BridgeModel(application: Application) : AndroidViewModel(application) {
             id to chat.optString("status").let { if (it == "waiting" && id != selected) "running" else it }
         }.toMutableMap()
         // A prompt still on its way will start a turn the Mac hasn't reported yet.
-        (chats.map { it.optString("id") } + localDraftIds).forEach { id -> loadPending(id)?.let { Alerts.deliveries.putIfAbsent(id, it.id) } }
+        store.pendingPrompts().forEach { (id, prompt) -> Alerts.deliveries.putIfAbsent(id, DeliveryWatch(prompt.id, store.get("watch:$id").toLongOrNull() ?: 0)) }
         Alerts.deliveries.keys.forEach { baseline.putIfAbsent(it, "sending") }
         if (baseline.isNotEmpty()) Alerts.start(getApplication(), baseline)
     }

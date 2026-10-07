@@ -286,6 +286,8 @@ class UpdateModel(private val context: Context, private val scope: CoroutineScop
     private val updater = Updater(context)
     var busy by mutableStateOf(false); private set
     var status by mutableStateOf(UpdateStatus()); private set
+    private var readyFileStamp: Pair<Long, Long>? = null
+    private fun fileStamp() = status.apkPath.takeIf { it.isNotBlank() }?.let(::File)?.takeIf { it.isFile }?.let { it.length() to it.lastModified() }
 
     init { step {
         status = withContext(Dispatchers.IO) { updater.restore() }
@@ -307,9 +309,11 @@ class UpdateModel(private val context: Context, private val scope: CoroutineScop
     /** Back from Android's install permission screen: carry on if it was granted. */
     fun resume() {
         if (busy || status.apkPath.isBlank()) return
+        if (!status.waitingForPermission && fileStamp() == readyFileStamp && System.currentTimeMillis() - (readyFileStamp?.second ?: 0) <= UPDATE_KEEP_MILLIS) return
         step {
-            status = withContext(Dispatchers.IO) { updater.restore() }
-            if (status.waitingForPermission && context.packageManager.canRequestPackageInstalls()) status = updater.install()
+            // Installation always revalidates bytes and signer; ordinary resumes only need to notice changed or missing files.
+            status = if (status.waitingForPermission && context.packageManager.canRequestPackageInstalls()) updater.install()
+            else withContext(Dispatchers.IO) { updater.restore() }
         }
     }
 
@@ -319,7 +323,7 @@ class UpdateModel(private val context: Context, private val scope: CoroutineScop
         scope.launch {
             try { block() } catch (cancelled: CancellationException) { throw cancelled }
             catch (failure: Exception) { status = status.copy(message = failureReason(failure)) }
-            finally { busy = false }
+            finally { readyFileStamp = fileStamp(); busy = false }
         }
     }
 }

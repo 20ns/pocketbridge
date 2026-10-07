@@ -190,6 +190,13 @@ export function createRoutes(ctx) {
           const id = randomUUID();
           run('INSERT INTO chats (id,projectId,agent,title,mode,model,effort,speed,status,updatedAt) VALUES (?,?,?,?,?,?,?,?,?,?)', id, input.projectId, agent, input.title ? text(input.title, 'title', 160) : 'New chat', options.mode ?? 'bypassPermissions', options.model ?? 'default', options.effort ?? 'default', options.speed ?? null, 'idle', Date.now()); change('state', id); return json(response, 201, chat(id));
         }
+        const promptRoute = route.match(/^\/api\/chats\/([^/]+)\/prompts\/([^/]+)$/);
+        if (promptRoute && request.method === 'GET') {
+          const [, id, promptId] = promptRoute; text(id, 'chat id', 128); text(promptId, 'prompt id', 128);
+          const prompt = get('SELECT startedAt,endedAt,delivery FROM prompts WHERE chatId=? AND id=?', id, promptId);
+          return json(response, 200, { accepted: Boolean(prompt), deleted: Boolean(get('SELECT id FROM deleted_chats WHERE id=?', id)),
+            status: get('SELECT status FROM chats WHERE id=?', id)?.status ?? null, startedAt: prompt?.startedAt ?? null, endedAt: prompt?.endedAt ?? null, delivery: prompt?.delivery ?? null });
+        }
         const chatRoute = route.match(/^\/api\/chats\/([^/]+)\/(messages|prompts|stop|delete|rename|desktop)$/);
         if (chatRoute) {
           const [, id, action] = chatRoute;

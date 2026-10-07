@@ -38,8 +38,8 @@ data class Answered(override val chat: ChatStatus) : AlertEvent
  * What changed worth telling the owner between two looks at the Mac. [previous] holds the last known status per chat;
  * a chat it doesn't know can still need an answer but can't have "finished". The chat on screen is never announced.
  */
-fun alertEvents(previous: Map<String, String>, current: List<ChatStatus>, viewing: String): List<AlertEvent> = current.mapNotNull { chat ->
-    val before = previous[chat.id]
+fun alertEvents(previous: Map<String, String>, current: List<ChatStatus>, viewing: String, delivered: Set<String> = emptySet()): List<AlertEvent> = current.mapNotNull { chat ->
+    val before = previous[chat.id].let { if (it == "sending" && chat.id in delivered) "running" else it }
     when {
         chat.id == viewing -> null
         chat.status == "waiting" && before != "waiting" -> NeedsAnswer(chat)
@@ -80,6 +80,23 @@ fun approvalOutcome(messages: JSONObject?, approval: String): String? {
 
 fun endedLabel(status: String) = when (status) { "error" -> "Failed"; "interrupted" -> "Stopped"; else -> "Done" }
 
+/** A grace period for late acceptance, never a new execution attempt. Saved pending IDs remain available for Retry. */
+data class DeliveryWatch(val promptId: String, val until: Long)
+const val DELIVERY_WATCH_MILLIS = 120_000L
+fun awaitingDelivery(watch: DeliveryWatch, inFlight: Boolean, now: Long) = inFlight || now < watch.until
+
+/** New Macs answer from the ledger; old Macs need one transcript lookup. This read never resends a prompt. */
+internal suspend fun deliveryStatus(api: Api, chatId: String, promptId: String, supportsStatus: Boolean): JSONObject {
+    if (supportsStatus) return api.request("/api/chats/$chatId/prompts/$promptId")
+    return try {
+        val snapshot = api.request("/api/chats/$chatId/messages")
+        JSONObject().put("accepted", deliveredPrompt(snapshot.getJSONArray("messages").objects(), promptId))
+    } catch (failure: ApiError) {
+        if (failure.status != 404) throw failure
+        JSONObject().put("accepted", false)
+    }
+}
+
 object Alerts {
     private const val NEEDS = "needs"
     private const val FINISHED = "finished"
@@ -101,7 +118,8 @@ object Alerts {
     @Volatile var foreground = false
     @Volatile var viewing = ""
     /** Prompts sent from any chat, kept through ambiguous delivery and acceptance before the next state snapshot. */
-    val deliveries = ConcurrentHashMap<String, String>()
+    val deliveries = ConcurrentHashMap<String, DeliveryWatch>()
+    val inFlight = ConcurrentHashMap.newKeySet<String>()
 
     fun allowed(context: Context) = context.getSystemService(NotificationManager::class.java).areNotificationsEnabled()
 
@@ -225,7 +243,9 @@ class AlertService : Service() {
     /** Per waiting chat, the request its notification shows; and chats whose requests changed since the last look. */
     private val notified = mutableMapOf<String, String>()
     private val approvalsChanged = ConcurrentHashMap.newKeySet<String>()
-    private var deliveryWaitSince = 0L
+    private var deliveryCheckAt = 0L
+    private val proven = mutableMapOf<String, String>()
+    private var pairing = ""
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -255,7 +275,7 @@ class AlertService : Service() {
     private fun api(): Api? {
         val store = Store(this)
         if (store.get("alerts") == "off" || !Alerts.allowed(this)) return null
-        return runCatching { store.token().takeIf { it.isNotEmpty() }?.let { Api(normalizeServer(store.get("base")), it) } }.getOrNull()
+        return runCatching { pairing = store.get("token"); store.token().takeIf { it.isNotEmpty() }?.let { Api(normalizeServer(store.get("base")), it) } }.getOrNull()
     }
 
     private suspend fun watch() {
@@ -283,6 +303,7 @@ class AlertService : Service() {
             catch (failure: Exception) {
                 if (failure is ApiError && failure.status == 401) return finish(clear = true)
                 val now = System.currentTimeMillis()
+                if (statuses.values.none(::isWorking) && Alerts.deliveries.values.none { awaitingDelivery(it, it.promptId in Alerts.inFlight, now) }) return finish()
                 if (failingSince == 0L) failingSince = now
                 // A Mac out of reach for a quarter of an hour isn't worth a radio kept awake.
                 if (now - failingSince > 15 * 60_000) return finish()
@@ -294,18 +315,34 @@ class AlertService : Service() {
     /** One look at the Mac: posts what changed and updates the ongoing summary. Null once the service has stopped. */
     private suspend fun refresh(api: Api): Long? {
         if (!Alerts.answerable(Store(this))) { finish(clear = true); return null }
-        // Read state after delivery proof: an idle snapshot requested before the POST cannot announce Done.
-        for ((id, prompt) in Alerts.deliveries.toMap()) {
-            val delivered = messages(api, id)?.optJSONArray("messages")?.objects()?.let { deliveredPrompt(it, prompt) } == true
-            if (delivered && Alerts.deliveries.remove(id, prompt) && statuses[id] == "sending") statuses[id] = "running"
+        val store = Store(this)
+        if (store.get("token") != pairing) { finish(); return null }
+        val now = System.currentTimeMillis()
+        if (now >= deliveryCheckAt) {
+            val supportsStatus = runCatching { JSONObject(store.get("state")).getJSONObject("capabilities").optBoolean("promptStatus") }.getOrDefault(false)
+            // ponytail: uncertain sends get two minutes per attempt; old records get one read on each background transition.
+            deliveryCheckAt = now + if (supportsStatus) 5000 else 30_000
+            for ((id, watch) in Alerts.deliveries.toMap()) {
+                val proof = withContext(Dispatchers.IO) { deliveryStatus(api, id, watch.promptId, supportsStatus) }
+                if (store.get("token") != pairing) { finish(); return null }
+                if (proof.optBoolean("accepted")) {
+                    withContext(Dispatchers.IO) { store.reconcilePrompt(id, watch.promptId, pairing) }
+                    if (Alerts.deliveries.remove(id, watch) && !proof.optBoolean("deleted")) proven[id] = watch.promptId
+                } else if (proof.optBoolean("deleted") || !awaitingDelivery(watch, watch.promptId in Alerts.inFlight, System.currentTimeMillis())) {
+                    Alerts.deliveries.remove(id, watch)
+                }
+            }
         }
+        // State follows acceptance proof, so an older idle snapshot can't manufacture a completion.
         val state = withContext(Dispatchers.IO) { api.request("/api/state") }
         // Alerts may have gone off while that was on its way.
         if (!Alerts.answerable(Store(this))) { finish(clear = true); return null }
+        if (store.get("token") != pairing) { finish(); return null }
         val chats = state.optJSONArray("chats")?.objects().orEmpty().map(::chatStatus)
         val viewing = if (Alerts.foreground) Alerts.viewing else ""
-        val unresolved = Alerts.deliveries.keys.toSet()
-        val events = alertEvents(statuses, chats, viewing).filterNot { it is Ended && it.chat.id in unresolved }
+        val unresolved = Alerts.deliveries.filterValues { awaitingDelivery(it, it.promptId in Alerts.inFlight, System.currentTimeMillis()) }.keys
+        val events = alertEvents(statuses, chats, viewing, proven.keys)
+        proven.clear()
         for (event in events) when (event) {
             is NeedsAnswer -> announce(api, event.chat, fresh = true)
             is Ended -> Alerts.ended(this, event.chat)
@@ -316,20 +353,16 @@ class AlertService : Service() {
         // Still waiting, but on another request (one answered, the next asked between two looks), or still missing its actions.
         val changed = approvalsChanged.toSet().also { approvalsChanged.removeAll(it) }
         for (chat in chats.filter { it.id in waiting && (it.id in unfetched || it.id in changed) && events.none { event -> event.chat.id == it.id } }) announce(api, chat, fresh = false)
+        val awaitingProof = statuses.filterValues { it == "sending" }.keys
         statuses = chats.associate { it.id to it.status }.toMutableMap()
-        unresolved.forEach { if (!isWorking(statuses[it])) statuses[it] = "sending" }
+        unresolved.forEach { if (!isWorking(statuses[it]) && (it in awaitingProof || statuses[it] == null)) statuses[it] = "sending" }
         val working = chats.filter { isWorking(it.status) }
-        // An unexecuted, uncertain send keeps Retry on the phone; stop polling after the same 15-minute ceiling.
-        if (working.isEmpty() && unresolved.isNotEmpty()) {
-            if (deliveryWaitSince == 0L) deliveryWaitSince = System.currentTimeMillis()
-            if (System.currentTimeMillis() - deliveryWaitSince > 15 * 60_000) { finish(); return null }
-        } else deliveryWaitSince = 0L
         val active = working + unresolved.filter { id -> working.none { it.id == id } }.map { id ->
             chats.find { it.id == id }?.copy(status = "running") ?: ChatStatus(id, "Sending prompt", "running")
         }
         if (active.isEmpty()) { finish(); return null }
         started.keys.retainAll(active.filter { it.status != "waiting" }.map { it.id }.toSet())
-        for (chat in active.filter { it.status == "running" && it.id !in started }) started[chat.id] = turnStart(api, chat.id) ?: System.currentTimeMillis()
+        for (chat in working.filter { it.status == "running" && it.id !in started }) started[chat.id] = turnStart(api, chat.id) ?: System.currentTimeMillis()
         val since = active.singleOrNull()?.let { started[it.id] }
         if (lastSummary != active to since) {
             lastSummary = active to since

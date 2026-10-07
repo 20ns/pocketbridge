@@ -46,6 +46,11 @@ async function run(message) {
   if (calls++ === 0) appendFileSync('calls.ndjson', JSON.stringify({ args, prompt }) + '\n');
   turn = { interrupted: false, waiter: null };
   replay(message);
+  if (prompt === 'stop-closing') {
+    // Keep stdout open after the CLI exits so a prompt can arrive during run cleanup.
+    spawn(process.execPath, ['-e', 'setTimeout(()=>{},2000)'], { stdio: ['ignore', 'inherit', 'inherit'] });
+    writeFileSync('closing.pid', String(process.pid)); result('Done'); process.exit(0);
+  }
   if (prompt === 'thinking' || prompt === 'thinking-background') {
     emit({ type: 'stream_event', event: { type: 'message_start', message: { id: 'thought-1' } } });
     emit({ type: 'stream_event', event: { type: 'content_block_start', index: 0, content_block: { type: 'thinking', thinking: '' } } });

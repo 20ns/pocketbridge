@@ -10,27 +10,28 @@ private fun safeName(id: String) = id.replace(Regex("[^A-Za-z0-9-]"), "_")
 class TranscriptCache(private val dir: File) {
     private val written = ConcurrentHashMap<String, ByteArray>()
     private fun file(id: String) = File(dir, safeName(id) + ".json")
-    fun read(id: String): String = runCatching { file(id).takeIf { it.isFile }?.readText().orEmpty() }.getOrDefault("")
-    fun write(id: String, text: String) {
+    @Synchronized fun read(id: String): String = runCatching { file(id).takeIf { it.isFile }?.readText().orEmpty() }.getOrDefault("")
+    @Synchronized fun write(id: String, text: String, current: () -> Boolean = { true }) {
+        if (!current()) return
         val digest = MessageDigest.getInstance("SHA-256").digest(text.toByteArray())
-        if (written[id]?.contentEquals(digest) == true) return
+        if (written[id]?.contentEquals(digest) == true || !current()) return
         runCatching {
             dir.mkdirs()
             val temporary = File(dir, file(id).name + ".tmp")
             temporary.writeText(text)
-            if (!temporary.renameTo(file(id))) temporary.delete() else written[id] = digest
+            if (!current() || !temporary.renameTo(file(id))) temporary.delete() else written[id] = digest
         }
     }
-    fun remove(id: String) { written.remove(id); file(id).delete() }
+    @Synchronized fun remove(id: String) { written.remove(id); file(id).delete() }
     /** Drops transcripts of chats the Mac no longer lists, such as ones deleted from another client. */
-    fun keepOnly(ids: Set<String>) {
+    @Synchronized fun keepOnly(ids: Set<String>) {
         val names = ids.map { file(it).name }.toSet()
         dir.listFiles().orEmpty().filter { it.name !in names }.forEach { stale ->
             written.keys.removeAll { file(it).name == stale.name }
             stale.delete()
         }
     }
-    fun clear() { written.clear(); dir.deleteRecursively() }
+    @Synchronized fun clear() { written.clear(); dir.deleteRecursively() }
 }
 
 /** Project logos as the Mac sent them, one file per project and icon version tag. Writes and pruning never interleave. */

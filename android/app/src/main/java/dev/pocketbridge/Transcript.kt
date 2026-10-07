@@ -15,7 +15,9 @@ fun said(message: JSONObject) = Said(
 )
 
 /** One tool call paired with its result once that arrives. */
-data class Step(val id: String, val tool: String, val summary: String, val input: String, val result: String? = null, val failed: Boolean = false, val at: Long = 0) {
+data class Step(val id: String, val tool: String, private val label: String?, val input: String, val result: String? = null, val failed: Boolean = false, val at: Long = 0) {
+    // Closed groups only show their last step; don't parse every hidden tool's input on each streamed reply.
+    val summary by lazy { label ?: summarize(tool, input) }
     val isNote get() = tool == NOTE
 }
 
@@ -51,7 +53,7 @@ fun transcript(messages: List<Said>): List<Entry> {
         } else {
             val step = when {
                 isResult -> Step(said.id, if (head == "Tool failed") "Failed" else "Result", firstLine(body), "", body, head == "Tool failed", said.createdAt)
-                body.trimStart().startsWith("{") -> Step(said.id, head, summarize(head, body), body, at = said.createdAt)
+                body.trimStart().startsWith("{") -> Step(said.id, head, null, body, at = said.createdAt)
                 else -> Step(said.id, NOTE, firstLine(said.text), said.text, at = said.createdAt)
             }
             steps += step

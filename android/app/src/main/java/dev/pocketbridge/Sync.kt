@@ -73,6 +73,7 @@ const val SYNC_MESSAGES = 2
 /** What an SSE change needs refetched. Streaming text for another chat needs nothing until its state changes. */
 fun syncKind(data: String, selected: String): Int {
     val event = runCatching { JSONObject(data) }.getOrNull() ?: return SYNC_STATE or SYNC_MESSAGES
+    if (event.optBoolean("reset")) return SYNC_STATE or SYNC_MESSAGES
     val mine = selected.isNotEmpty() && event.optString("chatId") == selected
     return when (event.optString("type")) {
         "message" -> if (mine) SYNC_MESSAGES else 0

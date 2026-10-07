@@ -29,10 +29,12 @@ class StoreTest {
         val store = Store(Preferences().value)
         val prompt = PendingPrompt("delivery", "hello")
         store.put("draft:chat", "next prompt")
+        store.savePrompt("chat", prompt, 100, store.session())
         store.completePrompt("chat", prompt, store.session(), accepted = true)
         assertEquals("next prompt", store.get("draft:chat"))
         store.put("draft:chat", "hello")
         store.put("options:chat", ChatOptions("auto", "sonnet", "high").store())
+        store.savePrompt("chat", prompt, 100, store.session())
         store.completePrompt("chat", prompt, store.session(), accepted = false)
         assertEquals("hello", store.get("draft:chat"))
         assertNotEquals("", store.get("options:chat"))
@@ -46,6 +48,7 @@ class StoreTest {
         store.commit("pending:chat", prompt.json().toString(), store.session())
         store.completePrompt("chat", prompt, store.session(), accepted = false)
         assertEquals(sent, decodeAttachments(store.get("attachments:chat")))
+        store.savePrompt("chat", prompt, 100, store.session())
         store.completePrompt("chat", prompt, store.session(), accepted = true)
         assertEquals("", store.get("attachments:chat"))
         val later = sent + Attachment("c", "/o/c.jpg", "u3")
@@ -55,6 +58,31 @@ class StoreTest {
         assertEquals(setOf("/o/a.jpg", "/o/b.jpg", "/o/c.jpg"), store.attachmentFiles())
         store.removeChat("chat")
         assertEquals("", store.get("attachments:chat"))
+    }
+
+    @Test fun `background proof settles exact saved prompt once without erasing newer state`() {
+        val prefs = Preferences().value
+        val foreground = Store(prefs)
+        val background = Store(prefs)
+        foreground.put("token", "pair-one")
+        val first = PendingPrompt("first", "hello")
+        foreground.put("draft:chat", "hello")
+        foreground.savePrompt("chat", first, 120000, foreground.session())
+        assertEquals(first, background.reconcilePrompt("chat", "first", "pair-one"))
+        assertTrue(foreground.pendingPrompts().isEmpty())
+        assertEquals("", foreground.get("watch:chat"))
+        assertNull(background.reconcilePrompt("chat", "first", "pair-one"))
+        val next = PendingPrompt("next", "next")
+        foreground.savePrompt("chat", next, 240000, foreground.session())
+        foreground.put("draft:chat", "next")
+        assertNull(background.reconcilePrompt("chat", "first", "pair-one"))
+        assertFalse(foreground.completePrompt("chat", first, foreground.session(), true))
+        foreground.put("token", "pair-two")
+        assertNull(background.reconcilePrompt("chat", "next", "pair-one"))
+        assertEquals(next, foreground.pendingPrompts()["chat"])
+        assertEquals("next", foreground.get("draft:chat"))
+        // Deadlines survive process recreation and do not restart on each background transition.
+        assertEquals("240000", Store(prefs).get("watch:chat"))
     }
 
     @Test fun `a late reset answer clears only its own attempt in its own pairing`() {

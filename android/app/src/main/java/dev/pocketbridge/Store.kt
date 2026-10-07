@@ -20,13 +20,13 @@ class Store internal constructor(private val prefs: SharedPreferences) {
     @Synchronized fun session() = generation
     fun get(key: String) = prefs.getString(key, "").orEmpty()
     fun localDraftIds() = prefs.all.keys.mapNotNull { key -> key.removePrefix("draftChat:").takeIf { key.startsWith("draftChat:") && it.isNotEmpty() } }
-    fun put(key: String, value: String) { prefs.edit().putString(key, value).apply() }
-    fun remove(key: String) { prefs.edit().remove(key).apply() }
+    fun put(key: String, value: String) = synchronized(prefs) { prefs.edit().putString(key, value).apply() }
+    fun remove(key: String) = synchronized(prefs) { prefs.edit().remove(key).apply() }
     fun removePrefixed(prefix: String) {
         val keys = prefs.all.keys.filter { it.startsWith(prefix) }
         if (keys.isNotEmpty()) prefs.edit().apply { keys.forEach(::remove) }.apply()
     }
-    @Synchronized fun commit(key: String, value: String, session: Int) {
+    @Synchronized fun commit(key: String, value: String, session: Int) = synchronized(prefs) {
         requireSession(session)
         check(prefs.edit().putString(key, value).commit()) { "Could not save prompt delivery state." }
     }
@@ -34,15 +34,30 @@ class Store internal constructor(private val prefs: SharedPreferences) {
     @Synchronized fun removeIfSame(key: String, value: String, session: Int) {
         if (session == generation && get(key) == value) prefs.edit().remove(key).apply()
     }
-    @Synchronized fun completePrompt(id: String, prompt: PendingPrompt, session: Int, accepted: Boolean) {
+    @Synchronized fun savePrompt(id: String, prompt: PendingPrompt, until: Long, session: Int) = synchronized(prefs) {
         requireSession(session)
-        val edit = prefs.edit().remove("pending:$id")
+        check(prefs.edit().putString("pending:$id", prompt.json().toString()).putString("watch:$id", "$until").commit()) { "Could not save prompt delivery state." }
+    }
+    fun pendingPrompts() = prefs.all.keys.filter { it.startsWith("pending:") }.mapNotNull { key ->
+        runCatching { key.removePrefix("pending:") to PendingPrompt.parse(get(key)) }.getOrNull()
+    }.toMap()
+    /** A service acknowledgement clears only this pairing's exact saved delivery, including when another chat is open. */
+    @Synchronized fun reconcilePrompt(id: String, promptId: String, pairing: String): PendingPrompt? = synchronized(prefs) {
+        if (get("token") != pairing) return@synchronized null
+        val prompt = runCatching { PendingPrompt.parse(get("pending:$id")) }.getOrNull()?.takeIf { it.id == promptId } ?: return@synchronized null
+        if (completePrompt(id, prompt, session(), accepted = true)) prompt else null
+    }
+    @Synchronized fun completePrompt(id: String, prompt: PendingPrompt, session: Int, accepted: Boolean): Boolean = synchronized(prefs) {
+        requireSession(session)
+        if (runCatching { PendingPrompt.parse(get("pending:$id")).id }.getOrNull() != prompt.id) return@synchronized false
+        val edit = prefs.edit().remove("pending:$id").remove("watch:$id")
         if (accepted && get("draft:$id").trim() == prompt.text) edit.remove("draft:$id")
         if (accepted) edit.remove("draftChat:$id")
         if (accepted) edit.remove("options:$id")
         // Images sent with this prompt leave the composer with it; ones added since stay.
         if (accepted && decodeAttachments(get("attachments:$id")).map { it.upload } == prompt.attachments) edit.remove("attachments:$id")
         check(edit.commit()) { "Could not save prompt delivery state." }
+        true
     }
     /** Confirmed server deletion. Blank-draft cleanup stays on [removeChat] so typing never waits on disk. */
     @Synchronized fun commitChatRemoval(id: String, session: Int) {
@@ -60,7 +75,7 @@ class Store internal constructor(private val prefs: SharedPreferences) {
         check(edit.commit()) { "Could not save chat deletion." }
     }
     @Synchronized fun removeChat(id: String) { chatRemoval(id).apply() }
-    private fun chatRemoval(id: String) = prefs.edit().remove("messages:$id").remove("draft:$id").remove("pending:$id").remove("draftChat:$id").remove("options:$id").remove("attachments:$id")
+    private fun chatRemoval(id: String) = prefs.edit().remove("messages:$id").remove("draft:$id").remove("pending:$id").remove("watch:$id").remove("draftChat:$id").remove("options:$id").remove("attachments:$id")
     /** Prepared image files some composer still holds, so the outbox can drop the rest. */
     fun attachmentFiles(): Set<String> = prefs.all.filterKeys { it.startsWith("attachments:") }.values.flatMap { decodeAttachments(it as? String ?: "").map(Attachment::file) }.toSet()
     private fun requireSession(session: Int) {
@@ -81,7 +96,7 @@ class Store internal constructor(private val prefs: SharedPreferences) {
             String(doFinal(Base64.decode(parts[1], Base64.NO_WRAP)), Charsets.UTF_8)
         }
     }
-    @Synchronized fun savePair(base: String, token: String, session: Int) {
+    @Synchronized fun savePair(base: String, token: String, session: Int) = synchronized(prefs) {
         requireSession(session)
         val encrypted = Cipher.getInstance("AES/GCM/NoPadding").run {
             init(Cipher.ENCRYPT_MODE, key())
@@ -91,5 +106,5 @@ class Store internal constructor(private val prefs: SharedPreferences) {
         check(prefs.edit().clear().putString("base", base).putString("token", encrypted).commit())
         generation++
     }
-    @Synchronized fun clear() { generation++; prefs.edit().clear().apply() }
+    @Synchronized fun clear() = synchronized(prefs) { generation++; prefs.edit().clear().apply() }
 }

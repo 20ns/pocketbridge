@@ -60,6 +60,31 @@ test('prompt delivery is durable and idempotent; stream chunks reconcile with fi
   assert.ok(calls.every(c => c.args.includes(chat.id) && c.args.includes('--dangerously-skip-permissions')));
 });
 
+test('prompt acceptance lookup is read-only, chat-scoped and survives completion, restart and deletion', async t => {
+  const f = await fixture(t), chatId = randomUUID(), promptId = randomUUID();
+  const lookup = async (chat = chatId, prompt = promptId) => f.request(`/api/chats/${chat}/prompts/${prompt}`);
+  assert.equal((await f.request('/api/state')).data.capabilities.promptStatus, true);
+  assert.deepEqual((await lookup()).data, { accepted: false, deleted: false, status: null, startedAt: null, endedAt: null, delivery: null });
+  assert.ok(!(await f.request('/api/state')).data.chats.some(chat => chat.id === chatId));
+  const project = (await f.request('/api/state')).data.projects[0];
+  const payload = { id: promptId, text: 'hang', projectId: project.id };
+  assert.equal((await f.request(`/api/chats/${chatId}/prompts`, payload)).status, 202);
+  await wait(async () => (await lookup()).data.startedAt);
+  assert.equal((await lookup()).data.accepted, true); assert.equal((await lookup()).data.status, 'running');
+  assert.equal((await lookup(randomUUID())).data.accepted, false);
+  assert.equal((await lookup(chatId, randomUUID())).data.accepted, false);
+  const unauthorized = await fetch(f.service.url + `/api/chats/${chatId}/prompts/${promptId}`); assert.equal(unauthorized.status, 401);
+  await f.request(`/api/chats/${chatId}/stop`, {}); await f.finished({ id: chatId });
+  const completed = (await lookup()).data; assert.equal(completed.status, 'interrupted'); assert.ok(completed.endedAt);
+  assert.deepEqual(Object.keys(completed).sort(), ['accepted', 'deleted', 'delivery', 'endedAt', 'startedAt', 'status']);
+  await f.restart(); assert.deepEqual((await lookup()).data, completed);
+  assert.equal((await f.request(`/api/chats/${chatId}/prompts`, payload)).data.duplicate, true);
+  await f.request(`/api/chats/${chatId}/delete`, {});
+  assert.deepEqual((await lookup()).data, { ...completed, deleted: true, status: null });
+  assert.equal((await f.request(`/api/chats/${chatId}/prompts`, payload)).status, 410);
+  assert.equal(readFileSync(join(f.projectPath, 'calls.ndjson'), 'utf8').trim().split('\n').length, 1);
+});
+
 test('incremental transcripts update old messages in place, preserve inserted order, and refresh metadata across restart', async t => {
   const f = await fixture(t), chat = await f.createChat();
   const transcript = async since => (await f.request(`/api/chats/${chat.id}/messages${since ? `?since=${encodeURIComponent(since)}` : ''}`)).data;
@@ -252,12 +277,12 @@ test('failed startup releases ownership so the data folder can be reopened', asy
   await service.close();
 });
 
-test('large durable SSE replay streams every change and accepts Last-Event-ID on reconnect', async t => {
+test('large durable SSE replay streams retained changes and accepts Last-Event-ID on reconnect', async t => {
   const f = await fixture(t), before = f.service.state().lastSeq;
   const db = new DatabaseSync(join(f.dir, 'data/data.sqlite'));
   db.exec('BEGIN');
   const insert = db.prepare('INSERT INTO events (chatId,type) VALUES (?,?)');
-  for (let i = 0; i < 15000; i++) insert.run(randomUUID(), 'message');
+  for (let i = 0; i < 8000; i++) insert.run(randomUUID(), 'message');
   db.exec('COMMIT'); db.close();
   const last = f.service.state().lastSeq, controller = new AbortController();
   try {
@@ -273,11 +298,45 @@ test('large durable SSE replay streams every change and accepts Last-Event-ID on
         const id = /^id: (\d+)$/m.exec(event); if (id) ids.push(Number(id[1]));
       }
     }
-    assert.deepEqual(ids, Array.from({ length: 15000 }, (_, i) => before + i + 1));
+    assert.deepEqual(ids, Array.from({ length: 8000 }, (_, i) => before + i + 1));
     const reconnect = await fetch(f.service.url + `/api/events?after=${before}`, { headers: { Authorization: `Bearer ${f.token}` }, signal: controller.signal });
     await reconnect.body.getReader().read();
     await f.service.close(); // A scheduled replay batch must not read the closed database.
   } finally { controller.abort(); }
+});
+
+test('event retention bounds hints and diagnostics, reconciles expired cursors and preserves the sequence across restart', async t => {
+  const f = await fixture(t), before = f.service.state().lastSeq, db = new DatabaseSync(join(f.dir, 'data/data.sqlite')); t.after(() => db.close());
+  db.exec('BEGIN');
+  const hint = db.prepare('INSERT INTO events (chatId,type) VALUES (?,?)'), raw = db.prepare('INSERT INTO raw_events (chatId,json) VALUES (?,?)');
+  for (let index = 0; index < 15000; index++) hint.run(null, 'message');
+  for (let index = 0; index < 300; index++) raw.run('diagnostic', index === 299 ? 'x'.repeat(200010) : String(index));
+  db.exec('COMMIT');
+  assert.equal(db.prepare('SELECT COUNT(*) AS n FROM events').get().n, 10000);
+  assert.equal(db.prepare('SELECT COUNT(*) AS n FROM raw_events').get().n, 200);
+  assert.equal(db.prepare('SELECT MAX(length(json)) AS n FROM raw_events').get().n, 200000);
+  const last = f.service.state().lastSeq;
+  for (const scope of ['', '&scope=status']) {
+    const controller = new AbortController();
+    try {
+      const response = await fetch(f.service.url + `/api/events?after=${before}${scope}`, { headers: { Authorization: `Bearer ${f.token}` }, signal: controller.signal });
+      const chunk = new TextDecoder().decode((await response.body.getReader().read()).value);
+      assert.deepEqual(JSON.parse(/^data: (.+)$/m.exec(chunk)[1]), {seq:last, chatId:null, type:'state', reset:true}); assert.match(chunk, new RegExp(`id: ${last}\\n`));
+    } finally { controller.abort(); }
+  }
+  // Startup also trims databases produced by releases without retention.
+  db.exec('DROP TRIGGER events_retention; DROP TRIGGER raw_events_retention; BEGIN');
+  for (let index = 0; index < 100; index++) { hint.run(null, 'state'); raw.run('legacy', 'x'.repeat(index === 99 ? 200010 : 1)); }
+  db.exec('COMMIT');
+  const legacyLast = f.service.state().lastSeq; await f.restart();
+  assert.ok(f.service.state().lastSeq >= legacyLast);
+  assert.equal(db.prepare('SELECT COUNT(*) AS n FROM events').get().n, 10000);
+  assert.equal(db.prepare('SELECT COUNT(*) AS n FROM raw_events').get().n, 200);
+  assert.equal(db.prepare('SELECT MAX(length(json)) AS n FROM raw_events').get().n, 200000);
+  // Even an empty hint table must keep the high-water mark, and the next hint must advance it.
+  const high = f.service.state().lastSeq; db.exec('DELETE FROM events');
+  assert.equal(f.service.state().lastSeq, high); await f.restart(); assert.equal(f.service.state().lastSeq, high);
+  hint.run(null, 'state'); assert.equal(f.service.state().lastSeq, high + 1);
 });
 
 test('deleted projects reject delivery without consuming id; malformed output and CLI failure surface errors', async t => {
@@ -769,6 +828,33 @@ test('Codex prompts steer or interrupt the running app-server turn', async t => 
   const data = await messagesOf(f, chatId);
   assert.ok(data.messages.some(m => m.role === 'assistant' && m.text === 'Codex says world'));
   assert.equal(data.turns.length, 3);
+});
+
+for (const queued of ['closing Claude run', 'Codex interrupt queue', 'Codex early steers']) test(`Stop explains accepted prompts dropped from ${queued} and retries never run them`, async t => {
+  let extra = {};
+  if (queued === 'Codex early steers') {
+    const dir = mkdtempSync(join(tmpdir(), 'pocketbridge-slow-thread-'));
+    extra = { codexPath: fakeCodexCopy(dir, 'codex', '0.150.0', { FAKE_CODEX_THREAD_DELAY_MS: '1000' }).path };
+    t.after(() => rmSync(dir, { recursive: true, force: true }));
+  }
+  const f = await fixture(t, extra), project = (await f.request('/api/state')).data.projects[0], chatId = randomUUID();
+  const claude = queued === 'closing Claude run', first = claude ? 'stop-closing' : queued === 'Codex early steers' ? 'hello' : 'stop-queue';
+  assert.equal((await turnWith(f, chatId, first, { projectId: project.id, agent: claude ? 'claude' : 'codex' })).status, 202);
+  if (claude) await wait(() => {
+    if (!existsSync(join(f.projectPath, 'closing.pid'))) return false;
+    try { process.kill(Number(readFileSync(join(f.projectPath, 'closing.pid'), 'utf8')), 0); return false; } catch { return true; }
+  });
+  else if (queued === 'Codex interrupt queue') await wait(async () => (await messagesOf(f, chatId)).messages.some(message => message.text.includes('waiting for interrupt')));
+  const payloads = ['check staging', 'ship staging'].map(text => ({ id: randomUUID(), text, delivery: queued === 'Codex interrupt queue' ? 'interrupt' : 'steer' }));
+  for (const payload of payloads) assert.equal((await f.request(`/api/chats/${chatId}/prompts`, payload)).status, 202);
+  await f.request(`/api/chats/${chatId}/stop`, {}); assert.equal((await f.finished({ id: chatId })).status, 'interrupted');
+  const data = await messagesOf(f, chatId);
+  for (const payload of payloads) {
+    assert.equal(data.messages.filter(message => message.role === 'activity' && message.text === `Stopped before "${payload.text}" ran. Send it again if you still need it.`).length, 1);
+    assert.ok(!data.turns.some(turn => turn.id === payload.id));
+    assert.equal((await f.request(`/api/chats/${chatId}/prompts`, payload)).data.duplicate, true);
+  }
+  assert.equal((await f.request('/api/state')).data.chats.find(chat => chat.id === chatId).status, 'interrupted');
 });
 
 test('image attachments upload once, reach both agents, stay with their chat and go when it is deleted', async t => {

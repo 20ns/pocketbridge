@@ -5,7 +5,7 @@ import { randomUUID } from 'node:crypto';
 import { agentNames, agentEnv } from './agents.mjs';
 import { claudeArgs, claudeRun } from './claude-run.mjs';
 import { codexRun } from './codex-run.mjs';
-import { processStamp, terminateGroup } from './util.mjs';
+import { oneLine, processStamp, terminateGroup } from './util.mjs';
 
 export function createRuns(ctx) {
   const { options, get, run, change, status, agents, projects, active, waiting } = ctx;
@@ -106,7 +106,12 @@ export function createRuns(ctx) {
       const codex = agent === 'codex';
       // Messages sent while the run was closing start the next run rather than being lost.
       if (!entry.stopped && entry.after.length) { start(id, entry.after.shift(), entry.after); return; }
-      if (entry.stopped) status(id, 'interrupted', 'Stopped by you. Completed changes remain on disk.');
+      if (entry.stopped) {
+        // These prompts never reached the CLI; written but unacknowledged steers remain uncertain.
+        const dropped = new Map([...entry.after, ...(entry.queue ?? []), ...(entry.early ?? [])].map(next => [next.promptId, next]));
+        for (const next of dropped.values()) message(id, 'activity', `Stopped before "${oneLine(next.text, 80)}" ran. Send it again if you still need it.`);
+        status(id, 'interrupted', 'Stopped by you. Completed changes remain on disk.');
+      }
       else if (codex && (entry.parseError || !entry.result.ok)) status(id, 'error', entry.parseError ?? entry.failure ?? entry.codex?.state.failure ?? (entry.stderr.trim().split('\n').slice(-12).join('\n') || `Codex exited ${code ?? signal} without a completed turn.`));
       else if (!codex && (entry.parseError || code !== 0 || entry.result?.is_error || !entry.result)) status(id, 'error', entry.parseError ?? (entry.result?.errors?.join('\n') || entry.result?.result || entry.stderr.trim() || `Claude exited ${code ?? signal} without a completed result.`));
       else status(id, 'idle');

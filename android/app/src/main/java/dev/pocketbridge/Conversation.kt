@@ -79,7 +79,7 @@ private val Mine = RoundedCornerShape(Corners.bubble, Corners.bubble, Corners.ta
     val working = isWorking(status)
     val stoppedAt = chat?.optLong("updatedAt")?.takeIf { it > 0 }
     val subagents = remember(model.subagents, model.turns, working, stoppedAt) { settledSubagents(model.subagents, model.turns, working, stoppedAt) }
-    val transcript = remember(model.messages) { transcript(model.messages.map(::said)) }
+    val transcript = model.messageEntries
     val entries = remember(transcript, subagents, model.turns) { withSubagents(transcript, subagents, model.turns) }
     val approvals = model.approvals.filter { it.optString("status") == "pending" }
     val pending = model.pending
