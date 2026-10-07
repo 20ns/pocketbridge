@@ -1,3 +1,10 @@
+PocketBridge 0.8.6
+
+- Fix a false Offline error in 0.8.5 when no prompt is pending. A null delivery ID could throw after a successful Mac response and prevent reconnecting.
+- Add a native regression check for fresh state and pending-delivery reconciliation.
+
+Install over the existing app to preserve pairing. No Tailscale settings change is needed for this fix.
+
 PocketBridge 0.8.5
 
 - Background alerts reconcile saved delivery IDs once acceptance is proved. Uncertain sends keep Retry, with a bounded background check that cannot hide another turn ending.

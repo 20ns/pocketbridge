@@ -151,7 +151,8 @@ class BridgeModel(application: Application) : AndroidViewModel(application) {
         agents = parseAgents(state.optJSONObject("capabilities")).map { agent -> agentSwitching[agent.id]?.let { agent.copy(enabled = it) } ?: agent }
         claudeAvailable = state.optJSONObject("server")?.optBoolean("claudeAvailable", true) ?: true
         experiments = state.optJSONObject("server")?.textOrNull("experiments").orEmpty()
-        if (pending?.id !in Alerts.inFlight && pending != null && store.get("pending:$selected").isEmpty()) {
+        val pendingId = pending?.id
+        if (pendingId != null && pendingId !in Alerts.inFlight && store.get("pending:$selected").isEmpty()) {
             attachmentLists.remove(selected)
             pending = null; draft = store.get("draft:$selected"); attachments = attachmentsOf(selected); applyOptionsFromSelection()
             cleanOutbox()
