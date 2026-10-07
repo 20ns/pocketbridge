@@ -78,4 +78,38 @@ class TranscriptTest {
         assertEquals("ok", (entries[0] as Steps).steps.single().result)
         assertEquals(listOf("f1"), (entries[2] as Steps).steps.map { it.id })
     }
+
+    @Test fun `long tool runs keep named and legacy results paired`() {
+        val count = 4000
+        val calls = (0 until count).map { activity("t$it", "Shell\n{\"command\":\"true\"}") }
+        val named = (count - 1 downTo 0 step 2).map { activity("t$it:result", "Tool result\n$it") }
+        val legacy = (0 until count step 2).map { activity("legacy$it", "Tool result\n$it") }
+        val steps = (transcript(calls + named + legacy).single() as Steps).steps
+        assertEquals(count, steps.size)
+        assertEquals((0 until count).map(Int::toString), steps.map { it.result })
+    }
+
+    @Test fun `turn markers handle long histories and ignore joined steers`() {
+        val messages = (0 until 2000).flatMap { i -> listOf(
+            Said("u$i", "user", "run"), Said("a$i", "assistant", "working"),
+            Said("s$i", "user", "adjust", kind = STEER), Said("r$i", "assistant", "done"),
+        ) }
+        val entries = transcript(messages)
+        val turns = (0 until 2000).map { i -> Turn("u$i", i * 100L, i * 100L + 10) }
+        val replies = (0 until 2000).map { "r$it" }.toSet()
+        assertEquals(replies, turnEnds(entries, live = false, turns))
+        assertEquals(replies - "r1999", turnEnds(entries, live = true, turns))
+        assertEquals(replies.associateWith { 10L }, turnDurations(entries, turns))
+    }
+
+    @Test fun `a blank reply blocks Copy but durations use the last nonblank reply`() {
+        val entries = transcript(listOf(
+            Said("u1", "user", "run"), Said("r1", "assistant", "done"), Said("blank", "assistant", ""),
+            Said("u2", "user", "again"), Said("r2", "assistant", "running"),
+        ))
+        val turns = listOf(Turn("u1", 10, 30), Turn("u2", 40, null))
+        assertTrue(turnEnds(entries, live = true, turns).isEmpty())
+        assertEquals(mapOf("r1" to 20L), turnDurations(entries, turns))
+    }
+
 }

@@ -79,16 +79,17 @@ private val Mine = RoundedCornerShape(Corners.bubble, Corners.bubble, Corners.ta
     val working = isWorking(status)
     val stoppedAt = chat?.optLong("updatedAt")?.takeIf { it > 0 }
     val subagents = remember(model.subagents, model.turns, working, stoppedAt) { settledSubagents(model.subagents, model.turns, working, stoppedAt) }
-    val entries = remember(model.messages, subagents, model.turns) { withSubagents(transcript(model.messages.map(::said)), subagents, model.turns) }
+    val transcript = remember(model.messages) { transcript(model.messages.map(::said)) }
+    val entries = remember(transcript, subagents, model.turns) { withSubagents(transcript, subagents, model.turns) }
     val approvals = model.approvals.filter { it.optString("status") == "pending" }
     val pending = model.pending
     // The Mac stores a prompt under its delivery ID, so an accepted-but-unconfirmed prompt is already in the transcript.
     val pendingShown = pending != null && model.messages.any { it.optString("id") == pending.id }
-    val list = rememberLazyListState()
+    val list = key(model.selected) { rememberLazyListState() }
     val scope = rememberCoroutineScope()
     // Shown once the newest content is about a screen away, including inside one long reply.
     val away = with(LocalDensity.current) { 480.dp.roundToPx() }
-    val scrolledUp by remember { derivedStateOf { list.firstVisibleItemIndex > 1 || (list.firstVisibleItemIndex == 1 && list.firstVisibleItemScrollOffset > away) } }
+    val scrolledUp by remember(list, away) { derivedStateOf { list.firstVisibleItemIndex > 1 || (list.firstVisibleItemIndex == 1 && list.firstVisibleItemScrollOffset > away) } }
     val live = status == "running" || status == "waiting"
     // A reply that closes a turn gets a Copy action; replies still streaming don't.
     val turnEnds = remember(entries, live, model.turns) { turnEnds(entries, live, model.turns) }

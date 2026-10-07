@@ -77,19 +77,16 @@ fun withSubagents(entries: List<Entry>, subagents: List<Subagent>, turns: List<T
 
 /** For each finished turn, the key of the last reply in it and how long the turn ran. */
 fun turnDurations(entries: List<Entry>, turns: List<Turn>): Map<String, Long> {
-    val starts = turns.map { it.id }.toSet()
+    val byId = turns.associateBy { it.id }
     val result = mutableMapOf<String, Long>()
-    for (turn in turns) {
-        val end = turn.endedAt ?: continue
-        val prompt = entries.indexOfFirst { it is Message && it.said.id == turn.id }
-        if (prompt < 0 || end < turn.startedAt) continue
-        var reply: String? = null
-        for (i in prompt + 1 until entries.size) {
-            val entry = entries[i]
-            if (opensTurn(entry, starts)) break
-            if (entry is Message && entry.said.role == "assistant" && entry.said.text.isNotBlank()) reply = entry.key
-        }
-        reply?.let { result[it] = end - turn.startedAt }
+    var reply: String? = null
+    for (entry in entries.asReversed()) {
+        if (opensTurn(entry, byId.keys)) {
+            val turn = byId[entry.key]
+            val end = turn?.endedAt
+            if (reply != null && turn != null && end != null && end >= turn.startedAt) result[reply] = end - turn.startedAt
+            reply = null
+        } else if (reply == null && entry is Message && entry.said.role == "assistant" && entry.said.text.isNotBlank()) reply = entry.key
     }
     return result
 }

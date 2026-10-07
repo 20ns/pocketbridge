@@ -1,3 +1,13 @@
+PocketBridge 0.8.2
+
+- Long conversations stay responsive: turn summaries use one pass through history, and cached chats load off the UI thread.
+- Switching chats replaces redundant refreshes, and old cached messages cannot overwrite a newer reply.
+- Each chat opens at its latest message instead of inheriting another chat's scroll position.
+- Offline transcript saves no longer mistake different replies for the same snapshot.
+- Codex streaming keeps reused item IDs separate across turns and preserves completed replies when late events arrive.
+
+The scrambled reply reported for this release was also present in Codex's own saved final output. PocketBridge cannot reconstruct text Codex never supplied. These fixes address verified app and streaming bugs; they do not rewrite that reply.
+
 PocketBridge 0.8.1
 
 - Fixed a flash when going back from a project or a chat: the page you leave no longer redraws empty while it animates away.

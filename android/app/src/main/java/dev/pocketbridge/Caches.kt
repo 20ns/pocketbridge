@@ -1,22 +1,24 @@
 package dev.pocketbridge
 
 import java.io.File
+import java.security.MessageDigest
 import java.util.concurrent.ConcurrentHashMap
 
 private fun safeName(id: String) = id.replace(Regex("[^A-Za-z0-9-]"), "_")
 
 /** Last-known transcripts for offline reading, one file per chat. Unchanged snapshots are not rewritten. */
 class TranscriptCache(private val dir: File) {
-    private val written = ConcurrentHashMap<String, Int>()
+    private val written = ConcurrentHashMap<String, ByteArray>()
     private fun file(id: String) = File(dir, safeName(id) + ".json")
     fun read(id: String): String = runCatching { file(id).takeIf { it.isFile }?.readText().orEmpty() }.getOrDefault("")
     fun write(id: String, text: String) {
-        if (written[id] == text.hashCode()) return
+        val digest = MessageDigest.getInstance("SHA-256").digest(text.toByteArray())
+        if (written[id]?.contentEquals(digest) == true) return
         runCatching {
             dir.mkdirs()
             val temporary = File(dir, file(id).name + ".tmp")
             temporary.writeText(text)
-            if (!temporary.renameTo(file(id))) temporary.delete() else written[id] = text.hashCode()
+            if (!temporary.renameTo(file(id))) temporary.delete() else written[id] = digest
         }
     }
     fun remove(id: String) { written.remove(id); file(id).delete() }

@@ -11,7 +11,7 @@ export function codexRun(ctx, session, delivery) {
   const { run, get, change, options, message, subagent, activityFor, active, projects } = ctx;
   const { id, row, agent, child, entry, project, turnStarted, turnEnded, promptOptions } = session;
   let nextId = 1;
-  const pending = new Map();
+  const pending = new Map(), completedTurns = new Set();
   // The first turn is on its way from the start; steers and interrupts that arrive first wait for its id.
   entry.queue = []; entry.early = []; entry.turnOpen = true; entry.turnId = null; entry.turnLive = false;
   const writable = () => !child.stdin.destroyed && !child.stdin.writableEnded && child.exitCode === null;
@@ -67,6 +67,7 @@ export function codexRun(ctx, session, delivery) {
   });
   // Codex accepts steer and interrupt only once it reports the turn started, not when turn/start returns.
   const turnActive = id => {
+    if (!entry.turnOpen || completedTurns.has(id) || (entry.turnLive && id && id !== entry.turnId)) return;
     if (id) entry.turnId = id;
     if (!entry.turnId || entry.turnLive) return;
     entry.turnLive = true;
@@ -81,8 +82,11 @@ export function codexRun(ctx, session, delivery) {
     // tier is noted as it is sent: a turn can finish, and the next start, before turn/start's reply is handled.
     const tier = speed ? { serviceTier: speed } : entry.serviceTier ? { serviceTier: null } : {};
     entry.serviceTier = speed;
-    const opened = await call('turn/start', { threadId: entry.threadId, input, ...(model ? { model } : {}), ...(effort ? { effort } : {}), ...tier });
-    if (!entry.turnLive) entry.turnId = opened?.turn?.id ?? entry.turnId;
+    const opened = await call('turn/start', { threadId: entry.threadId, input, ...(model ? { model } : {}), ...(effort ? { effort } : {}), ...tier }).catch(error => {
+      // Notifications can finish a turn before its RPC replies, including when the process then exits.
+      if (entry.turnOpen && entry.turnPrompt === next.promptId) throw error;
+    });
+    if (entry.turnOpen && entry.turnPrompt === next.promptId && !entry.turnLive) entry.turnId = opened?.turn?.id ?? entry.turnId;
   };
   const failRun = error => { entry.failure ??= error?.message ?? 'Codex could not start this turn.'; shutdown(); };
   entry.steer = next => {
@@ -126,8 +130,22 @@ export function codexRun(ctx, session, delivery) {
       }
       return;
     }
-    if (event.method === 'turn/started') { turnActive(event.params?.turn?.id); return; }
-    if (event.method === 'turn/completed') { if (!entry.turnId || !event.params?.turn?.id || event.params.turn.id === entry.turnId) turnCompleted(event.params?.turn); return; }
+    const turnId = event.params?.turnId ?? event.params?.turn?.id;
+    if (completedTurns.has(turnId)) return;
+    if (event.method === 'turn/started') {
+      turnActive(turnId);
+      if (entry.turnLive && entry.turnId === turnId) codex.consume(event.method, event.params);
+      return;
+    }
+    if (event.method === 'turn/completed') {
+      if (entry.turnOpen && (!entry.turnId || !turnId || turnId === entry.turnId)) {
+        codex.consume(event.method, event.params);
+        if (turnId) completedTurns.add(turnId);
+        turnCompleted(event.params?.turn);
+      }
+      return;
+    }
+    if (turnId && entry.turnId && turnId !== entry.turnId) return;
     codex.consume(event.method, event.params);
   };
   (async () => {

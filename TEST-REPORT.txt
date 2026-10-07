@@ -1,3 +1,28 @@
+PocketBridge 0.8.2 verification, 7 October 2026
+
+- Mac: pnpm test passed, 81 tests. Four new regressions cover turn-scoped item
+  IDs, completed snapshots and late deltas, stale turn notifications/start
+  replies, and completion before a start acknowledgement followed by CLI exit.
+  Each new regression fails against the previous implementation.
+- Android: assembleDebug, testDebugUnitTest, lintDebug, assembleRelease and
+  lintRelease passed. 129 JVM tests, no failures. New checks cover long turn
+  histories, 4,000 tool calls with mixed named/legacy results, blank reply
+  boundaries, and distinct transcript snapshots with colliding Java hashes.
+- Independent reviews covered Android cache/session/navigation races and
+  transcript grouping, plus Codex queued turns and final reconciliation.
+  Review found and fixed quadratic tool grouping and a late start rejection
+  that could mark a completed turn failed.
+- API 36 emulator: signed 0.8.2 installed over the existing app with pairing
+  preserved. A scripted 6,000-message chat with 2,000 turns and 1,000 shell
+  steps opens at its readable final reply; switching from a scrolled chat
+  starts the other chat at its newest reply. No physical phone was attached.
+- Release certificate matches the previously hosted APK; versionCode is 13
+  and the installed release has no DEBUGGABLE flag.
+- Screenshot investigation: the corrupted reply is identical in PocketBridge
+  SQLite, Codex item/completed, turn/completed and Codex's saved session. It
+  follows an upstream malformed clock.sleep call. No intact alternative final
+  exists; existing user history was left unchanged.
+
 PocketBridge 0.8.1 verification, 4 October 2026
 
 - The back flash reproduced on 0.8.0 with animations slowed 10x: going back from a

@@ -5,6 +5,19 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class CleanupTest {
+    @Test fun `distinct transcript snapshots with matching string hashes are saved`() {
+        val dir = Files.createTempDirectory("transcripts").toFile()
+        try {
+            val cache = TranscriptCache(dir)
+            val first = "{\"messages\":[{\"text\":\"Aa\"}]}"
+            val next = "{\"messages\":[{\"text\":\"BB\"}]}"
+            assertEquals(first.hashCode(), next.hashCode())
+            cache.write("chat", first)
+            cache.write("chat", next)
+            assertEquals(next, cache.read("chat"))
+        } finally { dir.deleteRecursively() }
+    }
+
     @Test fun `downloaded updates go once installed, unreadable or stale`() {
         val hour = 3_600_000L
         // Installed: the running app is this version or newer.

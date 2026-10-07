@@ -38,6 +38,8 @@ class BridgeModel(application: Application) : AndroidViewModel(application) {
     private var api: Api? = null
     private var session: Job? = null
     private var actionJob: Job? = null
+    private var refreshJob: Job? = null
+    private var cachedMessagesJob: Job? = null
     private val changes = MutableSharedFlow<Unit>(extraBufferCapacity = 1, onBufferOverflow = BufferOverflow.DROP_OLDEST)
     private val pendingSync = AtomicInteger(0)
     private val cursor = EventCursor()
@@ -167,9 +169,16 @@ class BridgeModel(application: Application) : AndroidViewModel(application) {
         }
     }
     private fun loadMessages(id: String) {
+        cachedMessagesJob?.cancel()
         messages = emptyList(); approvals = emptyList(); turns = emptyList(); subagents = emptyList(); activity = ""; loadedChat = ""
         if (id.isEmpty()) return
-        transcripts.read(id).takeIf { it.isNotEmpty() }?.let { runCatching { applyMessages(JSONObject(it)); loadedChat = id } }
+        val cacheSession = store.session()
+        cachedMessagesJob = viewModelScope.launch {
+            val result = withContext(Dispatchers.IO) { transcripts.read(id).takeIf { it.isNotEmpty() }?.let { runCatching { JSONObject(it) }.getOrNull() } }
+            if (result != null && selected == id && store.session() == cacheSession) {
+                runCatching { applyMessages(result); loadedChat = id }
+            }
+        }
     }
     private fun applyMessages(result: JSONObject) {
         messages = result.getJSONArray("messages").objects(); approvals = result.optJSONArray("approvals")?.objects().orEmpty()
@@ -205,7 +214,7 @@ class BridgeModel(application: Application) : AndroidViewModel(application) {
     }
     fun disconnect() {
         // The client goes first so a sync already on the IO thread can't write this pairing's transcript again.
-        api = null; actionJob?.cancel(); stopConnection(); store.clear()
+        api = null; actionJob?.cancel(); refreshJob?.cancel(); cachedMessagesJob?.cancel(); stopConnection(); store.clear()
         viewModelScope.launch(Dispatchers.IO) { syncMutex.withLock { transcripts.clear() } }
         paired = false; online = false; usage.clear(); selected = ""; messages = emptyList(); chats = emptyList(); projects = emptyList(); draft = ""; pending = null; localDraftIds = emptyList(); error = ""; connectionIssue = ""; revoked = false
         forgetPairingData()
@@ -285,6 +294,7 @@ class BridgeModel(application: Application) : AndroidViewModel(application) {
             }
             if (api !== currentApi) return@withLock
             if (selected == id) {
+                cachedMessagesJob?.cancel()
                 applyMessages(result); loadedChat = id
                 // Accepted, but the answer to its POST was lost: settle it exactly as a confirmed send would, never resend.
                 pending?.takeIf { deliveredPrompt(messages, it.id) }?.let { prompt ->
@@ -297,7 +307,12 @@ class BridgeModel(application: Application) : AndroidViewModel(application) {
         online = foreground; connectionIssue = ""; revoked = false
         if (fetchState && deletions.isNotEmpty()) sendLeftoverDeletions()
     }
-    fun refresh() { if (paired) viewModelScope.launch { runCatching { sync() }.onFailure { fail(it) } } }
+    fun refresh() {
+        if (!paired) return
+        // Navigation replaces the previous refresh instead of queuing redundant full transcripts behind live sync.
+        refreshJob?.cancel()
+        refreshJob = viewModelScope.launch { runCatching { sync() }.onFailure { fail(it) } }
+    }
     /** User-initiated: sync now, or restart the connection loop instead of waiting out its backoff. */
     fun retry() {
         if (!paired || refreshing) return

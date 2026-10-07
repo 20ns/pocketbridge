@@ -20,14 +20,20 @@ const subagentStatus = value => ({ pendingInit: 'running', running: 'running', i
  * Result message ids are their tool message id plus ":result", as for Claude.
  */
 export function codexAppConsumer({ say, update, append, subagent, context, activity }) {
-  const items = new Map(), state = { failure: null };
-  const tool = (item, name, input) => { if (!items.has(item.id)) items.set(item.id, say('activity', `${name}\n${JSON.stringify(input, null, 2)}`)); return items.get(item.id); };
-  const finish = (item, failed, text) => {
+  const turns = new Map(), state = { failure: null };
+  const tool = (items, item, name, input) => { if (!items.has(item.id)) items.set(item.id, say('activity', `${name}\n${JSON.stringify(input, null, 2)}`)); return items.get(item.id); };
+  const finish = (items, item, failed, text) => {
     const id = items.get(item.id); if (!id || items.get(`${item.id}:done`)) return;
     items.set(`${item.id}:done`, true); say('activity', `${failed ? 'Tool failed' : 'Tool result'}\n${text}`, `${id}:result`);
   };
   const kindOf = kind => typeof kind === 'string' ? kind : kind?.type ?? 'update';
   const consume = (method, params = {}) => {
+    if (!params || typeof params !== 'object') return;
+    if (method === 'turn/started') { state.failure = null; return; }
+    if (method === 'turn/completed') {
+      for (const item of Array.isArray(params.turn?.items) ? params.turn.items : []) consume('item/completed', { ...params, turnId: params.turn.id, item });
+      return;
+    }
     if (method === 'thread/tokenUsage/updated') {
       const last = params.tokenUsage?.last, window = Number(params.tokenUsage?.modelContextWindow);
       const used = (Number(last?.inputTokens) || 0) + (Number(last?.outputTokens) || 0);
@@ -35,7 +41,12 @@ export function codexAppConsumer({ say, update, append, subagent, context, activ
       return;
     }
     if (method === 'error' && params.willRetry !== true) { state.failure = clean(params.error?.message ?? params.message, 4000) || 'Codex reported an error.'; return; }
-    if (method === 'item/agentMessage/delta' && typeof params.delta === 'string') {
+    if (method !== 'item/agentMessage/delta' && method !== 'item/started' && method !== 'item/completed') return;
+    const turnId = params.turnId ?? '';
+    if (!turns.has(turnId)) turns.set(turnId, new Map());
+    const items = turns.get(turnId);
+    if (method === 'item/agentMessage/delta' && typeof params.delta === 'string' && typeof params.itemId === 'string' && params.itemId) {
+      if (items.has(`${params.itemId}:done`)) return;
       if (!items.has(params.itemId)) items.set(params.itemId, say('assistant', ''));
       append(items.get(params.itemId), params.delta); return;
     }
@@ -45,24 +56,25 @@ export function codexAppConsumer({ say, update, append, subagent, context, activ
     if (item.type === 'agentMessage') {
       if (!items.has(item.id) && (item.text || completed)) items.set(item.id, say('assistant', item.text ?? ''));
       else if (completed && typeof item.text === 'string') update(items.get(item.id), item.text);
+      if (completed) items.set(`${item.id}:done`, true);
     }
     if (item.type === 'commandExecution') {
-      tool(item, 'Shell', { command: unwrapShell(item.command) });
+      tool(items, item, 'Shell', { command: unwrapShell(item.command) });
       if (completed) {
         const failed = item.status === 'failed' || item.status === 'declined' || (typeof item.exitCode === 'number' && item.exitCode !== 0);
         const output = typeof item.aggregatedOutput === 'string' ? item.aggregatedOutput : '';
-        finish(item, failed, output || (failed ? `Exit code ${item.exitCode ?? 'unknown'}` : ''));
+        finish(items, item, failed, output || (failed ? `Exit code ${item.exitCode ?? 'unknown'}` : ''));
       }
     }
     if (item.type === 'fileChange' && completed) {
       const changes = (Array.isArray(item.changes) ? item.changes : []).map(change => ({ path: String(change?.path ?? ''), kind: kindOf(change?.kind) }));
-      tool(item, 'Edit', changes.length === 1 ? { file_path: changes[0].path, kind: changes[0].kind } : { description: `Edited ${changes.length} files`, changes });
-      finish(item, item.status === 'failed' || item.status === 'declined', changes.map(change => `${change.kind} ${change.path}`).join('\n'));
+      tool(items, item, 'Edit', changes.length === 1 ? { file_path: changes[0].path, kind: changes[0].kind } : { description: `Edited ${changes.length} files`, changes });
+      finish(items, item, item.status === 'failed' || item.status === 'declined', changes.map(change => `${change.kind} ${change.path}`).join('\n'));
     }
     if (item.type === 'mcpToolCall') {
       const name = `${item.server ?? 'mcp'}.${item.tool ?? 'tool'}`.replace(/[^\w.:-]/g, '_').slice(0, 80);
-      tool(item, /^[A-Za-z]/.test(name) ? name : `mcp.${name}`, item.arguments && typeof item.arguments === 'object' ? item.arguments : {});
-      if (completed) finish(item, item.status === 'failed' || Boolean(item.error), item.error ? contentText(item.error.message ?? item.error) : contentText(item.result));
+      tool(items, item, /^[A-Za-z]/.test(name) ? name : `mcp.${name}`, item.arguments && typeof item.arguments === 'object' ? item.arguments : {});
+      if (completed) finish(items, item, item.status === 'failed' || Boolean(item.error), item.error ? contentText(item.error.message ?? item.error) : contentText(item.result));
     }
     if (item.type === 'webSearch' && completed && !items.has(item.id)) items.set(item.id, say('activity', `Searched the web for "${clean(item.query, 200)}"`));
     if (item.type === 'contextCompaction' && completed && !items.has(item.id)) items.set(item.id, say('activity', 'Context compacted'));
@@ -80,4 +92,3 @@ export function codexAppConsumer({ say, update, append, subagent, context, activ
   };
   return { consume, state };
 }
-

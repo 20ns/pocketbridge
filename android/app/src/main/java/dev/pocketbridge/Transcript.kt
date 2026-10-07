@@ -31,25 +31,31 @@ private val summaryKeys = listOf("description", "command", "file_path", "noteboo
 fun transcript(messages: List<Said>): List<Entry> {
     val entries = mutableListOf<Entry>()
     var steps = mutableListOf<Step>()
-    fun flush() { if (steps.isNotEmpty()) { entries += Steps(steps); steps = mutableListOf() } }
+    val pending = mutableMapOf<String, Pair<MutableList<Step>, Int>>()
+    var legacy = 0
+    fun flush() { if (steps.isNotEmpty()) { entries += Steps(steps); steps = mutableListOf(); legacy = 0 } }
     for (said in messages) {
         if (said.role != "activity") { flush(); entries += Message(said); continue }
         val head = said.text.substringBefore('\n').trim()
         val body = said.text.substringAfter('\n', "").let { if (head == "Tool result" || head == "Tool failed") resultText(it) else it }
         val isResult = head == "Tool result" || head == "Tool failed"
         // The Mac names a result's tool message in its id ("<tool id>:result"). Older transcripts pair in call order.
-        val waiting = if (said.id.endsWith(":result")) steps.indexOfFirst { it.id == said.id.removeSuffix(":result") && it.result == null }
-            else steps.indexOfFirst { it.result == null && !it.isNote }
         // A steer or note can land while a command runs; its named result still belongs to that earlier group.
-        val earlier = if (isResult && waiting < 0 && said.id.endsWith(":result")) entries.indexOfLast { entry -> entry is Steps && entry.steps.any { it.id == said.id.removeSuffix(":result") && it.result == null } } else -1
-        when {
-            isResult && waiting >= 0 -> steps[waiting] = steps[waiting].copy(result = body, failed = head == "Tool failed")
-            earlier >= 0 -> (entries[earlier] as Steps).let { group ->
-                entries[earlier] = Steps(group.steps.map { if (it.id == said.id.removeSuffix(":result") && it.result == null) it.copy(result = body, failed = head == "Tool failed") else it })
+        val waiting = if (!isResult) null else if (said.id.endsWith(":result")) pending.remove(said.id.removeSuffix(":result")) else {
+            while (legacy < steps.size && (steps[legacy].result != null || steps[legacy].isNote)) legacy++
+            if (legacy < steps.size) { pending.remove(steps[legacy].id); steps to legacy++ } else null
+        }
+        if (waiting != null) {
+            val (group, index) = waiting
+            group[index] = group[index].copy(result = body, failed = head == "Tool failed")
+        } else {
+            val step = when {
+                isResult -> Step(said.id, if (head == "Tool failed") "Failed" else "Result", firstLine(body), "", body, head == "Tool failed", said.createdAt)
+                body.trimStart().startsWith("{") -> Step(said.id, head, summarize(head, body), body, at = said.createdAt)
+                else -> Step(said.id, NOTE, firstLine(said.text), said.text, at = said.createdAt)
             }
-            isResult -> steps += Step(said.id, if (head == "Tool failed") "Failed" else "Result", firstLine(body), "", body, head == "Tool failed", said.createdAt)
-            body.trimStart().startsWith("{") -> steps += Step(said.id, head, summarize(head, body), body, at = said.createdAt)
-            else -> steps += Step(said.id, NOTE, firstLine(said.text), said.text, at = said.createdAt)
+            steps += step
+            if (!isResult) pending[said.id] = steps to steps.lastIndex
         }
     }
     flush()
@@ -140,15 +146,17 @@ fun liveStep(entries: List<Entry>): Step? = (entries.lastOrNull { it !is Agents 
  */
 fun turnEnds(entries: List<Entry>, live: Boolean, turns: List<Turn> = emptyList()): Set<String> {
     val starts = turns.map { it.id }.toSet()
-    return entries.indices.mapNotNull { index ->
-        val entry = entries[index] as? Message ?: return@mapNotNull null
-        if (entry.said.role != "assistant" || entry.said.text.isBlank()) return@mapNotNull null
-        val next = entries.drop(index + 1).firstOrNull { it is Message && (it.said.role == "assistant" || opensTurn(it, starts)) }
-        when {
-            next != null -> entry.key.takeIf { (next as Message).said.role == "user" }
-            else -> entry.key.takeIf { !live }
-        }
-    }.toSet()
+    val ends = mutableSetOf<String>()
+    var nextRole: String? = null
+    // Scan backwards once; copying and searching every suffix made long chats slow on each stream update.
+    for (entry in entries.asReversed()) {
+        if (entry !is Message) continue
+        if (entry.said.role == "assistant") {
+            if (entry.said.text.isNotBlank() && (nextRole == "user" || nextRole == null && !live)) ends += entry.key
+            nextRole = "assistant"
+        } else if (opensTurn(entry, starts)) nextRole = "user"
+    }
+    return ends
 }
 
 fun elapsedLabel(millis: Long): String {
