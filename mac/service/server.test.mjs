@@ -60,6 +60,62 @@ test('prompt delivery is durable and idempotent; stream chunks reconcile with fi
   assert.ok(calls.every(c => c.args.includes(chat.id) && c.args.includes('--dangerously-skip-permissions')));
 });
 
+test('incremental transcripts update old messages in place, preserve inserted order, and refresh metadata across restart', async t => {
+  const f = await fixture(t), chat = await f.createChat();
+  const transcript = async since => (await f.request(`/api/chats/${chat.id}/messages${since ? `?since=${encodeURIComponent(since)}` : ''}`)).data;
+  const db = new DatabaseSync(join(f.dir, 'data/data.sqlite')); t.after(() => db.close());
+  const insert = (id, role, value, kind = null) => db.prepare('INSERT INTO messages (id,chatId,role,text,createdAt,kind) VALUES (?,?,?,?,?,?)').run(id, chat.id, role, value, Date.now(), kind);
+  insert('prompt', 'user', 'Check this'); insert('reply', 'assistant', 'Partial'); insert('shell', 'activity', 'Shell\n{}');
+  const first = await transcript(); assert.equal(first.full, true);
+  assert.ok(first.messages.every(message => message.revision === undefined));
+  insert('steer', 'user', 'Also check that', 'steer'); insert('shell:result', 'activity', 'Tool result\nDone');
+  db.prepare('UPDATE messages SET text=? WHERE id=?').run('Canonical answer', 'reply');
+  const delta = await transcript(first.cursor);
+  assert.equal(delta.full, false);
+  assert.deepEqual(delta.messages.map(message => [message.id, message.text]), [['reply', 'Canonical answer'], ['steer', 'Also check that'], ['shell:result', 'Tool result\nDone']]);
+  db.prepare('UPDATE messages SET text=? WHERE id=?').run('Canonical answer', 'reply');
+  db.prepare("UPDATE chats SET status='running',activity='Checking files',thinking='Live thought' WHERE id=?").run(chat.id);
+  db.prepare('INSERT INTO prompts (id,chatId,text,startedAt) VALUES (?,?,?,?)').run('prompt', chat.id, 'Check this', Date.now());
+  db.prepare('INSERT INTO approvals VALUES (?,?,?,?,?,?)').run('approval', chat.id, 'Bash', '{}', 'pending', Date.now());
+  db.prepare('INSERT INTO subagents (id,chatId,promptId,agent,title,status,startedAt) VALUES (?,?,?,?,?,?,?)').run('sub', chat.id, 'prompt', 'claude', 'Check files', 'running', Date.now());
+  const metadata = await transcript(delta.cursor);
+  assert.deepEqual(metadata.messages, []); assert.equal(metadata.cursor, delta.cursor);
+  assert.equal(metadata.thinking, 'Live thought'); assert.equal(metadata.activity, 'Checking files');
+  assert.equal(metadata.approvals[0].status, 'pending'); assert.equal(metadata.turns[0].id, 'prompt'); assert.equal(metadata.subagents[0].status, 'running');
+  await f.restart();
+  const restarted = await transcript(metadata.cursor);
+  assert.equal(restarted.full, false); assert.deepEqual(restarted.messages, []); assert.equal(restarted.thinking, null);
+  assert.equal(restarted.approvals[0].status, 'deny'); assert.equal(restarted.subagents[0].status, 'stopped'); assert.ok(restarted.turns[0].endedAt);
+  const other = await f.createChat(), wrongChat = (await f.request(`/api/chats/${other.id}/messages`)).data.cursor;
+  const future = JSON.parse(Buffer.from(restarted.cursor, 'base64url').toString()); future[2]++;
+  for (const cursor of ['broken', wrongChat, Buffer.from(JSON.stringify(future)).toString('base64url')]) {
+    const recovered = await transcript(cursor); assert.equal(recovered.full, true); assert.equal(recovered.messages.length, 5);
+  }
+  db.prepare('DELETE FROM messages WHERE id=?').run('shell:result');
+  const deleted = await transcript(restarted.cursor);
+  assert.equal(deleted.full, true); assert.equal(deleted.messages.length, 4); assert.ok(!deleted.messages.some(message => message.id === 'shell:result'));
+  assert.equal((await f.request(`/api/chats/${chat.id}/delete`, {})).status, 200);
+  assert.equal((await f.request(`/api/chats/${chat.id}/messages?since=${encodeURIComponent(deleted.cursor)}`)).status, 404);
+});
+
+test('a long transcript fetch sends only changed rows and uses message and turn indexes', async t => {
+  const f = await fixture(t), chat = await f.createChat(), db = new DatabaseSync(join(f.dir, 'data/data.sqlite')); t.after(() => db.close());
+  db.exec('BEGIN');
+  const insert = db.prepare('INSERT INTO messages (id,chatId,role,text,createdAt) VALUES (?,?,?,?,?)');
+  for (let index = 0; index < 1000; index++) insert.run(`long-${index}`, chat.id, 'assistant', 'Earlier answer '.repeat(50), index);
+  db.exec('COMMIT');
+  const full = (await f.request(`/api/chats/${chat.id}/messages`)).data;
+  db.prepare('UPDATE messages SET text=? WHERE id=?').run('Updated final answer', 'long-999');
+  const delta = (await f.request(`/api/chats/${chat.id}/messages?since=${encodeURIComponent(full.cursor)}`)).data;
+  assert.equal(full.messages.length, 1000); assert.deepEqual(delta.messages.map(message => message.id), ['long-999']);
+  assert.ok(Buffer.byteLength(JSON.stringify(delta)) < Buffer.byteLength(JSON.stringify(full)) / 100);
+  const messagePlan = db.prepare('EXPLAIN QUERY PLAN SELECT * FROM messages WHERE chatId=? AND revision>? ORDER BY rowid').all(chat.id, 1000);
+  const turnPlan = db.prepare('EXPLAIN QUERY PLAN SELECT id,startedAt,endedAt FROM prompts WHERE chatId=? AND startedAt IS NOT NULL ORDER BY startedAt').all(chat.id);
+  assert.ok(messagePlan.some(row => row.detail.includes('USING INDEX messages_chat_revision')));
+  assert.ok(turnPlan.some(row => row.detail.includes('USING INDEX prompts_chat_started')));
+  t.diagnostic(`Transcript JSON bytes: ${Buffer.byteLength(JSON.stringify(full))} full, ${Buffer.byteLength(JSON.stringify(delta))} incremental`);
+});
+
 for (const agent of ['claude', 'codex']) test(`${agent} thinking is live and reconnectable, separate from history, and clears on completion, stop and restart`, async t => {
   const f = await fixture(t), projectId = (await f.request('/api/state')).data.projects[0].id;
   const chat = (await f.request('/api/chats', { projectId, agent })).data;
@@ -1063,17 +1119,25 @@ test('Codex speed tiers come from model/list, are saved per chat and prompt, and
   assert.equal((await f.request('/api/state')).data.chats.find(chat => chat.id === chatId).speed, 'priority');
 });
 
-test('a data folder from before 0.7 gains speed and icon columns and keeps its chats', async t => {
+test('an older data folder gains new columns and keeps its chats and messages', async t => {
   const f = await fixture(t), chat = await f.createChat();
+  await f.send(chat, 'hello'); await f.finished(chat);
+  const before = (await f.request(`/api/chats/${chat.id}/messages`)).data;
   await f.service.close();
   const db = new DatabaseSync(join(f.dir, 'data/data.sqlite'));
+  db.exec('DROP TRIGGER messages_insert_revision; DROP TRIGGER messages_update_revision; DROP TRIGGER messages_delete_revision; DROP INDEX messages_chat_revision; DROP TABLE message_clock; ALTER TABLE messages DROP COLUMN revision;');
   for (const [table, column] of [['chats', 'speed'], ['prompts', 'speed'], ['projects', 'icon'], ['projects', 'iconType'], ['projects', 'iconSource'], ['projects', 'iconCheckedAt']]) db.exec(`ALTER TABLE ${table} DROP COLUMN ${column}`);
   db.close();
   await f.restart();
   const state = (await f.request('/api/state')).data;
   assert.equal(state.chats.find(item => item.id === chat.id).speed, null);
   assert.equal(state.projects[0].icon, null);
+  const migrated = (await f.request(`/api/chats/${chat.id}/messages?since=${encodeURIComponent(before.cursor)}`)).data;
+  assert.equal(migrated.full, true); assert.deepEqual(migrated.messages, before.messages);
   assert.equal((await f.send(chat, 'hello')).status, 202); await f.finished(chat);
+  const delta = (await f.request(`/api/chats/${chat.id}/messages?since=${encodeURIComponent(migrated.cursor)}`)).data;
+  assert.equal(delta.full, false); assert.ok(delta.messages.length);
+  assert.ok(delta.messages.every(message => !before.messages.some(old => old.id === message.id)));
 });
 
 test('usage marks weekly and session windows, lists Codex resets, and redeems one reset per attempt', async t => {

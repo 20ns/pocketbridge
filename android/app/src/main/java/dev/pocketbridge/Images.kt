@@ -51,7 +51,26 @@ import androidx.core.view.WindowCompat
 import java.io.File
 import kotlin.math.roundToInt
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.withContext
+
+@OptIn(ExperimentalCoroutinesApi::class)
+private val imagePreparation = Dispatchers.IO.limitedParallelism(1)
+
+/** Picker and share preparations use one worker, so eight photos never decode eight full bitmaps together. */
+internal suspend fun prepareImages(files: List<File>, prepare: (Int, File) -> Boolean): List<String> = try {
+    withContext(imagePreparation) {
+        files.mapIndexedNotNull { index, file ->
+            ensureActive()
+            if (prepare(index, file)) file.path else { file.delete(); File(file.path + ".tmp").delete(); null }
+        }.also { ensureActive() }
+    }
+} catch (failure: Throwable) {
+    withContext(NonCancellable + Dispatchers.IO) { files.forEach { it.delete(); File(it.path + ".tmp").delete() } }
+    throw failure
+}
 
 /** Screenshots stay readable at 2048 px on the long side; JPEG 85 keeps them a few hundred KB over Tailscale. */
 const val UPLOAD_MAX_SIDE = 2048
@@ -116,13 +135,25 @@ fun prepareImage(resolver: ContentResolver, uri: Uri, out: File): Boolean = runC
     val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
     open()?.use { BitmapFactory.decodeStream(it, null, bounds) }
     if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return false
-    var image = fit(upright(decode(open, sampleSize(bounds.outWidth, bounds.outHeight, UPLOAD_MAX_SIDE)) ?: return false, orientation(open)), UPLOAD_MAX_SIDE)
-    // JPEG has no transparency; a transparent PNG would turn black, so it sits on white instead.
-    if (image.hasAlpha()) image = createBitmap(image.width, image.height).also { Canvas(it).apply { drawColor(android.graphics.Color.WHITE); drawBitmap(image, 0f, 0f, null) } }
-    out.parentFile?.mkdirs()
-    val temporary = File(out.path + ".tmp")
-    temporary.outputStream().use { image.compress(Bitmap.CompressFormat.JPEG, UPLOAD_QUALITY, it) }
-    temporary.renameTo(out)
+    var image = decode(open, sampleSize(bounds.outWidth, bounds.outHeight, UPLOAD_MAX_SIDE)) ?: return false
+    try {
+        val rotated = upright(image, orientation(open))
+        if (rotated !== image) image.recycle()
+        image = rotated
+        val fitted = fit(image, UPLOAD_MAX_SIDE)
+        if (fitted !== image) image.recycle()
+        image = fitted
+        // JPEG has no transparency; a transparent PNG sits on white instead.
+        if (image.hasAlpha()) {
+            val flat = createBitmap(image.width, image.height)
+            Canvas(flat).apply { drawColor(android.graphics.Color.WHITE); drawBitmap(image, 0f, 0f, null) }
+            image.recycle(); image = flat
+        }
+        out.parentFile?.mkdirs()
+        val temporary = File(out.path + ".tmp")
+        temporary.outputStream().use { check(image.compress(Bitmap.CompressFormat.JPEG, UPLOAD_QUALITY, it)) }
+        temporary.renameTo(out)
+    } finally { image.recycle() }
 }.getOrDefault(false)
 
 /**

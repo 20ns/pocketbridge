@@ -8,6 +8,13 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class FeaturesTest {
+    @Test fun `an unconfirmed send never announces completion before delivery is proved`() {
+        val idle = ChatStatus("chat", "Chat", "idle")
+        assertTrue(alertEvents(mapOf("chat" to "sending"), listOf(idle), "").isEmpty())
+        assertTrue(alertEvents(mapOf("chat" to "running"), listOf(idle), "").single() is Ended)
+        assertTrue(deliveredPrompt(listOf(JSONObject().put("id", "prompt").put("role", "user")), "prompt"))
+        assertFalse(deliveredPrompt(emptyList(), "prompt"))
+    }
     // Delivery: images and steer/interrupt travel with the immutable delivery id.
 
     @Test fun `prompt keeps its images and delivery across a restart and a retry`() {

@@ -33,14 +33,33 @@ export function openDatabase(dataDir) {
     // 0.8: the one General project, for chats that belong to no project folder.
     ['projects', 'general', 'INTEGER NOT NULL DEFAULT 0'],
     ['chats', 'thinking', 'TEXT'],
+    ['messages', 'revision', 'INTEGER NOT NULL DEFAULT 0'],
   ]) if (!columns(table).includes(column)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${type}`);
   db.exec(`CREATE TABLE IF NOT EXISTS deleted_chats (id TEXT PRIMARY KEY, deletedAt INTEGER NOT NULL);
     CREATE INDEX IF NOT EXISTS messages_chat ON messages(chatId);
+    CREATE INDEX IF NOT EXISTS messages_chat_revision ON messages(chatId,revision);
+    CREATE INDEX IF NOT EXISTS prompts_chat_started ON prompts(chatId,startedAt);
     CREATE INDEX IF NOT EXISTS approvals_chat ON approvals(chatId);
     CREATE INDEX IF NOT EXISTS raw_events_chat ON raw_events(chatId);
     CREATE TABLE IF NOT EXISTS hidden_sessions (id TEXT PRIMARY KEY);
     CREATE TABLE IF NOT EXISTS uploads (id TEXT PRIMARY KEY, chatId TEXT, type TEXT NOT NULL, size INTEGER NOT NULL, createdAt INTEGER NOT NULL);
     CREATE TABLE IF NOT EXISTS subagents (id TEXT NOT NULL, chatId TEXT NOT NULL, promptId TEXT, agent TEXT NOT NULL, title TEXT, kind TEXT, model TEXT, effort TEXT, status TEXT NOT NULL, activity TEXT, startedAt INTEGER NOT NULL, endedAt INTEGER, toolUses INTEGER, tokens INTEGER, PRIMARY KEY (chatId, id));`);
+  // Triggers cover every agent's insert and final-text update, in the same transaction as the saved message.
+  db.exec(`CREATE TABLE IF NOT EXISTS message_clock (id INTEGER PRIMARY KEY CHECK(id=1), generation TEXT NOT NULL, revision INTEGER NOT NULL);
+    INSERT OR IGNORE INTO message_clock VALUES (1,lower(hex(randomblob(16))),0);
+    CREATE TRIGGER IF NOT EXISTS messages_insert_revision AFTER INSERT ON messages BEGIN
+      UPDATE message_clock SET revision=revision+1 WHERE id=1;
+      UPDATE messages SET revision=(SELECT revision FROM message_clock WHERE id=1) WHERE rowid=NEW.rowid;
+    END;
+    CREATE TRIGGER IF NOT EXISTS messages_update_revision AFTER UPDATE OF text,attachments,kind ON messages
+    WHEN OLD.text IS NOT NEW.text OR OLD.attachments IS NOT NEW.attachments OR OLD.kind IS NOT NEW.kind BEGIN
+      UPDATE message_clock SET revision=revision+1 WHERE id=1;
+      UPDATE messages SET revision=(SELECT revision FROM message_clock WHERE id=1) WHERE rowid=NEW.rowid;
+    END;
+    CREATE TRIGGER IF NOT EXISTS messages_delete_revision AFTER DELETE ON messages BEGIN
+      UPDATE message_clock SET generation=lower(hex(randomblob(16))),revision=revision+1 WHERE id=1;
+    END;`);
+  // ponytail: deletion invalidates every chat cursor; use per-chat deletion revisions if bulk deletion becomes common.
   const get = (sql, ...params) => db.prepare(sql).get(...params);
   const all = (sql, ...params) => db.prepare(sql).all(...params);
   const run = (sql, ...params) => db.prepare(sql).run(...params);

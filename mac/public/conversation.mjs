@@ -1,5 +1,5 @@
 // The open conversation: its header, transcript, tool activity, sub-agents and pending answers.
-import {markdown, turnPlacement, groupMessages, activitySummary, effortLabel, liveStep, elapsedLabel} from './support.mjs';
+import {markdown, turnPlacement, groupMessages, activitySummary, effortLabel, liveStep, elapsedLabel, mergeTranscript} from './support.mjs';
 import {$, el, app, drafts, localChats, overrides, persist, persistDrafts, persistLocalChats, notice, api, imageUrl, currentChat, storedChat, projectFor, projectName, agentName, busy, statusBadge, projectAvatar} from './core.mjs';
 import {refresh, controls} from './app.mjs';
 import {renderOptions, clearPrompt} from './composer.mjs';
@@ -7,6 +7,7 @@ import {showDrawer, toggleProjectForm} from './sidebar.mjs';
 
 const liveText = {idle:'Finished. Ready for your next message.', running:'Working.', waiting:'Needs your answer.', stopping:'Stopping.', interrupted:'Work stopped.', error:'This turn failed.'};
 let approvalsSignature = null, announced = {}, messagesGeneration = 0;
+let transcriptChat = '', transcript = null;
 
 /** Title, the project folder under it, then agent, status and context use. */
 export function renderHeader(chat) {
@@ -158,8 +159,12 @@ export async function loadMessages() {
   if (!id || !currentChat()) return;
   if (!storedChat(id)) { showPendingChat(); return; }
   const generation = ++messagesGeneration;
-  const result = await api(`/chats/${encodeURIComponent(id)}/messages`);
+  const previous = transcriptChat === id ? transcript : null;
+  const since = previous?.cursor ? `?since=${encodeURIComponent(previous.cursor)}` : '';
+  const response = await api(`/chats/${encodeURIComponent(id)}/messages${since}`);
   if (id !== app.selected || generation !== messagesGeneration) return;
+  const result = mergeTranscript(previous, response);
+  transcriptChat = id; transcript = result;
   const pendingDraft = drafts[id];
   if (pendingDraft?.attempted && result.messages.some(message => message.role === 'user' && message.id === pendingDraft.id)) {
     delete drafts[id]; persistDrafts(); clearPrompt(); renderOptions(); controls();

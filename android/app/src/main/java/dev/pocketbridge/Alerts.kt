@@ -100,6 +100,8 @@ object Alerts {
     /** Process-wide: whether the app is on screen and which chat it shows. */
     @Volatile var foreground = false
     @Volatile var viewing = ""
+    /** Prompts sent from any chat, kept through ambiguous delivery and acceptance before the next state snapshot. */
+    val deliveries = ConcurrentHashMap<String, String>()
 
     fun allowed(context: Context) = context.getSystemService(NotificationManager::class.java).areNotificationsEnabled()
 
@@ -223,6 +225,7 @@ class AlertService : Service() {
     /** Per waiting chat, the request its notification shows; and chats whose requests changed since the last look. */
     private val notified = mutableMapOf<String, String>()
     private val approvalsChanged = ConcurrentHashMap.newKeySet<String>()
+    private var deliveryWaitSince = 0L
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -267,8 +270,8 @@ class AlertService : Service() {
                 coroutineScope {
                     // Bursts of changes become one state fetch a second. A question still missing its actions asks again a little later.
                     val fetcher = launch {
-                        if (unfetched.isNotEmpty()) changes.trySend(Unit)
-                        for (change in changes) { delay(if (unfetched.isEmpty()) 1000 else 5000); if (refresh(api) == null) return@launch; if (unfetched.isNotEmpty()) changes.trySend(Unit) }
+                        if (unfetched.isNotEmpty() || Alerts.deliveries.isNotEmpty()) changes.trySend(Unit)
+                        for (change in changes) { delay(if (unfetched.isEmpty()) 1000 else 5000); if (refresh(api) == null) return@launch; if (unfetched.isNotEmpty() || Alerts.deliveries.isNotEmpty()) changes.trySend(Unit) }
                     }
                     api.watch(seq, "status") { line ->
                         if (line.startsWith("data:")) { approvalChat(line.removePrefix("data:").trim())?.let(approvalsChanged::add); changes.trySend(Unit) }
@@ -291,12 +294,18 @@ class AlertService : Service() {
     /** One look at the Mac: posts what changed and updates the ongoing summary. Null once the service has stopped. */
     private suspend fun refresh(api: Api): Long? {
         if (!Alerts.answerable(Store(this))) { finish(clear = true); return null }
+        // Read state after delivery proof: an idle snapshot requested before the POST cannot announce Done.
+        for ((id, prompt) in Alerts.deliveries.toMap()) {
+            val delivered = messages(api, id)?.optJSONArray("messages")?.objects()?.let { deliveredPrompt(it, prompt) } == true
+            if (delivered && Alerts.deliveries.remove(id, prompt) && statuses[id] == "sending") statuses[id] = "running"
+        }
         val state = withContext(Dispatchers.IO) { api.request("/api/state") }
         // Alerts may have gone off while that was on its way.
         if (!Alerts.answerable(Store(this))) { finish(clear = true); return null }
         val chats = state.optJSONArray("chats")?.objects().orEmpty().map(::chatStatus)
         val viewing = if (Alerts.foreground) Alerts.viewing else ""
-        val events = alertEvents(statuses, chats, viewing)
+        val unresolved = Alerts.deliveries.keys.toSet()
+        val events = alertEvents(statuses, chats, viewing).filterNot { it is Ended && it.chat.id in unresolved }
         for (event in events) when (event) {
             is NeedsAnswer -> announce(api, event.chat, fresh = true)
             is Ended -> Alerts.ended(this, event.chat)
@@ -308,7 +317,16 @@ class AlertService : Service() {
         val changed = approvalsChanged.toSet().also { approvalsChanged.removeAll(it) }
         for (chat in chats.filter { it.id in waiting && (it.id in unfetched || it.id in changed) && events.none { event -> event.chat.id == it.id } }) announce(api, chat, fresh = false)
         statuses = chats.associate { it.id to it.status }.toMutableMap()
-        val active = chats.filter { isWorking(it.status) }
+        unresolved.forEach { if (!isWorking(statuses[it])) statuses[it] = "sending" }
+        val working = chats.filter { isWorking(it.status) }
+        // An unexecuted, uncertain send keeps Retry on the phone; stop polling after the same 15-minute ceiling.
+        if (working.isEmpty() && unresolved.isNotEmpty()) {
+            if (deliveryWaitSince == 0L) deliveryWaitSince = System.currentTimeMillis()
+            if (System.currentTimeMillis() - deliveryWaitSince > 15 * 60_000) { finish(); return null }
+        } else deliveryWaitSince = 0L
+        val active = working + unresolved.filter { id -> working.none { it.id == id } }.map { id ->
+            chats.find { it.id == id }?.copy(status = "running") ?: ChatStatus(id, "Sending prompt", "running")
+        }
         if (active.isEmpty()) { finish(); return null }
         started.keys.retainAll(active.filter { it.status != "waiting" }.map { it.id }.toSet())
         for (chat in active.filter { it.status == "running" && it.id !in started }) started[chat.id] = turnStart(api, chat.id) ?: System.currentTimeMillis()

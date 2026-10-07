@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {EventDecoder, safeLink, markdown, parseActivity, summariseInput, groupMessages, activitySummary, statusLabel, relativeTime, editDraft, prepareDelivery, afterDelivery, promptPayload, blankLocalDraft, withAttachments, slashMatches, turnPlacement, agentsFrom, usableAgent, newChatAgent, resolveOptions, supportedOptions, highlight, diffLines, resetLabel, modelName, effortName, modeHelp, liveStep, elapsedLabel, modelSpeeds, speedName, effortLabel, weeklyLimit, headlineLimit, usageRings, nextCredit, resetAttempt, settleReset, resetPrompt, resetOutcomes, hashIndex, projectTone, projectTones, avatarLetter, projectNameProblem, newProjectAttempt, unknownResult, settleProjectAttempt, projectChoices} from '../public/support.mjs';
+import {EventDecoder, mergeTranscript, safeLink, markdown, parseActivity, summariseInput, groupMessages, activitySummary, statusLabel, relativeTime, editDraft, prepareDelivery, afterDelivery, promptPayload, blankLocalDraft, withAttachments, slashMatches, turnPlacement, agentsFrom, usableAgent, newChatAgent, resolveOptions, supportedOptions, highlight, diffLines, resetLabel, modelName, effortName, modeHelp, liveStep, elapsedLabel, modelSpeeds, speedName, effortLabel, weeklyLimit, headlineLimit, usageRings, nextCredit, resetAttempt, settleReset, resetPrompt, resetOutcomes, hashIndex, projectTone, projectTones, avatarLetter, projectNameProblem, newProjectAttempt, unknownResult, settleProjectAttempt, projectChoices} from '../public/support.mjs';
 
 // A tiny DOM records writes. No browser or dependency is needed to assert the trust boundary.
 const fakeDoc = () => ({
@@ -375,4 +375,19 @@ test('General is kept apart from the project folders, and older Macs have none',
   assert.deepEqual(projectChoices([app, general, site]), {general, folders:[app, site]});
   assert.deepEqual(projectChoices([app, site]), {general:null, folders:[app, site]});
   assert.deepEqual(projectChoices(), {general:null, folders:[]});
+});
+
+
+test('transcript deltas update rows in place, append late results and clear metadata', () => {
+  const old = {messages:[{id:'tool'}, {id:'reply', text:'Partial'}, {id:'steer'}], thinking:'Working'};
+  const next = mergeTranscript(old, {full:false, cursor:'next', messages:[{id:'reply', text:'Complete'}, {id:'tool:result'}], thinking:null});
+  assert.deepEqual(next.messages.map(row => row.id), ['tool', 'reply', 'steer', 'tool:result']);
+  assert.equal(next.messages[1].text, 'Complete');
+  assert.equal(next.thinking, null);
+  assert.equal(old.messages[1].text, 'Partial');
+  const full = {full:true, messages:[]};
+  assert.equal(mergeTranscript(next, full), full);
+  const legacy = {messages:[]};
+  assert.equal(mergeTranscript(null, legacy), legacy);
+  assert.throws(() => mergeTranscript(null, {full:false, messages:[]}));
 });

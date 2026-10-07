@@ -71,6 +71,9 @@ import org.json.JSONObject
 
 @Composable fun StepsGroup(group: Steps, live: Boolean, modifier: Modifier = Modifier) {
     var open by rememberSaveable(group.key) { mutableStateOf(false) }
+    var expandedSteps by rememberSaveable(group.key) { mutableStateOf(emptyList<String>()) }
+    val stepsState = rememberLazyListState()
+    val toggleStep: (String) -> Unit = { id -> expandedSteps = if (id in expandedSteps) expandedSteps - id else expandedSteps + id }
     val failed = group.steps.count { it.failed }
     val turn by animateFloatAsState(if (open) 180f else 0f, Motion.fastSpatial(), label = "chevron")
     val colors = MaterialTheme.colorScheme
@@ -92,7 +95,11 @@ import org.json.JSONObject
             }
             if (open) Column(Modifier.padding(start = Spacing.sm, end = Spacing.sm, bottom = Spacing.sm)) {
                 HorizontalDivider(Modifier.padding(horizontal = Spacing.sm, vertical = Spacing.xxs), color = colors.outlineVariant.copy(alpha = 0.6f))
-                group.steps.forEach { StepRow(it) }
+                // ponytail: up to 20 steps keep their natural height; larger runs use a 360 dp lazy viewport.
+                if (group.steps.size <= 20) group.steps.forEach { StepRow(it, it.id in expandedSteps) { toggleStep(it.id) } }
+                else LazyColumn(Modifier.fillMaxWidth().heightIn(max = 360.dp), state = stepsState) {
+                    items(group.steps, key = { it.id }) { StepRow(it, it.id in expandedSteps) { toggleStep(it.id) } }
+                }
             }
         }
     }
@@ -105,12 +112,11 @@ private fun inputLanguage(described: String) = when {
     else -> ""
 }
 
-@Composable private fun StepRow(step: Step) {
-    var open by rememberSaveable(step.id) { mutableStateOf(false) }
+@Composable private fun StepRow(step: Step, open: Boolean, toggle: () -> Unit) {
     val colors = MaterialTheme.colorScheme
     Column(Modifier.fillMaxWidth()) {
         Row(
-            Modifier.fillMaxWidth().clip(RoundedCornerShape(Corners.groupInner * 3)).clickable(onClickLabel = if (open) "Hide details" else "Show details") { open = !open }
+            Modifier.fillMaxWidth().clip(RoundedCornerShape(Corners.groupInner * 3)).clickable(onClickLabel = if (open) "Hide details" else "Show details", onClick = toggle)
                 .heightIn(min = Sizes.touch).padding(horizontal = Spacing.sm, vertical = Spacing.sm),
             verticalAlignment = Alignment.CenterVertically,
         ) {

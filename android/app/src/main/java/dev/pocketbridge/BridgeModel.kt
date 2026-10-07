@@ -40,6 +40,7 @@ class BridgeModel(application: Application) : AndroidViewModel(application) {
     private var actionJob: Job? = null
     private var refreshJob: Job? = null
     private var cachedMessagesJob: Job? = null
+    private var transcript: JSONObject? = null
     private val changes = MutableSharedFlow<Unit>(extraBufferCapacity = 1, onBufferOverflow = BufferOverflow.DROP_OLDEST)
     private val pendingSync = AtomicInteger(0)
     private val cursor = EventCursor()
@@ -82,6 +83,7 @@ class BridgeModel(application: Application) : AndroidViewModel(application) {
     /** Images shared into PocketBridge, prepared and waiting for a chat to go to. */
     var shared by mutableStateOf<List<String>>(emptyList()); private set
     var sharing by mutableStateOf(false); private set
+    private var shareJob: Job? = null
     /** Something outside the app (a notification, a share) asked to show the open chat; cleared once shown. */
     var showChat by mutableStateOf(false); private set
     /** True once a first send should ask for notification permission. */
@@ -171,6 +173,7 @@ class BridgeModel(application: Application) : AndroidViewModel(application) {
     }
     private fun loadMessages(id: String) {
         cachedMessagesJob?.cancel()
+        transcript = null
         messages = emptyList(); approvals = emptyList(); turns = emptyList(); subagents = emptyList(); activity = ""; thinking = ""; loadedChat = ""
         if (id.isEmpty()) return
         val cacheSession = store.session()
@@ -182,6 +185,7 @@ class BridgeModel(application: Application) : AndroidViewModel(application) {
         }
     }
     private fun applyMessages(result: JSONObject) {
+        transcript = result
         messages = result.getJSONArray("messages").objects(); approvals = result.optJSONArray("approvals")?.objects().orEmpty()
         turns = parseTurns(result); subagents = parseSubagents(result)
         activity = if (result.isNull("activity")) "" else result.optString("activity")
@@ -224,6 +228,9 @@ class BridgeModel(application: Application) : AndroidViewModel(application) {
     }
     /** Mac-specific caches belong to one pairing. */
     private fun forgetPairingData() {
+        transcript = null; loadedChat = ""
+        cancelShare()
+        Alerts.deliveries.clear()
         turns = emptyList(); subagents = emptyList(); activity = ""; thinking = ""; attachments = emptyList(); attachmentLists.clear(); shared = emptyList()
         details.clear(); acceptedAt.clear(); alertsOn = true
         deleting = null; deletions = emptyMap(); agentSwitching = emptyMap(); experiments = ""; projectError = ""; newChatRequested = false; showChat = false
@@ -273,7 +280,7 @@ class BridgeModel(application: Application) : AndroidViewModel(application) {
             if (api !== currentApi) return@withLock
             val previous = chat
             val followOptions = pending == null && draftChat(id) == null && optionOverride(id) == null && (previous == null || options == optionsFrom(previous)?.let { supportedOptions(agent(it.agent), it) })
-            applyState(state); store.put("state", stateCache)
+            applyState(state); settleAlertDeliveries(generation); store.put("state", stateCache)
             // Transcripts of chats deleted from another client go too, checked every ten minutes at most.
             if (System.currentTimeMillis() - transcriptsPrunedAt > 10 * 60_000) {
                 transcriptsPrunedAt = System.currentTimeMillis()
@@ -291,8 +298,10 @@ class BridgeModel(application: Application) : AndroidViewModel(application) {
             lastSeq = state.optLong("lastSeq")
         }
         if (fetchMessages && id.isNotEmpty() && chats.any { it.optString("id") == id }) {
+            val previous = transcript.takeIf { loadedChat == id }
+            val since = previous?.textOrNull("cursor")?.let { "?since=" + java.net.URLEncoder.encode(it, "UTF-8") }.orEmpty()
             val result = withContext(Dispatchers.IO) {
-                currentApi.request("/api/chats/$id/messages").also { if (api === currentApi) transcripts.write(id, it.toString()) }
+                mergeTranscript(previous, currentApi.request("/api/chats/$id/messages$since")).also { if (api === currentApi) transcripts.write(id, it.toString()) }
             }
             if (api !== currentApi) return@withLock
             if (selected == id) {
@@ -405,6 +414,8 @@ class BridgeModel(application: Application) : AndroidViewModel(application) {
         )
         require(prompt.text.isNotEmpty() || prompt.attachments.isNotEmpty()) { "Write a prompt first." }
         askForAlerts()
+        acceptedAt.remove(id)
+        Alerts.deliveries[id] = prompt.id
         if (selected == id) pending = prompt
         withContext(Dispatchers.IO) { store.commit("pending:$id", prompt.json().toString(), deliverySession) }
         if (api !== currentApi) return@action
@@ -421,6 +432,7 @@ class BridgeModel(application: Application) : AndroidViewModel(application) {
             // Timeouts and server failures may follow execution. Keep their delivery IDs.
             if (api !== currentApi) return@action
             if (failure.definitiveRejection) {
+                Alerts.deliveries.remove(id, prompt.id)
                 withContext(Dispatchers.IO) { store.completePrompt(id, prompt, deliverySession, accepted = false) }
                 if (selected == id) pending = null
                 if (failure.status == 410 && local != null) {
@@ -444,6 +456,10 @@ class BridgeModel(application: Application) : AndroidViewModel(application) {
         attachmentLists.remove(id)
         if (selected == id) { pending = null; draft = store.get("draft:$id"); attachments = attachmentsOf(id) }
         cleanOutbox()
+    }
+    /** A state request begun after acceptance can safely hand this chat back to its reported status. */
+    private fun settleAlertDeliveries(generation: Long) {
+        if (foreground) acceptedAt.forEach { (id, accepted) -> if (generation > accepted) Alerts.deliveries.remove(id) }
     }
     /**
      * Turns an agent CLI on or off on the Mac for every client. Off stops its probes, discovery and new turns. The
@@ -619,12 +635,15 @@ class BridgeModel(application: Application) : AndroidViewModel(application) {
         if (room <= 0) { error = "Up to $MAX_ATTACHMENTS images per message."; return }
         if (uris.size > room) error = "Added $room. Up to $MAX_ATTACHMENTS images per message."
         val resolver = getApplication<Application>().contentResolver
+        val preparationApi = api
         uris.take(room).forEach { uri ->
             val key = UUID.randomUUID().toString()
             val file = File(outbox, "$key.jpg")
             setAttachments(id, attachmentsOf(id) + Attachment(key, file.path, state = UploadState.Uploading, preparing = true))
             viewModelScope.launch {
-                if (withContext(Dispatchers.IO) { prepareImage(resolver, uri, file) }) { updateAttachment(id, key) { it.copy(preparing = false) }; upload(id, key) }
+                val prepared = prepareImages(listOf(file)) { _, out -> prepareImage(resolver, uri, out) }
+                if (api !== preparationApi) { withContext(Dispatchers.IO) { file.delete() }; return@launch }
+                if (prepared.isNotEmpty()) { updateAttachment(id, key) { it.copy(preparing = false) }; upload(id, key) }
                 else { setAttachments(id, attachmentsOf(id).filter { it.key != key }); error = "That image couldn't be read." }
             }
         }
@@ -693,31 +712,39 @@ class BridgeModel(application: Application) : AndroidViewModel(application) {
         if (!paired || uris.isEmpty() || sharing) return
         sharing = true
         val resolver = getApplication<Application>().contentResolver
-        viewModelScope.launch {
-            val files = withContext(Dispatchers.IO) {
-                uris.take(MAX_ATTACHMENTS).mapNotNull { uri -> File(outbox, UUID.randomUUID().toString() + ".jpg").takeIf { prepareImage(resolver, uri, it) }?.path }
+        val preparationApi = api
+        val files = uris.take(MAX_ATTACHMENTS).map { File(outbox, UUID.randomUUID().toString() + ".jpg") }
+        shareJob = viewModelScope.launch {
+            try {
+                val prepared = prepareImages(files) { index, out -> prepareImage(resolver, uris[index], out) }
+                if (api !== preparationApi) return@launch
+                if (prepared.isEmpty()) error = "Those images couldn't be read."
+                if (uris.size > MAX_ATTACHMENTS) error = "Shared the first $MAX_ATTACHMENTS images."
+                shared = prepared
+            } finally {
+                val keep = shared.toSet()
+                withContext(NonCancellable + Dispatchers.IO) { files.filter { it.path !in keep }.forEach { it.delete(); File(it.path + ".tmp").delete() } }
+                if (shareJob == currentCoroutineContext()[Job]) sharing = false
             }
-            sharing = false
-            if (files.isEmpty()) error = "Those images couldn't be read."
-            if (uris.size > MAX_ATTACHMENTS) error = "Shared the first $MAX_ATTACHMENTS images."
-            shared = files
         }
     }
     /** Opens [chatId], or a new chat in [projectId], with the shared images attached and uploading. */
     fun shareTo(chatId: String?, projectId: String) {
         val files = shared
         if (files.isEmpty()) return
+        if (chatId != null && store.get("pending:$chatId").isNotEmpty()) { error = "This chat is waiting for your Mac to confirm. Try again once it has."; return }
         if (chatId == null) {
             val before = selected
             newChat(projectId)
             if (selected == before) { error = "Claude and Codex are both off. Turn one on in Settings."; return }
         } else open(chatId)
-        shared = emptyList()
-        if (selected.isEmpty() || pending != null) { error = "This chat is waiting for your Mac to confirm. Try again once it has."; cleanOutbox(); return }
+        if (selected.isEmpty() || pending != null) { error = "This chat is waiting for your Mac to confirm. Try again once it has."; return }
         attachPrepared(selected, files)
+        shared = emptyList()
+        cleanOutbox()
         showChat = true
     }
-    fun cancelShare() { shared = emptyList(); cleanOutbox() }
+    fun cancelShare() { shareJob?.cancel(); shareJob = null; sharing = false; shared = emptyList(); cleanOutbox() }
 
     /** A tapped notification: show that chat. */
     fun openFromAlert(chatId: String) {
@@ -753,7 +780,8 @@ class BridgeModel(application: Application) : AndroidViewModel(application) {
             id to chat.optString("status").let { if (it == "waiting" && id != selected) "running" else it }
         }.toMutableMap()
         // A prompt still on its way will start a turn the Mac hasn't reported yet.
-        if (busy && pending != null && selected.isNotEmpty()) baseline.putIfAbsent(selected, "running")
+        (chats.map { it.optString("id") } + localDraftIds).forEach { id -> loadPending(id)?.let { Alerts.deliveries.putIfAbsent(id, it.id) } }
+        Alerts.deliveries.keys.forEach { baseline.putIfAbsent(it, "sending") }
         if (baseline.isNotEmpty()) Alerts.start(getApplication(), baseline)
     }
 

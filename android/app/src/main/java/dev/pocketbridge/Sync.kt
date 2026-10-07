@@ -49,6 +49,15 @@ fun projectChats(server: List<JSONObject>, projectId: String, locals: List<JSONO
 /** The Mac saved this prompt under its delivery id: its POST answer may be lost, but it was accepted. */
 fun deliveredPrompt(messages: List<JSONObject>, promptId: String) = messages.any { it.optString("role") == "user" && it.optString("id") == promptId }
 
+/** A delta replaces rows in place; late tool results keep their original insertion order. Missing flags mean an older Mac's full response. */
+fun mergeTranscript(previous: JSONObject?, response: JSONObject): JSONObject {
+    if (response.optBoolean("full", true)) return response
+    require(previous != null) { "Transcript delta has no starting snapshot" }
+    val rows = previous.getJSONArray("messages").objects().associateByTo(linkedMapOf()) { it.getString("id") }
+    response.getJSONArray("messages").objects().forEach { rows[it.getString("id")] = it }
+    return response.put("messages", JSONArray(rows.values.toList())).put("full", true)
+}
+
 /**
  * Whether a state snapshot shows the open chat is gone. A snapshot asked for ([generation]) before the chat's first
  * prompt was accepted ([acceptedAt]) predates it, so it can't say the chat was deleted.

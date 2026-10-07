@@ -120,7 +120,46 @@ fun staleUpdate(installedCode: Long, apkCode: Long?, ageMillis: Long) = apkCode 
 
 fun sha256(bytes: ByteArray) = MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it) }
 
+/** Only a completed, checksum-verified download has a record. Recheck bytes and Android's signing rules on reuse. */
+internal fun recoverUpdate(record: String, dir: File, waiting: Boolean, installed: String = BuildConfig.VERSION_NAME, validate: (File) -> Unit): UpdateStatus {
+    if (record.isBlank()) return UpdateStatus()
+    val saved = runCatching {
+        val json = JSONObject(record)
+        val release = UpdateRelease(parseVersion(json.getString("version")).toString(), json.getString("apkUrl"), json.getString("shaUrl"))
+        require(allowedUpdateHost(release.apkUrl) && allowedUpdateHost(release.shaUrl))
+        val checksum = json.getString("checksum")
+        require(Regex("[0-9a-f]{64}").matches(checksum))
+        release to checksum
+    }.getOrElse { return UpdateStatus(message = "Saved update could not be read. Check again.") }
+    val (release, expected) = saved
+    val apk = File(dir, "PocketBridge-${release.version}.apk")
+    if (compareVersions(release.version, installed) <= 0) {
+        apk.delete()
+        return UpdateStatus(message = "You have the latest version.")
+    }
+    val status = UpdateStatus(latest = release.version, release = release)
+    return runCatching {
+        require(apk.isFile) { "The downloaded update is missing." }
+        require(System.currentTimeMillis() - apk.lastModified() <= UPDATE_KEEP_MILLIS) { "The downloaded update expired." }
+        val digest = MessageDigest.getInstance("SHA-256")
+        apk.inputStream().use { input ->
+            copyBounded(input, object : OutputStream() {
+                override fun write(value: Int) {}
+                override fun write(bytes: ByteArray, offset: Int, count: Int) {}
+            }, MaxApkBytes, digest)
+        }
+        require(digest.digest().joinToString("") { "%02x".format(it) } == expected) { "The update checksum did not match." }
+        validate(apk)
+        status.copy(message = "Update ready to install.", apkPath = apk.absolutePath, waitingForPermission = waiting)
+    }.getOrElse { failure ->
+        apk.delete()
+        status.copy(message = "${failureReason(failure)} Download again.")
+    }
+}
+
 class Updater(private val context: Context) {
+    private val saved = context.getSharedPreferences("updates", Context.MODE_PRIVATE)
+    private val dir = File(context.cacheDir, "updates")
     private val client = OkHttpClient.Builder()
         .followRedirects(false).followSslRedirects(false)
         .callTimeout(120, TimeUnit.SECONDS).connectTimeout(15, TimeUnit.SECONDS).readTimeout(60, TimeUnit.SECONDS)
@@ -140,19 +179,21 @@ class Updater(private val context: Context) {
         require(allowedUpdateHost(release.apkUrl) && allowedUpdateHost(release.shaUrl)) { "Update assets must come from GitHub." }
         val expected = fetchText(release.shaUrl, MaxChecksumBytes, OctetStream).trim().substringBefore(' ').lowercase()
         require(Regex("[0-9a-f]{64}").matches(expected)) { "The update checksum is unreadable." }
-        val dir = File(context.cacheDir, "updates").apply { deleteRecursively(); mkdirs() }
+        dir.deleteRecursively(); dir.mkdirs()
+        check(saved.edit().clear().commit()) { "Could not save update state." }
         val apk = File(dir, "PocketBridge-${release.version}.apk")
         runCatching {
             val actual = fetchFile(release.apkUrl, apk)
             require(actual == expected) { "The update checksum did not match." }
             validateApk(apk)
+            val record = JSONObject().put("version", release.version).put("apkUrl", release.apkUrl).put("shaUrl", release.shaUrl).put("checksum", expected)
+            check(saved.edit().putString("ready", record.toString()).commit()) { "Could not save update state." }
         }.onFailure { apk.delete() }.getOrThrow()
         return UpdateStatus(latest = release.version, message = "Update ready to install.", release = release, apkPath = apk.absolutePath)
     }
 
     /** Deletes downloaded APKs that are installed, unreadable or stale, and any partial files. Runs on an IO thread. */
     fun cleanup() {
-        val dir = File(context.cacheDir, "updates")
         val files = dir.listFiles() ?: return
         val pm = context.packageManager
         val installed = runCatching { pm.getPackageInfo(BuildConfig.APPLICATION_ID, 0).longVersion() }.getOrNull() ?: return
@@ -163,13 +204,26 @@ class Updater(private val context: Context) {
         if (dir.listFiles().isNullOrEmpty()) dir.delete()
     }
 
-    fun install(status: UpdateStatus): UpdateStatus {
+    fun restore(): UpdateStatus {
+        cleanup()
+        val record = saved.getString("ready", "").orEmpty()
+        if (record.isBlank()) dir.deleteRecursively()
+        val status = recoverUpdate(record, dir, saved.getBoolean("permission", false), validate = ::validateApk)
+        if (status.release == null) saved.edit().clear().apply()
+        else if (status.apkPath.isBlank()) saved.edit().remove("permission").apply()
+        return status
+    }
+
+    suspend fun install(): UpdateStatus {
+        val status = withContext(Dispatchers.IO) { restore() }
+        if (status.apkPath.isBlank()) return status
         val apk = File(status.apkPath)
-        require(apk.exists()) { "Download the update first." }
         if (Build.VERSION.SDK_INT >= 26 && !context.packageManager.canRequestPackageInstalls()) {
+            withContext(Dispatchers.IO) { check(saved.edit().putBoolean("permission", true).commit()) { "Could not save update state." } }
             context.startActivity(Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.parse("package:${BuildConfig.APPLICATION_ID}")).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
             return status.copy(message = "Allow installs from PocketBridge, then return to continue.", waitingForPermission = true)
         }
+        withContext(Dispatchers.IO) { check(saved.edit().remove("permission").commit()) { "Could not save update state." } }
         val uri = FileProvider.getUriForFile(context, "${BuildConfig.APPLICATION_ID}.files", apk)
         context.startActivity(Intent(Intent.ACTION_VIEW).setDataAndType(uri, "application/vnd.android.package-archive").addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_GRANT_READ_URI_PERMISSION))
         return status.copy(message = "Android will ask before installing.", waitingForPermission = false)
@@ -233,16 +287,31 @@ class UpdateModel(private val context: Context, private val scope: CoroutineScop
     var busy by mutableStateOf(false); private set
     var status by mutableStateOf(UpdateStatus()); private set
 
-    init { scope.launch(Dispatchers.IO) { runCatching { updater.cleanup() } } }
+    init { step {
+        status = withContext(Dispatchers.IO) { updater.restore() }
+        if (status.waitingForPermission && context.packageManager.canRequestPackageInstalls()) status = updater.install()
+    } }
 
-    fun check() = step { status = withContext(Dispatchers.IO) { updater.check() } }
+    fun check() = step {
+        status = withContext(Dispatchers.IO) {
+            val checked = updater.check()
+            val ready = updater.restore()
+            if (ready.apkPath.isNotBlank() && checked.release == ready.release) ready else checked
+        }
+    }
     fun download() = step {
         val release = status.release ?: error("Check for an update first.")
         status = withContext(Dispatchers.IO) { updater.download(release) }
     }
-    fun install() = step { status = updater.install(status) }
+    fun install() = step { status = updater.install() }
     /** Back from Android's install permission screen: carry on if it was granted. */
-    fun resume() { if (status.waitingForPermission && !busy && context.packageManager.canRequestPackageInstalls()) install() }
+    fun resume() {
+        if (busy || status.apkPath.isBlank()) return
+        step {
+            status = withContext(Dispatchers.IO) { updater.restore() }
+            if (status.waitingForPermission && context.packageManager.canRequestPackageInstalls()) status = updater.install()
+        }
+    }
 
     private fun step(block: suspend () -> Unit) {
         if (busy) return

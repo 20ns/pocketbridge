@@ -212,15 +212,22 @@ export function createRoutes(ctx) {
           if (action === 'prompts' && request.method === 'POST') { const [code, value] = await deliver(id, await body(request)); return json(response, code, value); }
           const row = { ...chat(id), ...get('SELECT activity,thinking FROM chats WHERE id=?', id) };
           if (action === 'messages' && request.method === 'GET') {
-            const messages = all('SELECT * FROM messages WHERE chatId=? ORDER BY rowid', id).map(item => {
-              const { attachments, kind, ...rest } = item;
+            const clock = get('SELECT generation,revision FROM message_clock WHERE id=1');
+            let since;
+            try { since = JSON.parse(Buffer.from(url.searchParams.get('since') ?? '', 'base64url').toString('utf8')); } catch { /* no valid cache cursor */ }
+            const full = !Array.isArray(since) || since.length !== 3 || since[0] !== clock.generation || since[1] !== id || !Number.isSafeInteger(since[2]) || since[2] < 0 || since[2] > clock.revision;
+            const rows = full ? all('SELECT * FROM messages WHERE chatId=? ORDER BY rowid', id)
+              : all('SELECT * FROM messages WHERE chatId=? AND revision>? ORDER BY rowid', id, since[2]);
+            const messages = rows.map(item => {
+              const { attachments, kind, revision, ...rest } = item;
               return { ...rest, ...(attachments ? { attachments: JSON.parse(attachments) } : {}), ...(kind ? { kind } : {}) };
             });
             // Turn timing: each prompt that started a turn, with its end once the agent finished it.
             const turns = all("SELECT id,startedAt,endedAt FROM prompts WHERE chatId=? AND startedAt IS NOT NULL ORDER BY startedAt", id);
             const subagents = all('SELECT id,promptId,agent,title,kind,model,effort,status,activity,startedAt,endedAt,toolUses,tokens FROM subagents WHERE chatId=? ORDER BY startedAt', id)
               .map(item => ({ ...item, model: item.model ? agents.modelDisplay(item.agent, item.model) : null }));
-            return json(response, 200, { messages, approvals: all('SELECT * FROM approvals WHERE chatId=? ORDER BY rowid', id).map(item => ({ ...item, input: JSON.parse(item.input) })), turns, subagents, activity: row.activity ?? null, thinking: ['running', 'waiting'].includes(row.status) ? row.thinking ?? null : null });
+            const cursor = Buffer.from(JSON.stringify([clock.generation, id, clock.revision])).toString('base64url');
+            return json(response, 200, { messages, approvals: all('SELECT * FROM approvals WHERE chatId=? ORDER BY rowid', id).map(item => ({ ...item, input: JSON.parse(item.input) })), turns, subagents, activity: row.activity ?? null, thinking: ['running', 'waiting'].includes(row.status) ? row.thinking ?? null : null, cursor, full });
           }
           if (action === 'stop' && request.method === 'POST') { stop(id); return json(response, 200, { ok: true }); }
           // Claude Desktop lists only sessions handed to it; this is the same claude://resume link the CLI's /desktop opens.

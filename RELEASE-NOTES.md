@@ -1,3 +1,14 @@
+PocketBridge 0.8.4
+
+- Streaming fetches only changed messages, keeping long-chat network traffic small while preserving replies, late tool results and live thinking.
+- Large tool groups render visible rows as you scroll, with expanded details retained.
+- Shared screenshots survive an unavailable destination. Cancelling a share or disconnecting prevents it from reappearing.
+- Image preparation runs one photo at a time to bound memory use.
+- Background notifications track prompts through navigation, uncertain delivery and acceptance before the next state refresh.
+- Verified APK downloads and install-permission state recover after app restart. Missing or invalid downloads return to Download.
+
+Update the Mac service for incremental transcript sync. Install the APK over the existing app to preserve pairing.
+
 PocketBridge 0.8.3
 
 - Thinking exposed by Claude Code and Codex now streams in Android and the Mac browser while a turn runs.

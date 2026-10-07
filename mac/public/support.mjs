@@ -33,6 +33,15 @@ export function safeLink(value) {
   } catch { return null; }
 }
 
+// Replace streamed rows in place and append newly inserted rows in server order. Old servers send full snapshots.
+export function mergeTranscript(previous, response) {
+  if (response.full !== false) return response;
+  if (!previous) throw new Error('Transcript delta has no starting snapshot');
+  const rows = new Map(previous.messages.map(message => [message.id, message]));
+  for (const message of response.messages) rows.set(message.id, message);
+  return {...response, messages:[...rows.values()], full:true};
+}
+
 // Shared with Android: protocol status values become plain-language labels.
 export const statusLabels = {idle:'Ready', running:'Working', waiting:'Needs your answer', stopping:'Stopping', interrupted:'Interrupted', error:'Failed'};
 export const statusLabel = status => statusLabels[status] ?? 'Ready';

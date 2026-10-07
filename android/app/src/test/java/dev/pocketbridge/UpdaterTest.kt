@@ -3,6 +3,7 @@ package dev.pocketbridge
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
 import java.security.MessageDigest
+import java.nio.file.Files
 import org.json.JSONArray
 import org.json.JSONObject
 import org.junit.Assert.*
@@ -74,6 +75,66 @@ class UpdaterTest {
     @Test fun `sha256 is lowercase hex`() {
         assertEquals("2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824", sha256("hello".toByteArray()))
     }
+
+    @Test fun `verified download recovers after restart and keeps permission intent`() {
+        val dir = Files.createTempDirectory("updates").toFile()
+        try {
+            val apk = java.io.File(dir, "PocketBridge-9.0.0.apk").apply { writeText("verified APK") }
+            var validated = false
+            val status = recoverUpdate(savedDownload(sha256(apk.readBytes())), dir, waiting = true) {
+                assertEquals(apk, it)
+                validated = true
+            }
+            assertTrue(validated)
+            assertEquals(apk.absolutePath, status.apkPath)
+            assertTrue(status.waitingForPermission)
+            assertEquals("9.0.0", status.release?.version)
+        } finally { dir.deleteRecursively() }
+    }
+
+    @Test fun `missing changed expired and invalid APKs return to Download`() {
+        val dir = Files.createTempDirectory("updates").toFile()
+        val apk = java.io.File(dir, "PocketBridge-9.0.0.apk")
+        val record = savedDownload(sha256("verified APK".toByteArray()))
+        try {
+            val missing = recoverUpdate(record, dir, waiting = true) { fail("Missing APK cannot be validated") }
+            apk.writeText("changed APK")
+            val changed = recoverUpdate(record, dir, waiting = true) { fail("Changed bytes cannot reach Android validation") }
+            assertFalse(apk.exists())
+            apk.writeText("verified APK")
+            apk.setLastModified(System.currentTimeMillis() - UPDATE_KEEP_MILLIS - 1000)
+            val expired = recoverUpdate(record, dir, waiting = true) { fail("Expired APK cannot be validated") }
+            apk.writeText("verified APK")
+            val invalid = recoverUpdate(record, dir, waiting = true) { error("The update is signed with a different key.") }
+            listOf(missing, changed, expired, invalid).forEach {
+                assertEquals("", it.apkPath)
+                assertFalse(it.waitingForPermission)
+                assertNotNull(it.release)
+                assertTrue(it.message.endsWith("Download again."))
+            }
+            assertFalse(apk.exists())
+        } finally { dir.deleteRecursively() }
+    }
+
+    @Test fun `installed update and invalid saved metadata cannot become ready`() {
+        val dir = Files.createTempDirectory("updates").toFile()
+        try {
+            val apk = java.io.File(dir, "PocketBridge-9.0.0.apk").apply { writeText("verified APK") }
+            val installed = recoverUpdate(savedDownload(sha256(apk.readBytes())), dir, waiting = true, installed = "9.0.0") { fail("Installed APK cannot be reinstalled") }
+            assertNull(installed.release)
+            assertFalse(apk.exists())
+            val invalid = recoverUpdate("{\"version\":\"../../9.0.0\"}", dir, waiting = true) { fail("Invalid metadata cannot be validated") }
+            assertNull(invalid.release)
+            assertEquals("", invalid.apkPath)
+            assertFalse(invalid.waitingForPermission)
+        } finally { dir.deleteRecursively() }
+    }
+
+    private fun savedDownload(checksum: String) = JSONObject()
+        .put("version", "9.0.0")
+        .put("apkUrl", "https://github.com/20ns/pocketbridge/releases/download/v9.0.0/PocketBridge-9.0.0.apk")
+        .put("shaUrl", "https://github.com/20ns/pocketbridge/releases/download/v9.0.0/PocketBridge-9.0.0.apk.sha256")
+        .put("checksum", checksum).toString()
 
     private fun release(tag: String, vararg assets: JSONObject) = JSONObject()
         .put("tag_name", tag)
