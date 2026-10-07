@@ -20,6 +20,8 @@ Paste, drop or pick screenshots into the message box; they upload at once (large
 
 Register a folder, create a chat and send a prompt. Model, effort and permission mode sit under the message box. A new chat can switch between Claude and Codex until its first prompt. Bypass permissions is the default. Claude's Auto depends on your installed Claude configuration. Codex offers Bypass permissions, Auto (writes only inside the project folder, never asks) and Read only. Changing a mode never silently falls back to another mode.
 
+When the official CLI exposes readable thinking, the chat shows it while the turn runs. It disappears once the turn finishes or stops, leaving the answer and tool activity. Reconnecting during a turn restores its current thinking; thinking is kept separate from saved conversation messages and chat previews. Codex summaries take precedence over raw readable reasoning, and encrypted, redacted and sub-agent reasoning is never shown.
+
 The launcher uses your installed Node executable. Installing startup records absolute executable paths for Node, Claude and Codex, so launchd does not depend on an interactive shell or an open Terminal window. If you install Codex after startup, add `codexPath` to `config.json` or run the installer again. The Codex app's bundled CLI is found without either.
 
 When rebuilding from source, copy `android/app/build/outputs/apk/release/app-release.apk` to `mac/public/PocketBridge.apk` to enable the built-in phone download link. Use the personal signing key described in the root README; the installed build already includes the signed APK.
@@ -71,7 +73,7 @@ The app wraps an unmodified official CLI. It does not guarantee Anthropic's appr
 
 ## Checks
 
-Run the 77 service and browser-helper tests with `pnpm test` from `mac/`. They use fake Claude and Codex CLIs and never touch your real installs: only the CLI paths a test names are asked for their version, and a banked Codex reset is only ever redeemed against the fake. Browser stream parsing and safe text formatting checks are also available directly:
+Run the service and browser-helper tests with `pnpm test` from `mac/`. They use fake Claude and Codex CLIs and never touch your real installs: only the CLI paths a test names are asked for their version, and a banked Codex reset is only ever redeemed against the fake. Browser stream parsing and safe text formatting checks are also available directly:
 
 ```sh
 node --test mac/scripts/*.test.mjs

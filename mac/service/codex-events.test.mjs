@@ -37,6 +37,31 @@ test('Codex final snapshots replace partial text and completed messages reject l
   assert.equal(consumer.state.failure, null);
 });
 
+test('Codex thinking reconciles indexed summaries, uses readable content as fallback and clears each turn', () => {
+  const output = transcript(), values = [], consumer = codexAppConsumer({ ...output, thinking: value => values.push(value) });
+  const delta = (method, fields) => consumer.consume(`item/reasoning/${method}`, { turnId: 'turn', itemId: 'thought', ...fields });
+  consumer.consume('turn/started', { turn: { id: 'turn' } });
+  delta('textDelta', { contentIndex: 0, delta: 'Raw thinking' });
+  assert.equal(values.at(-1), 'Raw thinking');
+  delta('summaryTextDelta', { summaryIndex: 1, delta: 'Second' });
+  delta('summaryTextDelta', { summaryIndex: 0, delta: 'First ' });
+  delta('summaryTextDelta', { summaryIndex: 0, delta: 'part' });
+  assert.equal(values.at(-1), 'First part\n\nSecond');
+  delta('summaryTextDelta', { summaryIndex: -1, delta: 'invalid' });
+  delta('summaryTextDelta', { summaryIndex: 0, delta: { encrypted: 'private' } });
+  assert.equal(values.at(-1), 'First part\n\nSecond');
+  consumer.consume('item/completed', { turnId: 'turn', item: { type: 'reasoning', id: 'thought', summary: ['Canonical summary'], content: ['Raw thinking'] } });
+  assert.equal(values.at(-1), 'Canonical summary');
+  delta('summaryTextDelta', { summaryIndex: 0, delta: 'late duplicate' });
+  assert.equal(values.at(-1), 'Canonical summary');
+  assert.equal(output.messages.size, 0);
+  consumer.consume('turn/completed', { turn: { id: 'turn', items: [] } });
+  assert.equal(values.at(-1), null);
+  consumer.consume('turn/started', { turn: { id: 'next' } });
+  consumer.consume('item/completed', { turnId: 'next', item: { type: 'reasoning', id: 'thought', summary: [], content: ['Next thought'] } });
+  assert.equal(values.at(-1), 'Next thought');
+});
+
 for (const lateReply of ['success', 'error']) test(`Codex queued turns ignore stale start ${lateReply}, duplicate completions and prior-turn text`, async () => {
   const output = transcript(), calls = [], entry = { after: [] }, ended = [];
   const child = new EventEmitter();

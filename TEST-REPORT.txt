@@ -1,3 +1,20 @@
+PocketBridge 0.8.3 verification, 7 October 2026
+
+- Mac: pnpm test passed, 85 tests. New checks cover Claude/Codex live thinking,
+  indexed delta and canonical snapshot reconciliation, readable content fallback,
+  subagent/redacted exclusion, reconnects, stop, completion, background follow-up
+  and crash recovery. Thinking stays separate from messages and previews.
+- Android: assembleDebug, testDebugUnitTest, lintDebug, signed assembleRelease
+  and lintRelease passed. 129 JVM tests, no failures.
+- Independent subagent review found no actionable issues in the clients or
+  service lifecycle. Its separate Codex consumer test run passed all 5 checks.
+- Isolated scripted API smoke verified streamed thinking followed by a cleared
+  thinking field and an intact final reply. No real model quota was used.
+- API 36 emulator: signed 0.8.3 installed over 0.8.2. Certificate matches the
+  previous hosted APK, versionCode is 14, and DEBUGGABLE is absent.
+- Visual interaction checks were not completed: browser/native UI automation
+  was unavailable. No physical phone was attached.
+
 PocketBridge 0.8.2 verification, 7 October 2026
 
 - Mac: pnpm test passed, 81 tests. Four new regressions cover turn-scoped item

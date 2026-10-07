@@ -110,6 +110,14 @@ private val Mine = RoundedCornerShape(Corners.bubble, Corners.bubble, Corners.ta
             reverseLayout = true, verticalArrangement = Arrangement.spacedBy(Spacing.md, Alignment.Bottom),
         ) {
             item(key = "footer") { Footer(status, chat?.optString("error").orEmpty(), approvals.isNotEmpty(), liveStep(entries), startedAt, activity, runningAgents) }
+            if (live && model.thinking.isNotBlank()) item(key = "thinking") {
+                Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(Spacing.xs)) {
+                    Text("Thinking", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    SelectionContainer {
+                        Text(model.thinking, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                }
+            }
             if (pending != null) item(key = "pending") {
                 Unconfirmed(if (pendingShown) null else pending, model, openImage, Modifier.animateItem(fadeInSpec = Motion.effects(), placementSpec = null, fadeOutSpec = Motion.fastEffects()))
             }

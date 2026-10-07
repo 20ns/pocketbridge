@@ -70,6 +70,7 @@ class BridgeModel(application: Application) : AndroidViewModel(application) {
     var turns by mutableStateOf<List<Turn>>(emptyList()); private set
     var subagents by mutableStateOf<List<Subagent>>(emptyList()); private set
     var activity by mutableStateOf(""); private set
+    var thinking by mutableStateOf(""); private set
     /** The chat whose messages are on screen, from the cache or the Mac; until then an empty transcript means nothing yet. */
     private var loadedChat by mutableStateOf("")
     val transcriptReady get() = loadedChat == selected || chats.none { it.optString("id") == selected }
@@ -170,7 +171,7 @@ class BridgeModel(application: Application) : AndroidViewModel(application) {
     }
     private fun loadMessages(id: String) {
         cachedMessagesJob?.cancel()
-        messages = emptyList(); approvals = emptyList(); turns = emptyList(); subagents = emptyList(); activity = ""; loadedChat = ""
+        messages = emptyList(); approvals = emptyList(); turns = emptyList(); subagents = emptyList(); activity = ""; thinking = ""; loadedChat = ""
         if (id.isEmpty()) return
         val cacheSession = store.session()
         cachedMessagesJob = viewModelScope.launch {
@@ -184,6 +185,7 @@ class BridgeModel(application: Application) : AndroidViewModel(application) {
         messages = result.getJSONArray("messages").objects(); approvals = result.optJSONArray("approvals")?.objects().orEmpty()
         turns = parseTurns(result); subagents = parseSubagents(result)
         activity = if (result.isNull("activity")) "" else result.optString("activity")
+        thinking = if (result.isNull("thinking")) "" else result.optString("thinking")
     }
     fun open(id: String) {
         if (id != selected) discardEmptyDraft(selected)
@@ -222,7 +224,7 @@ class BridgeModel(application: Application) : AndroidViewModel(application) {
     }
     /** Mac-specific caches belong to one pairing. */
     private fun forgetPairingData() {
-        turns = emptyList(); subagents = emptyList(); activity = ""; attachments = emptyList(); attachmentLists.clear(); shared = emptyList()
+        turns = emptyList(); subagents = emptyList(); activity = ""; thinking = ""; attachments = emptyList(); attachmentLists.clear(); shared = emptyList()
         details.clear(); acceptedAt.clear(); alertsOn = true
         deleting = null; deletions = emptyMap(); agentSwitching = emptyMap(); experiments = ""; projectError = ""; newChatRequested = false; showChat = false
         viewModelScope.launch(Dispatchers.IO) { outbox.deleteRecursively(); images.clear() }

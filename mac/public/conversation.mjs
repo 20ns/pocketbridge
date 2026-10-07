@@ -191,6 +191,11 @@ export async function loadMessages() {
     if (end && subagentsByTurn.get(end.id)?.length) target.append(renderSubagents(subagentsByTurn.get(end.id)));
     else if (index === items.length - 1 && turnPrompt && subagentsByTurn.get(turnPrompt)?.length && !end) target.append(renderSubagents(subagentsByTurn.get(turnPrompt)));
   });
+  if (['running', 'waiting'].includes(chat.status) && typeof result.thinking === 'string' && result.thinking.trim()) {
+    const thinking = el('section', 'message thinking'); thinking.setAttribute('aria-label', 'Thinking');
+    thinking.append(el('div', 'message-label', 'Thinking'), el('div', 'message-body', result.thinking));
+    target.append(thinking);
+  }
   const pending = (result.approvals ?? []).some(approval => approval.status === 'pending');
   // A turn that already ended isn't the work in progress; a new prompt not yet picked up counts from when it was sent.
   const since = result.turns?.findLast(turn => !turn.endedAt)?.startedAt ?? result.messages.findLast(message => message.role === 'user')?.createdAt;

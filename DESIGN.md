@@ -469,6 +469,8 @@ Settings opens with Agents, so turning a subscription on or off is two taps from
 
 Settings ends with an Updates row: the installed version and status, with Check, then Download and Install for the public signed APK. Install uses Android's package-installer permission. That permission is separate from Mac pairing. A downloaded APK is deleted at the next launch once that version is installed, and after three days if it never was.
 
+Readable thinking appears below the conversation while a turn runs, labelled "Thinking" in the existing secondary text colour. Its full text wraps and can be selected. It disappears when the turn ends; replies and tool activity retain their existing layout. Android uses labelLarge and bodyMedium, and the Mac uses its existing message label and body styles.
+
 ### Mac controls
 
 Keep project registration and Connect phone in the browser client. Its messages retain the current labels, named after the chat's agent, and neutral user-message treatment; the phone's bubble arrangement does not redefine the Mac layout. The composer is one rounded box with the prompt, native selects styled as pills for model (grouped by agent for unsent chats), effort and permission mode, and a round Send. Rename and Delete are icon buttons in the chat header. Browser buttons, inputs and expandable activity keep their existing hover and keyboard-focus treatments. Use `mac/public/style.css` as the source for those states.

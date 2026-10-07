@@ -28,6 +28,10 @@ export function createRuns(ctx) {
     change('message', chatId);
   };
   const activityFor = (id, value) => { run('UPDATE chats SET activity=? WHERE id=?', value ? String(value).slice(0, 200) : null, id); change('state', id); };
+  const thinkingFor = (id, value) => {
+    if (value && (!active.get(id)?.turnOpen || active.get(id)?.stopped)) return;
+    run('UPDATE chats SET thinking=? WHERE id=?', value || null, id); change('message', id);
+  };
   const cancelApprovals = id => {
     for (const [approvalId, entry] of waiting) if (entry.chatId === id) {
       run("UPDATE approvals SET status='deny' WHERE id=?", approvalId); entry.resolve({ behavior: 'deny', message: 'User stopped the task', interrupt: true }); waiting.delete(approvalId); change('approval', id);
@@ -35,7 +39,7 @@ export function createRuns(ctx) {
   };
   const stop = id => {
     ctx.chat(id); const entry = active.get(id); if (!entry || entry.stopped) return;
-    entry.stopped = true; status(id, 'stopping'); cancelApprovals(id);
+    entry.stopped = true; thinkingFor(id, null); status(id, 'stopping'); cancelApprovals(id);
     entry.stopPromise = terminateGroup(entry.child.pid, options.stopTimeoutMs ?? 3000).catch(error => console.error(`Stop ${id}: ${error.message}`));
   };
 
@@ -59,9 +63,10 @@ export function createRuns(ctx) {
     const child = spawn(agents.paths[agent], args, { cwd: project.path, env, detached: true, stdio: ['pipe', 'pipe', 'pipe'] });
     const entry = { child, agent, stopped: false, assistantId: null, buffer: '', stderr: '', result: null, parseError: null, sawText: false, tools: new Map(), after: later, finishing: false, turnPrompt: null };
     active.set(id, entry);
+    thinkingFor(id, null);
     if (child.pid) run('INSERT OR REPLACE INTO runtimes VALUES (?,?,?)', id, child.pid, processStamp(child.pid) ?? '');
-    const turnStarted = promptId => { entry.turnPrompt = promptId; run('UPDATE prompts SET startedAt=COALESCE(startedAt,?) WHERE id=?', Date.now(), promptId); change('message', id); };
-    const turnEnded = () => { if (entry.turnPrompt) { run('UPDATE prompts SET endedAt=? WHERE id=?', Date.now(), entry.turnPrompt); change('message', id); } };
+    const turnStarted = promptId => { thinkingFor(id, null); entry.turnPrompt = promptId; run('UPDATE prompts SET startedAt=COALESCE(startedAt,?) WHERE id=?', Date.now(), promptId); change('message', id); };
+    const turnEnded = () => { thinkingFor(id, null); if (entry.turnPrompt) { run('UPDATE prompts SET endedAt=? WHERE id=?', Date.now(), entry.turnPrompt); change('message', id); } };
     const append = value => {
       if (!value) return; entry.sawText = true;
       if (!entry.assistantId) entry.assistantId = message(id, 'assistant', value);
@@ -97,7 +102,7 @@ export function createRuns(ctx) {
       active.delete(id); run('DELETE FROM runtimes WHERE chatId=?', id); cancelApprovals(id); agents.usageChanged(agent); projects.changed(project.id);
       run("UPDATE subagents SET status='stopped',endedAt=? WHERE chatId=? AND status='running'", Date.now(), id);
       if (entry.turnPrompt) run('UPDATE prompts SET endedAt=COALESCE(endedAt,?) WHERE id=?', Date.now(), entry.turnPrompt);
-      run('UPDATE chats SET activity=NULL WHERE id=?', id);
+      run('UPDATE chats SET activity=NULL,thinking=NULL WHERE id=?', id);
       const codex = agent === 'codex';
       // Messages sent while the run was closing start the next run rather than being lost.
       if (!entry.stopped && entry.after.length) { start(id, entry.after.shift(), entry.after); return; }
@@ -108,6 +113,6 @@ export function createRuns(ctx) {
     };
   }
 
-  Object.assign(ctx, { message, subagent, activityFor, cancelApprovals });
+  Object.assign(ctx, { message, subagent, activityFor, thinkingFor, cancelApprovals });
   return { start, stop, message };
 }

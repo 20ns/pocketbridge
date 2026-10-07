@@ -1,3 +1,10 @@
+PocketBridge 0.8.3
+
+- Thinking exposed by Claude Code and Codex now streams in Android and the Mac browser while a turn runs.
+- Thinking disappears when the turn ends, keeping saved replies and tool activity clear.
+
+Update the Mac service too to receive thinking. Install the APK over the existing app to preserve pairing.
+
 PocketBridge 0.8.2
 
 - Long conversations stay responsive: turn summaries use one pass through history, and cached chats load off the UI thread.

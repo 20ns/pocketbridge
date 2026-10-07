@@ -19,8 +19,13 @@ const subagentStatus = value => ({ pendingInit: 'running', running: 'running', i
  * Translates `codex app-server` notifications into PocketBridge messages, sub-agents and context use.
  * Result message ids are their tool message id plus ":result", as for Claude.
  */
-export function codexAppConsumer({ say, update, append, subagent, context, activity }) {
+export function codexAppConsumer({ say, update, append, subagent, context, activity, thinking = () => {} }) {
   const turns = new Map(), state = { failure: null };
+  const reasoning = new Map();
+  const showThinking = () => thinking([...reasoning.values()].flatMap(({ summary, content }) => {
+    const parts = [...summary.values()].some(Boolean) ? summary : content;
+    return [...parts].sort(([a], [b]) => a - b).map(([, text]) => text);
+  }).filter(Boolean).join('\n\n'));
   const tool = (items, item, name, input) => { if (!items.has(item.id)) items.set(item.id, say('activity', `${name}\n${JSON.stringify(input, null, 2)}`)); return items.get(item.id); };
   const finish = (items, item, failed, text) => {
     const id = items.get(item.id); if (!id || items.get(`${item.id}:done`)) return;
@@ -29,9 +34,10 @@ export function codexAppConsumer({ say, update, append, subagent, context, activ
   const kindOf = kind => typeof kind === 'string' ? kind : kind?.type ?? 'update';
   const consume = (method, params = {}) => {
     if (!params || typeof params !== 'object') return;
-    if (method === 'turn/started') { state.failure = null; return; }
+    if (method === 'turn/started') { state.failure = null; reasoning.clear(); thinking(null); return; }
     if (method === 'turn/completed') {
       for (const item of Array.isArray(params.turn?.items) ? params.turn.items : []) consume('item/completed', { ...params, turnId: params.turn.id, item });
+      reasoning.clear(); thinking(null);
       return;
     }
     if (method === 'thread/tokenUsage/updated') {
@@ -41,10 +47,17 @@ export function codexAppConsumer({ say, update, append, subagent, context, activ
       return;
     }
     if (method === 'error' && params.willRetry !== true) { state.failure = clean(params.error?.message ?? params.message, 4000) || 'Codex reported an error.'; return; }
-    if (method !== 'item/agentMessage/delta' && method !== 'item/started' && method !== 'item/completed') return;
+    if (!['item/agentMessage/delta', 'item/reasoning/summaryTextDelta', 'item/reasoning/textDelta', 'item/started', 'item/completed'].includes(method)) return;
     const turnId = params.turnId ?? '';
     if (!turns.has(turnId)) turns.set(turnId, new Map());
     const items = turns.get(turnId);
+    if (method === 'item/reasoning/summaryTextDelta' || method === 'item/reasoning/textDelta') {
+      const summary = method === 'item/reasoning/summaryTextDelta', index = summary ? params.summaryIndex : params.contentIndex;
+      if (typeof params.itemId !== 'string' || !params.itemId || typeof params.delta !== 'string' || !Number.isSafeInteger(index) || index < 0 || items.has(`${params.itemId}:done`)) return;
+      if (!reasoning.has(params.itemId)) reasoning.set(params.itemId, { summary: new Map(), content: new Map() });
+      const parts = reasoning.get(params.itemId)[summary ? 'summary' : 'content'];
+      parts.set(index, (parts.get(index) ?? '') + params.delta); showThinking(); return;
+    }
     if (method === 'item/agentMessage/delta' && typeof params.delta === 'string' && typeof params.itemId === 'string' && params.itemId) {
       if (items.has(`${params.itemId}:done`)) return;
       if (!items.has(params.itemId)) items.set(params.itemId, say('assistant', ''));
@@ -53,6 +66,12 @@ export function codexAppConsumer({ say, update, append, subagent, context, activ
     if (method !== 'item/started' && method !== 'item/completed') return;
     const item = params.item, completed = method === 'item/completed';
     if (!item || typeof item !== 'object' || typeof item.id !== 'string') return;
+    if (item.type === 'reasoning') {
+      if (!reasoning.has(item.id)) reasoning.set(item.id, { summary: new Map(), content: new Map() });
+      for (const key of ['summary', 'content']) if (Array.isArray(item[key]) && item[key].every(part => typeof part === 'string')) reasoning.get(item.id)[key] = new Map(item[key].map((part, index) => [index, part]));
+      showThinking();
+      if (completed) items.set(`${item.id}:done`, true);
+    }
     if (item.type === 'agentMessage') {
       if (!items.has(item.id) && (item.text || completed)) items.set(item.id, say('assistant', item.text ?? ''));
       else if (completed && typeof item.text === 'string') update(items.get(item.id), item.text);

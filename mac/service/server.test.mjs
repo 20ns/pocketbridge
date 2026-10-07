@@ -60,6 +60,42 @@ test('prompt delivery is durable and idempotent; stream chunks reconcile with fi
   assert.ok(calls.every(c => c.args.includes(chat.id) && c.args.includes('--dangerously-skip-permissions')));
 });
 
+for (const agent of ['claude', 'codex']) test(`${agent} thinking is live and reconnectable, separate from history, and clears on completion, stop and restart`, async t => {
+  const f = await fixture(t), projectId = (await f.request('/api/state')).data.projects[0].id;
+  const chat = (await f.request('/api/chats', { projectId, agent })).data;
+  const transcript = async () => (await f.request(`/api/chats/${chat.id}/messages`)).data;
+  const thinking = async () => wait(async () => (await transcript()).thinking === 'First thought\n\nSecond thought');
+  assert.equal((await f.send(chat, 'thinking')).status, 202); await thinking();
+  // Every reconnect reads the persisted live value; history and previews contain no thinking.
+  assert.equal((await transcript()).thinking, 'First thought\n\nSecond thought');
+  assert.deepEqual((await transcript()).messages.map(message => message.text), ['thinking']);
+  assert.equal((await f.request('/api/state')).data.chats.find(item => item.id === chat.id).preview, 'thinking');
+  assert.equal((await f.request(`/api/chats/${chat.id}/prompts`, { id: randomUUID(), text: 'finish', delivery: 'steer' })).status, 202);
+  await f.finished(chat);
+  assert.equal((await transcript()).thinking, null);
+  assert.deepEqual((await transcript()).messages.filter(message => message.role === 'assistant').map(message => message.text), ['Final answer']);
+  await f.send(chat, 'thinking'); await thinking();
+  await f.request(`/api/chats/${chat.id}/stop`, {});
+  assert.equal((await transcript()).thinking, null); await f.finished(chat);
+  await f.send(chat, 'thinking'); await thinking();
+  await f.restart();
+  assert.equal((await transcript()).thinking, null);
+});
+
+test('Claude clears completed thinking while background agents keep its run open', async t => {
+  const f = await fixture(t), chat = await f.createChat();
+  const transcript = async () => (await f.request(`/api/chats/${chat.id}/messages`)).data;
+  await f.send(chat, 'thinking-background');
+  await wait(async () => (await transcript()).thinking);
+  await f.request(`/api/chats/${chat.id}/prompts`, { id: randomUUID(), text: 'finish', delivery: 'steer' });
+  await wait(async () => {
+    const data = await transcript();
+    return data.messages.some(message => message.text === 'Final answer') && data.thinking === null;
+  });
+  assert.equal((await f.request('/api/state')).data.chats.find(item => item.id === chat.id).status, 'running');
+  await f.finished(chat);
+});
+
 test('bulk concurrent retries execute each first and resumed turn once, including after deletion', async t => {
   const f = await fixture(t), project = (await f.request('/api/state')).data.projects[0];
   const chats = Array.from({ length: 10 }, () => ({ id: randomUUID() })), deliveries = [];
@@ -218,13 +254,14 @@ test('restart marks durable in-flight task interrupted and never reexecutes acce
   const f = await fixture(t), chat = await f.createChat();
   await f.service.close();
   const db = new DatabaseSync(join(f.dir, 'data/data.sqlite'));
-  db.prepare("UPDATE chats SET status='running' WHERE id=?").run(chat.id);
+  db.prepare("UPDATE chats SET status='running',thinking='Interrupted thought' WHERE id=?").run(chat.id);
   db.prepare('INSERT INTO prompts (id,chatId,text,startedAt) VALUES (?,?,?,?)').run('crash-id', chat.id, 'hello', Date.now() - 5000);
   db.prepare("INSERT INTO subagents (chatId,id,promptId,agent,title,status,startedAt) VALUES (?,?,?,?,?,?,?)").run(chat.id, 'toolu_x', 'crash-id', 'claude', 'Explore', 'running', Date.now() - 4000); db.close();
   await f.restart();
   assert.equal((await f.request('/api/state')).data.chats.find(c => c.id === chat.id).status, 'interrupted');
   // The crashed turn and its sub-agents are over: nothing keeps ticking.
   const after = (await f.request(`/api/chats/${chat.id}/messages`)).data;
+  assert.equal(after.thinking, null);
   assert.ok(after.turns[0].endedAt); assert.deepEqual(after.subagents.map(item => item.status), ['stopped']);
   assert.equal((await f.send(chat, 'hello', 'crash-id')).data.duplicate, true);
   assert.equal(existsSync(join(f.projectPath, 'calls.ndjson')), false);

@@ -24,9 +24,11 @@ export function claudeArgs(row, id, bridgeEnv) {
  * returns the consumer for each stdout line.
  */
 export function claudeRun(ctx, session, delivery) {
-  const { run, get, change, options, message, subagent, activityFor, cancelApprovals, status } = ctx;
+  const { run, get, change, options, message, subagent, activityFor, thinkingFor, cancelApprovals, status } = ctx;
   const { id, row, agent, child, entry, turnStarted, turnEnded, append } = session;
   entry.written = new Map(); entry.background = 0; entry.turnOpen = false;
+  const thoughts = new Map(), completedThoughts = new Set(); let thoughtMessage = null, messageIndex = 0;
+  const showThinking = () => thinkingFor(id, [...thoughts.values()].flatMap(parts => [...parts].sort(([a], [b]) => a - b).map(([, text]) => text)).filter(Boolean).join('\n\n'));
   const write = next => { child.stdin.write(JSON.stringify(claudeUserMessage(next.promptId, next.text, next.attachments)) + '\n'); entry.written.set(next.promptId, next); };
   // stdin closes once the last turn ended, no background sub-agent can add a turn, and every message was taken.
   const settle = (force = false) => {
@@ -58,11 +60,12 @@ export function claudeRun(ctx, session, delivery) {
     if (!(event?.type === 'stream_event')) run('INSERT INTO raw_events (chatId,json) VALUES (?,?)', id, line);
     const malformed = () => { entry.parseError = 'Claude returned malformed structured output.'; };
     if (!event || typeof event !== 'object' || Array.isArray(event) || typeof event.type !== 'string') { malformed(); return; }
-    if (['assistant', 'user'].includes(event.type) && (!Array.isArray(event.message?.content) || event.message.content.some(block => !block || typeof block !== 'object' || typeof block.type !== 'string' || (block.type === 'text' && typeof block.text !== 'string')))) { malformed(); return; }
+    if (['assistant', 'user'].includes(event.type) && (!Array.isArray(event.message?.content) || event.message.content.some(block => !block || typeof block !== 'object' || typeof block.type !== 'string' || (block.type === 'text' && typeof block.text !== 'string') || (block.type === 'thinking' && typeof block.thinking !== 'string')))) { malformed(); return; }
     if (event.type === 'stream_event' && event.event?.delta?.type === 'text_delta' && typeof event.event.delta.text !== 'string') { malformed(); return; }
+    if (event.type === 'stream_event' && (event.event?.delta?.type === 'thinking_delta' || event.event?.content_block?.type === 'thinking') && (!Number.isSafeInteger(event.event.index) || event.event.index < 0 || typeof (event.event.delta?.thinking ?? event.event.content_block?.thinking) !== 'string')) { malformed(); return; }
     if (event.type === 'result' && ((event.result !== undefined && typeof event.result !== 'string') || (event.errors !== undefined && (!Array.isArray(event.errors) || event.errors.some(error => typeof error !== 'string'))))) { malformed(); return; }
     // A sub-agent's own messages describe that sub-agent; the chat shows them as its activity, not as replies.
-    if (typeof event.parent_tool_use_id === 'string') { routeSubagent(event); return; }
+    if (event.parent_tool_use_id != null) { if (typeof event.parent_tool_use_id === 'string') routeSubagent(event); else malformed(); return; }
     if (event.type === 'system' && event.subtype === 'init') { run('UPDATE chats SET sessionStarted=1 WHERE id=?', id); if (entry.turnPrompt || entry.written.size === 0) { entry.turnOpen = true; clearTimeout(entry.settleTimer); } }
     if (event.type === 'command_lifecycle' && ['cancelled', 'discarded', 'refused'].includes(event.state ?? event.status)) {
       // Claude dropped a message it had accepted; say so instead of leaving it looking delivered.
@@ -78,16 +81,26 @@ export function claudeRun(ctx, session, delivery) {
       if (taken) {
         entry.written.delete(taken.promptId);
         // A steer taken mid-turn joins it; anything taken between turns starts the next one.
-        if (taken.kind !== 'steer' || !entry.turnOpen) { turnStarted(taken.promptId); entry.assistantId = null; }
+        if (taken.kind !== 'steer' || !entry.turnOpen) { thoughts.clear(); completedThoughts.clear(); thoughtMessage = null; turnStarted(taken.promptId); entry.assistantId = null; }
         entry.turnOpen = true; clearTimeout(entry.settleTimer);
       }
     }
     if (event.type === 'stream_event') {
-      if (event.event?.type === 'message_start') entry.assistantId = null;
+      if (event.event?.type === 'message_start') { entry.assistantId = null; thoughtMessage = typeof event.event.message?.id === 'string' ? event.event.message.id : `message-${++messageIndex}`; }
       if (event.event?.type === 'content_block_delta' && event.event.delta?.type === 'text_delta') append(event.event.delta.text);
+      if (entry.turnOpen && thoughtMessage && !completedThoughts.has(thoughtMessage) && (event.event?.content_block?.type === 'thinking' || event.event?.delta?.type === 'thinking_delta')) {
+        if (!thoughts.has(thoughtMessage)) thoughts.set(thoughtMessage, new Map());
+        const parts = thoughts.get(thoughtMessage), index = event.event.index;
+        parts.set(index, event.event.delta?.type === 'thinking_delta' ? (parts.get(index) ?? '') + event.event.delta.thinking : event.event.content_block.thinking); showThinking();
+      }
     }
     if (event.type === 'assistant') {
       const blocks = event.message?.content ?? [], finalText = blocks.filter(b => b.type === 'text').map(b => b.text).join('\n');
+      if (entry.turnOpen && blocks.some(block => block.type === 'thinking')) {
+        const key = thoughts.has(event.message.id) ? event.message.id : thoughtMessage ?? (typeof event.message.id === 'string' ? event.message.id : `message-${++messageIndex}`);
+        thoughts.set(key, new Map(blocks.flatMap((block, index) => block.type === 'thinking' ? [[index, block.thinking]] : []))); showThinking();
+        completedThoughts.add(key);
+      }
       if (finalText) {
         if (!entry.assistantId) append(finalText);
         else { run('UPDATE messages SET text=? WHERE id=?', finalText, entry.assistantId); change('message', id); }
@@ -98,6 +111,7 @@ export function claudeRun(ctx, session, delivery) {
         if (['Agent', 'Task'].includes(block.name) && typeof block.id === 'string') subagent(id, entry.turnPrompt, agent, { id: block.id, title: String(block.input?.description ?? 'Sub-agent').slice(0, 100), kind: block.input?.subagent_type ?? null, model: block.input?.model ?? null, effort: row.effort === 'default' ? null : row.effort, status: 'running' });
       }
       entry.assistantId = null;
+      thoughtMessage = null;
     }
     // A result's message id names its tool message, so parallel calls pair exactly on every client.
     if (event.type === 'user') for (const block of event.message?.content ?? []) if (block.type === 'tool_result') {
@@ -125,6 +139,7 @@ export function claudeRun(ctx, session, delivery) {
       if (['permission_denied', 'warning', 'error'].includes(event.subtype)) message(id, 'activity', typeof event.message === 'string' ? event.message : JSON.stringify(event));
     }
     if (event.type === 'result') {
+      thoughts.clear(); completedThoughts.clear(); thoughtMessage = null; thinkingFor(id, null);
       entry.result = event; entry.turnOpen = false; run('UPDATE chats SET sessionStarted=1 WHERE id=?', id); if (event.result && !entry.sawText) append(event.result);
       const context = claudeContext(event); if (context) run('UPDATE chats SET contextTokens=?,contextWindow=? WHERE id=?', context.used, context.window, id);
       // With background sub-agents still running, the turn continues in the follow-up Claude starts for them.

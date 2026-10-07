@@ -29,6 +29,7 @@ export function codexRun(ctx, session, delivery) {
     subagent: patch => subagent(id, entry.turnPrompt, agent, patch),
     context: (used, window) => run('UPDATE chats SET contextTokens=?,contextWindow=? WHERE id=?', used, window, id),
     activity: value => activityFor(id, value),
+    thinking: value => ctx.thinkingFor?.(id, value),
   });
   entry.codex = codex;
   const settings = promptId => {

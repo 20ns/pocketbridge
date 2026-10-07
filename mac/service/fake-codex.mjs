@@ -43,6 +43,14 @@ async function runTurn(threadId, input, turnId) {
     for (const word of words) note('item/agentMessage/delta', { threadId, turnId, itemId: id, delta: word });
     note('item/completed', { threadId, turnId, item: item(id, 'agentMessage', { text: words.join('') }) });
   };
+  if (text === 'thinking') {
+    note('item/reasoning/summaryTextDelta', { threadId, turnId, itemId: 'thought', summaryIndex: 0, delta: 'First partial' });
+    note('item/reasoning/summaryTextDelta', { threadId: 'sub-thread', turnId, itemId: 'sub-thought', summaryIndex: 0, delta: 'Private subagent thought' });
+    note('item/completed', { threadId, turnId, item: item('thought', 'reasoning', { summary: ['First thought', 'Second thought'], content: ['Raw equivalent'] }) });
+    for (let waited = 0; waited < 3000 && !turn.steer && !turn.interrupted; waited += 20) await sleep(20);
+    if (turn.interrupted) return done('interrupted');
+    say('answer', ['Final answer']); return done();
+  }
   if (text === 'hang') {
     const child = spawn(process.execPath, ['-e', 'setInterval(()=>{},1000)'], { stdio: 'ignore' });
     writeFileSync('codex-child.pid', String(child.pid));

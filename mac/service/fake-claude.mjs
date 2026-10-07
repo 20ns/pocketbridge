@@ -46,6 +46,26 @@ async function run(message) {
   if (calls++ === 0) appendFileSync('calls.ndjson', JSON.stringify({ args, prompt }) + '\n');
   turn = { interrupted: false, waiter: null };
   replay(message);
+  if (prompt === 'thinking' || prompt === 'thinking-background') {
+    emit({ type: 'stream_event', event: { type: 'message_start', message: { id: 'thought-1' } } });
+    emit({ type: 'stream_event', event: { type: 'content_block_start', index: 0, content_block: { type: 'thinking', thinking: '' } } });
+    emit({ type: 'stream_event', event: { type: 'content_block_delta', index: 0, delta: { type: 'thinking_delta', thinking: 'First partial' } } });
+    emit({ type: 'stream_event', event: { type: 'content_block_delta', index: 0, delta: { type: 'signature_delta', signature: 'private-signature' } } });
+    emit({ type: 'assistant', message: { id: 'thought-1', content: [{ type: 'thinking', thinking: 'First thought', signature: 'private-signature' }] } });
+    emit({ type: 'stream_event', event: { type: 'content_block_delta', index: 0, delta: { type: 'thinking_delta', thinking: 'Late duplicate' } } });
+    emit({ type: 'assistant', parent_tool_use_id: 'sub-1', message: { content: [{ type: 'thinking', thinking: 'Private subagent thought' }] } });
+    emit({ type: 'assistant', message: { id: 'thought-2', content: [{ type: 'redacted_thinking', data: 'private-encrypted' }, { type: 'thinking', thinking: 'Second thought' }] } });
+    const steer = await nextMessage(3000);
+    if (steer) replay(steer);
+    emit({ type: 'assistant', message: { content: [{ type: 'text', text: 'Final answer' }] } });
+    if (prompt === 'thinking-background') {
+      emit({ type: 'system', subtype: 'background_tasks_changed', tasks: [{ task_type: 'local_agent' }] });
+      result('Final answer'); await sleep(1000);
+      emit({ type: 'system', subtype: 'background_tasks_changed', tasks: [] });
+      emit({ type: 'system', subtype: 'init' });
+    }
+    return result('Final answer');
+  }
   if (prompt === 'hang' || prompt === 'orphan' || prompt === 'slow') {
     const child = spawn(process.execPath, ['-e', 'setInterval(()=>{},1000)'], { stdio: 'ignore' });
     writeFileSync('child.pid', String(child.pid));

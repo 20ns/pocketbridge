@@ -210,7 +210,7 @@ export function createRoutes(ctx) {
             return json(response, 200, { ok: true });
           }
           if (action === 'prompts' && request.method === 'POST') { const [code, value] = await deliver(id, await body(request)); return json(response, code, value); }
-          const row = { ...chat(id), activity: get('SELECT activity FROM chats WHERE id=?', id)?.activity };
+          const row = { ...chat(id), ...get('SELECT activity,thinking FROM chats WHERE id=?', id) };
           if (action === 'messages' && request.method === 'GET') {
             const messages = all('SELECT * FROM messages WHERE chatId=? ORDER BY rowid', id).map(item => {
               const { attachments, kind, ...rest } = item;
@@ -220,7 +220,7 @@ export function createRoutes(ctx) {
             const turns = all("SELECT id,startedAt,endedAt FROM prompts WHERE chatId=? AND startedAt IS NOT NULL ORDER BY startedAt", id);
             const subagents = all('SELECT id,promptId,agent,title,kind,model,effort,status,activity,startedAt,endedAt,toolUses,tokens FROM subagents WHERE chatId=? ORDER BY startedAt', id)
               .map(item => ({ ...item, model: item.model ? agents.modelDisplay(item.agent, item.model) : null }));
-            return json(response, 200, { messages, approvals: all('SELECT * FROM approvals WHERE chatId=? ORDER BY rowid', id).map(item => ({ ...item, input: JSON.parse(item.input) })), turns, subagents, activity: row.activity ?? null });
+            return json(response, 200, { messages, approvals: all('SELECT * FROM approvals WHERE chatId=? ORDER BY rowid', id).map(item => ({ ...item, input: JSON.parse(item.input) })), turns, subagents, activity: row.activity ?? null, thinking: ['running', 'waiting'].includes(row.status) ? row.thinking ?? null : null });
           }
           if (action === 'stop' && request.method === 'POST') { stop(id); return json(response, 200, { ok: true }); }
           // Claude Desktop lists only sessions handed to it; this is the same claude://resume link the CLI's /desktop opens.

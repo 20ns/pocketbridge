@@ -114,6 +114,7 @@ export async function createService(options = {}) {
     // A crashed service may leave its detached CLI running. Kill only the same OS process, never a reused PID.
     for (const runtime of all('SELECT * FROM runtimes')) if (runtime.startTime && processStamp(runtime.pid) === runtime.startTime) await terminateGroup(runtime.pid, options.stopTimeoutMs ?? 1000);
     run('DELETE FROM runtimes');
+    run('UPDATE chats SET thinking=NULL');
     for (const row of all("SELECT id FROM chats WHERE status IN ('running','stopping','waiting')")) {
       status(row.id, 'interrupted', 'Mac service restarted during this task. Review the conversation before continuing.');
       run("UPDATE approvals SET status='deny' WHERE chatId=? AND status='pending'", row.id);
