@@ -124,7 +124,12 @@ class BridgeModel(application: Application) : AndroidViewModel(application) {
     init {
         runCatching {
             val token = store.token()
-            if (token.isNotEmpty()) { api = Api(normalizeServer(store.get("base")), token); paired = true }
+            if (token.isNotEmpty()) {
+                paired = true
+                runCatching { Api(store.get("base"), token) }.onSuccess { api = it }.onFailure {
+                    connectionIssue = "Update your Mac's HTTPS address in Settings. Your pairing and drafts are saved."
+                }
+            }
             // Transcripts moved to files in 0.5; rewriting them inside preferences made every streamed token expensive.
             store.removePrefixed("messages:")
             store.get("state").takeIf { it.isNotEmpty() }?.let { runCatching { applyState(JSONObject(it)) } }
@@ -272,6 +277,20 @@ class BridgeModel(application: Application) : AndroidViewModel(application) {
         forgetPairingData()
         Alerts.stop(getApplication()); Alerts.clear(getApplication())
     }
+    /** Repair this Mac's address without discarding pairing, drafts or uncertain delivery IDs. */
+    fun updateAddress(address: String) = action {
+        require(paired) { "Pair with your Mac first." }
+        val addressSession = store.session()
+        val next = Api(normalizeServer(address), store.token())
+        withContext(Dispatchers.IO) {
+            try { next.request("/api/state").also { it.getJSONArray("projects"); it.getJSONArray("chats") } }
+            catch (failure: java.io.IOException) { throw IllegalArgumentException(failureReason(failure), failure) }
+            store.commit("base", next.base, addressSession)
+        }
+        refreshJob?.cancel(); stopConnection(); Alerts.stop(getApplication())
+        api = next; pairUrl = next.base; connectionIssue = ""; revoked = false
+        if (foreground) start() else startAlerts()
+    }
     /** Mac-specific caches belong to one pairing. */
     private fun forgetPairingData() {
         transcriptWriteJob?.cancel(); transcriptWriteJob = null; transcriptWrites.clear(); messageEntries = emptyList()
@@ -290,7 +309,7 @@ class BridgeModel(application: Application) : AndroidViewModel(application) {
     }
     private fun stopConnection() { session?.cancel(); session = null; online = false }
     private fun start() {
-        if (session?.isActive == true) return
+        if (api == null || session?.isActive == true) return
         session = viewModelScope.launch {
             launch {
                 changes.sample(250).collect {

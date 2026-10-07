@@ -12,7 +12,9 @@ Use Android Studio's bundled JDK 21 and an Android SDK with platform 36. Set `sd
 
 Install `app/build/outputs/apk/debug/app-debug.apk` on your Android phone. Open Tailscale on both devices, open the Mac client's pairing screen, then scan the QR using your phone camera or enter its HTTPS address and one-time code in PocketBridge. The app stores its own credential with Android Keystore encryption. It never reads Claude credentials. Android backups are disabled.
 
-Production pairing should use the Mac's private HTTPS Tailscale Serve URL. HTTP is accepted only for localhost, the emulator gateway, and Tailscale addresses where the tunnel encrypts traffic. Redirects are disabled, and credentials are only sent in the authorization header.
+Production pairing requires the Mac's private HTTPS Tailscale Serve URL. The release APK blocks all HTTP, including Tailscale IP addresses and hostnames. Debug builds allow HTTP only for localhost, validated IPv4 loopback and the emulator gateway 10.0.2.2. Certificate and hostname checks are enabled, redirects are disabled, and credentials are only sent in the authorization header. This covers prompts, replies, images and background alerts.
+
+An older HTTP pairing stays saved but cannot connect. In Settings, tap the Mac address and enter the HTTPS address from Connect phone on that Mac. The app verifies authenticated HTTPS access before saving the new address, preserving drafts and pending delivery IDs.
 
 ## Behaviour
 

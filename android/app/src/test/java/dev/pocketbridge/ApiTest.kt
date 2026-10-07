@@ -1,6 +1,12 @@
 package dev.pocketbridge
 
 import java.io.IOException
+import java.io.File
+import java.nio.file.Files
+import java.security.KeyStore
+import javax.net.ssl.KeyManagerFactory
+import javax.net.ssl.SSLContext
+import javax.net.ssl.SSLHandshakeException
 import kotlinx.coroutines.*
 import okhttp3.mockwebserver.SocketPolicy
 import java.util.concurrent.TimeUnit
@@ -12,15 +18,28 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class ApiTest {
-    @Test fun `server accepts HTTPS and encrypted tailnet addresses`() {
+    @Test fun `server accepts HTTPS and debug loopback development addresses`() {
         assertEquals("https://mac.example.ts.net", normalizeServer(" https://mac.example.ts.net/ "))
-        assertEquals("http://100.64.0.1:8787", normalizeServer("http://100.64.0.1:8787"))
-        assertEquals("http://10.0.2.2:8787", normalizeServer("http://10.0.2.2:8787"))
+        listOf("http://localhost:8787", "http://127.0.0.1:8787", "http://127.255.1.2", "http://10.0.2.2:8787").forEach {
+            assertEquals(it, normalizeServer(it, allowLocalHttp = true))
+        }
     }
-    @Test fun `server rejects credentials queries public cleartext and invalid tailnet IP`() {
-        listOf("https://user:secret@mac.ts.net", "https://mac.ts.net?token=secret", "https://mac.ts.net/api", "http://example.com", "http://100.63.0.1", "http://100.64.999.1", "http://127.attacker.example", "http://127.1", "http://127.0.0.999", "file:///tmp/socket").forEach {
+    @Test fun `server rejects credentials queries all remote cleartext and invalid loopback addresses`() {
+        listOf("https://user:secret@mac.ts.net", "https://mac.ts.net?token=secret", "https://mac.ts.net/api", "http://example.com", "http://mac.example.ts.net", "http://100.64.0.1", "http://100.127.255.255", "http://192.168.1.2", "http://10.0.0.1", "http://100.63.0.1", "http://100.64.999.1", "http://127.attacker.example", "http://127.1", "http://127.0.0.999", "file:///tmp/socket").forEach {
             assertTrue("Accepted unsafe URL $it", runCatching { normalizeServer(it) }.isFailure)
         }
+    }
+    @Test fun `release policy refuses every HTTP address including local development`() {
+        listOf("http://localhost:8787", "http://127.0.0.1:8787", "http://127.255.1.2", "http://10.0.2.2:8787", "http://mac.ts.net", "http://100.64.0.1", "http://192.168.1.2", "http://example.com").forEach {
+            assertTrue("Release accepted HTTP $it", runCatching { normalizeServer(it, allowLocalHttp = false) }.isFailure)
+        }
+        assertEquals("https://mac.ts.net", normalizeServer("https://mac.ts.net/", allowLocalHttp = false))
+    }
+    @Test fun `API constructor enforces the address policy even when normalization was skipped`() {
+        listOf("http://mac.ts.net", "http://100.64.0.1", "http://192.168.1.2", "http://10.0.0.1", "https://user:secret@mac.ts.net", "https://mac.ts.net/api").forEach {
+            assertTrue("API accepted unsafe URL $it", runCatching { Api(it, "credential") }.isFailure)
+        }
+        assertEquals("https://mac.ts.net", Api(" https://mac.ts.net/ ").base)
     }
     @Test fun `prompt survives restart with same delivery ID text and mode`() {
         val prompt = PendingPrompt("stable-id", "Change the project", "auto", "sonnet", "high", "project")
@@ -60,6 +79,38 @@ class ApiTest {
             assertEquals("/api/chats/chat/prompts", request.path)
             assertEquals("same-id", JSONObject(request.body.readUtf8()).getString("id"))
         }
+    }
+    @Test fun `redirects never resend credentials to an HTTP destination`() = runBlocking {
+        MockWebServer().use { source -> MockWebServer().use { destination ->
+            destination.start()
+            source.enqueue(MockResponse().setResponseCode(302).setHeader("Location", destination.url("/leak")))
+            val failure = runCatching { Api(source.url("/").toString(), "private-app-token").request("/api/state") }.exceptionOrNull()
+            assertEquals(302, (failure as ApiError).status)
+            assertEquals("Bearer private-app-token", source.takeRequest().getHeader("Authorization"))
+            assertNull(destination.takeRequest(200, TimeUnit.MILLISECONDS))
+        } }
+    }
+    @Test fun `untrusted self signed TLS is refused before sending credentials`() = runBlocking {
+        val directory = Files.createTempDirectory("untrusted-tls").toFile()
+        try {
+            // The JDK's own keytool creates an isolated test certificate; the API retains its normal trust store.
+            val file = File(directory, "server.p12")
+            val password = "test-only"
+            val keytool = File(System.getProperty("java.home"), "bin/keytool")
+            val process = ProcessBuilder(keytool.path, "-genkeypair", "-alias", "server", "-keyalg", "EC", "-dname", "CN=localhost", "-ext", "SAN=dns:localhost", "-validity", "1", "-storetype", "PKCS12", "-keystore", file.path, "-storepass", password, "-noprompt").redirectErrorStream(true).start()
+            assertTrue("Test certificate generation timed out", process.waitFor(20, TimeUnit.SECONDS))
+            assertEquals(process.inputStream.bufferedReader().use { it.readText() }, 0, process.exitValue())
+            val keys = KeyStore.getInstance("PKCS12").apply { file.inputStream().use { load(it, password.toCharArray()) } }
+            val managers = KeyManagerFactory.getInstance(KeyManagerFactory.getDefaultAlgorithm()).apply { init(keys, password.toCharArray()) }
+            val tls = SSLContext.getInstance("TLS").apply { init(managers.keyManagers, null, null) }
+            MockWebServer().use { server ->
+                server.useHttps(tls.socketFactory, false)
+                server.enqueue(MockResponse().setBody("{}"))
+                val failure = runCatching { Api(server.url("/").toString(), "private-app-token").request("/api/state") }.exceptionOrNull()
+                assertTrue("Expected normal certificate validation failure, got $failure", failure is SSLHandshakeException)
+                assertNull(server.takeRequest(200, TimeUnit.MILLISECONDS))
+            }
+        } finally { directory.deleteRecursively() }
     }
     @Test fun `API exposes definitive rejection without losing server explanation`() = runBlocking {
         MockWebServer().use { server ->

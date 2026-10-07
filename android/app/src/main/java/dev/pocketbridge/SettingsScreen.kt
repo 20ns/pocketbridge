@@ -60,6 +60,8 @@ import org.json.JSONObject
 
 @Composable fun Settings(model: BridgeModel, insets: PageInsets) {
     var confirm by remember { mutableStateOf(false) }
+    var changeAddress by remember { mutableStateOf(false) }
+    var address by rememberSaveable { mutableStateOf("") }
     val colors = MaterialTheme.colorScheme
     LaunchedEffect(model.online) { if (model.online) model.usage.refresh() }
     RefreshBox(model.refreshing, { model.retry(); model.usage.refresh(force = true) }, Modifier.fillMaxSize()) {
@@ -68,7 +70,7 @@ import org.json.JSONObject
         AgentsGroup(model)
         GroupLabel("Mac")
         GroupRow(
-            0, 3,
+            0, 3, onClick = { address = model.pairUrl; changeAddress = true }.takeIf { !model.busy }, onClickLabel = "Change HTTPS address",
             leading = { Tile(colors.secondaryContainer) { Icon(PocketIcons.Laptop, null, Modifier.size(20.dp), tint = colors.onSecondaryContainer) } },
             supporting = {
                 when {
@@ -76,6 +78,7 @@ import org.json.JSONObject
                     model.connectionIssue.isEmpty() -> StatusLine("running", word = "Connecting")
                     else -> Text("Offline · " + model.connectionIssue, maxLines = 3)
                 }
+                Text("Change HTTPS address", style = MaterialTheme.typography.bodySmall)
             },
         ) { SelectionContainer { Text(model.pairUrl, maxLines = 1, overflow = TextOverflow.Ellipsis) } }
         GroupRow(
@@ -108,6 +111,19 @@ import org.json.JSONObject
         text = { Text("You'll need a new pairing code to reconnect. Drafts on this phone are removed. Work already running on the Mac keeps going.") },
         confirmButton = { TextButton(onClick = { model.disconnect(); confirm = false }) { Text("Disconnect", color = colors.error) } },
         dismissButton = { TextButton(onClick = { confirm = false }) { Text("Cancel") } },
+    )
+    if (changeAddress) AlertDialog(
+        onDismissRequest = { changeAddress = false },
+        title = { Text("Mac's HTTPS address") },
+        text = {
+            OutlinedTextField(address, { address = it }, singleLine = true,
+                label = { Text("HTTPS address") }, placeholder = { Text("https://mac.tailnet.ts.net") },
+                supportingText = { Text("Use the address from Connect phone on your Mac. Pairing and drafts stay saved.") },
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri, autoCorrectEnabled = false),
+            )
+        },
+        confirmButton = { TextButton(onClick = { model.updateAddress(address); changeAddress = false }, enabled = address.isNotBlank() && !model.busy) { Text("Save") } },
+        dismissButton = { TextButton(onClick = { changeAddress = false }) { Text("Cancel") } },
     )
 }
 

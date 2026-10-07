@@ -21,24 +21,22 @@ class ApiError(val status: Int, message: String) : IOException(message) {
     val definitiveRejection get() = status in 400..499 && status != 408
 }
 
-fun normalizeServer(input: String): String {
+fun normalizeServer(input: String, allowLocalHttp: Boolean = BuildConfig.DEBUG): String {
     val uri = URI(input.trim())
-    require(uri.scheme in listOf("https", "http") && !uri.host.isNullOrBlank() && uri.userInfo == null && uri.rawQuery == null && uri.fragment == null) { "Enter a complete HTTP or HTTPS Mac address." }
+    val scheme = uri.scheme?.lowercase()
+    val host = uri.host?.lowercase()
+    require(scheme in listOf("https", "http") && !host.isNullOrBlank() && uri.userInfo == null && uri.rawQuery == null && uri.fragment == null) { "Enter a complete HTTPS Mac address." }
     require(uri.path.isNullOrEmpty() || uri.path == "/") { "Use the Mac address without a path." }
-    // Plain HTTP is for local development or the encrypted Tailscale network only.
-    require(uri.scheme == "https" || uri.host == "localhost" || uri.host == "10.0.2.2" || isLoopbackIp(uri.host) || uri.host.endsWith(".ts.net") || isTailnetIp(uri.host)) { "Use HTTPS, or a private Tailscale address." }
+    // Only debug builds can reach a local development server without TLS.
+    require(scheme == "https" || allowLocalHttp && (host == "localhost" || host == "10.0.2.2" || isLoopbackIp(host))) { "Use the Mac's HTTPS address. HTTP connections are not allowed." }
     return input.trim().trimEnd('/')
 }
 private fun isLoopbackIp(host: String): Boolean {
     val parts = host.split('.').map { it.toIntOrNull() ?: return false }
     return parts.size == 4 && parts[0] == 127 && parts.all { it in 0..255 }
 }
-private fun isTailnetIp(host: String): Boolean {
-    val parts = host.split('.').map { it.toIntOrNull() ?: return false }
-    return parts.size == 4 && parts[0] == 100 && parts[1] in 64..127 && parts.all { it in 0..255 }
-}
-
-class Api(val base: String, val token: String = "") {
+class Api(base: String, val token: String = "") {
+    val base = normalizeServer(base)
     private val readClient = OkHttpClient.Builder().followRedirects(false).followSslRedirects(false).retryOnConnectionFailure(true).callTimeout(30, TimeUnit.SECONDS).connectTimeout(10, TimeUnit.SECONDS).readTimeout(20, TimeUnit.SECONDS).build()
     // Mutations use fresh connections so expired server keepalives cannot lose an action.
     private val client = readClient.newBuilder().retryOnConnectionFailure(false).connectionPool(ConnectionPool(0, 5, TimeUnit.MINUTES)).build()

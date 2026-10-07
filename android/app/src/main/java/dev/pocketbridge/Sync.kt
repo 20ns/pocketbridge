@@ -84,6 +84,7 @@ fun syncKind(data: String, selected: String): Int {
 /** One sentence for a failed request, naming what to check. */
 fun failureReason(failure: Throwable) = when (failure) {
     is ApiError -> failure.message?.takeIf { it.isNotBlank() } ?: "Your Mac rejected the request."
+    is javax.net.ssl.SSLException -> "Secure connection could not be verified. Check your Mac's HTTPS address and certificate."
     is SocketTimeoutException -> "Your Mac took too long to answer. Check Tailscale on both devices."
     is UnknownHostException, is ConnectException, is NoRouteToHostException -> "Can't reach your Mac. Check that Tailscale is on and the Mac is awake."
     is java.io.IOException -> "The connection to your Mac was interrupted. Check Tailscale on both devices."

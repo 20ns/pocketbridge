@@ -1,6 +1,6 @@
 # PocketBridge v1 contract (0.7)
 
-HTTP JSON plus Server-Sent Events. All /api routes except /api/health and /api/pair require Authorization: Bearer <app token>. JSON errors: {error: string}. Service binds 127.0.0.1 by default; Tailscale Serve proxies it privately. Only local browser bootstrap may obtain an app token through /api/local-session, and must require actual loopback peer and same-origin request. Browser token never in URL. No arbitrary CORS.
+HTTPS JSON plus Server-Sent Events for every remote Android connection. Release builds reject HTTP at the API boundary and disable Android cleartext networking; debug builds allow HTTP only for localhost, validated IPv4 loopback and the emulator gateway 10.0.2.2. TLS certificate and hostname verification remain enabled, with no API redirects or HTTP fallback. All /api routes except /api/health and /api/pair require Authorization: Bearer <app token>. JSON errors: {error: string}. Service binds 127.0.0.1 by default; Tailscale Serve proxies it privately over HTTPS. Local browser and Serve-to-loopback traffic can use HTTP on the Mac. Only local browser bootstrap may obtain an app token through /api/local-session, and must require actual loopback peer and same-origin request. Browser token never in URL. No arbitrary CORS.
 
 - GET /api/health -> {ok:true, version:1}
 - GET /api/local-session -> {token:string} (loopback browser only; Origin/Host validation)

@@ -1,3 +1,11 @@
+PocketBridge 0.8.7
+
+- Every remote app connection requires HTTPS, including prompts, replies, images and background alerts. The release APK blocks all cleartext networking, verifies certificates and never follows API redirects or falls back to HTTP.
+- Existing HTTPS pairings continue working. Older HTTP addresses stay blocked with pairing, drafts and pending messages preserved. In Settings, tap your Mac address to enter its HTTPS address from Connect phone; the app verifies access before saving it.
+- Local HTTP is limited to loopback and emulator development in debug builds.
+
+Install over the existing app to preserve pairing.
+
 PocketBridge 0.8.6
 
 - Fix a false Offline error in 0.8.5 when no prompt is pending. A null delivery ID could throw after a successful Mac response and prevent reconnecting.
