@@ -11,20 +11,30 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.os.Build
+import android.os.Bundle
 import android.os.IBinder
 import java.io.IOException
+import java.net.URLEncoder
 import java.util.concurrent.ConcurrentHashMap
 import kotlinx.coroutines.*
 import kotlinx.coroutines.channels.Channel
 import org.json.JSONObject
 
-/** A chat as the alerts service sees it in /api/state. */
-data class ChatStatus(val id: String, val title: String, val status: String, val agent: String = CLAUDE, val preview: String = "", val error: String = "", val activity: String = "")
-
-fun chatStatus(chat: JSONObject) = ChatStatus(
-    chat.optString("id"), chat.optString("title").ifBlank { "New chat" }, chat.optString("status"), chat.optString("agent").ifBlank { CLAUDE },
-    chat.optString("preview"), chat.optString("error"), chat.optString("activity"),
+/** A chat as the alerts service sees it in /api/state. [project] is its project's name ("General" for General). */
+data class ChatStatus(
+    val id: String, val title: String, val status: String, val agent: String = CLAUDE, val preview: String = "", val error: String = "", val activity: String = "",
+    val project: String = "",
 )
+
+fun chatStatus(chat: JSONObject, projects: Map<String, String> = emptyMap()) = ChatStatus(
+    chat.optString("id"), chat.optString("title").ifBlank { "New chat" }, chat.optString("status"), chat.optString("agent").ifBlank { CLAUDE },
+    chat.optString("preview"), chat.optString("error"), chat.optString("activity"), projects[chat.optString("projectId")].orEmpty(),
+)
+
+fun chatStatuses(state: JSONObject): List<ChatStatus> {
+    val projects = state.optJSONArray("projects")?.objects().orEmpty().associate { it.optString("id") to it.optString("name") }
+    return state.optJSONArray("chats")?.objects().orEmpty().map { chatStatus(it, projects) }
+}
 
 sealed interface AlertEvent { val chat: ChatStatus }
 /** Entered waiting: a question, plan or permission needs the owner. */
@@ -46,18 +56,6 @@ fun alertEvents(previous: Map<String, String>, current: List<ChatStatus>, viewin
         before != null && isWorking(before) && chat.status in listOf("idle", "error", "interrupted") -> Ended(chat)
         before == "waiting" && chat.status != "waiting" -> Answered(chat)
         else -> null
-    }
-}
-
-/** The ongoing notification's title and text: one chat by name and what it's doing, several by count. */
-fun workingSummary(chats: List<ChatStatus>): Pair<String, String> {
-    val running = chats.filter { it.status == "running" || it.status == "stopping" }
-    val waiting = chats.filter { it.status == "waiting" }
-    return when {
-        running.size == 1 && waiting.isEmpty() -> running[0].title to running[0].activity.ifBlank { if (running[0].status == "stopping") "Stopping" else "Working" }
-        running.isNotEmpty() -> "${plural(running.size + waiting.size, "chat")} active" to (running + waiting).joinToString(" · ") { it.title }
-        waiting.isNotEmpty() -> "Waiting for your answer" to waiting.joinToString(" · ") { it.title }
-        else -> "PocketBridge" to "Checking your Mac"
     }
 }
 
@@ -107,6 +105,8 @@ object Alerts {
     const val EXTRA_CHAT = "chat"
     private const val ACTION_ALLOW = "dev.pocketbridge.ALLOW"
     private const val ACTION_DENY = "dev.pocketbridge.DENY"
+    const val ACTION_STOP = "dev.pocketbridge.STOP"
+    const val ACTION_LIVE_DISMISSED = "dev.pocketbridge.LIVE_DISMISSED"
     private const val EXTRA_APPROVAL = "approval"
     private const val EXTRA_TITLE = "title"
     private const val EXTRA_TEXT = "text"
@@ -117,11 +117,15 @@ object Alerts {
     /** Process-wide: whether the app is on screen and which chat it shows. */
     @Volatile var foreground = false
     @Volatile var viewing = ""
+    /** The owner swiped the working notification away: it isn't put back until the service starts again. */
+    @Volatile var liveDismissed = false
     /** Prompts sent from any chat, kept through ambiguous delivery and acceptance before the next state snapshot. */
     val deliveries = ConcurrentHashMap<String, DeliveryWatch>()
     val inFlight = ConcurrentHashMap.newKeySet<String>()
 
     fun allowed(context: Context) = context.getSystemService(NotificationManager::class.java).areNotificationsEnabled()
+    /** Android 16 and later: Live Updates are off for PocketBridge, so work shows as a plain ongoing notification. */
+    fun liveUpdatesOff(context: Context) = Build.VERSION.SDK_INT >= 36 && !context.getSystemService(NotificationManager::class.java).canPostPromotedNotifications()
 
     fun channels(context: Context) {
         context.getSystemService(NotificationManager::class.java).createNotificationChannels(listOf(
@@ -190,8 +194,7 @@ object Alerts {
     private fun action(context: Context, label: String, decision: String, approval: String, chat: ChatStatus, text: String, body: String): Notification.Action {
         val intent = Intent(context, AlertActionReceiver::class.java).setAction(decision).putExtra(EXTRA_APPROVAL, approval).putExtra(EXTRA_CHAT, chat.id)
             .putExtra(EXTRA_TITLE, chat.title).putExtra(EXTRA_TEXT, text).putExtra(EXTRA_BODY, body)
-        val pending = PendingIntent.getBroadcast(context, (approval + decision).hashCode(), intent, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
-        return Notification.Action.Builder(null, label, pending).build()
+        return Notification.Action.Builder(null, label, broadcast(context, intent, (approval + decision).hashCode())).build()
     }
 
     /** After Allow or Deny: a quiet line that clears itself. */
@@ -209,18 +212,39 @@ object Alerts {
     fun answer(intent: Intent) = Triple(intent.getStringExtra(EXTRA_APPROVAL).orEmpty(), intent.getStringExtra(EXTRA_CHAT).orEmpty(), intent.action == ACTION_ALLOW)
     fun title(intent: Intent) = intent.getStringExtra(EXTRA_TITLE).orEmpty().ifBlank { "Chat" }
 
-    /** The ongoing notification the service holds while anything works. One running chat shows its elapsed time. */
-    fun working(context: Context, chats: List<ChatStatus>, since: Long?): Notification {
-        val (title, text) = workingSummary(chats)
-        val single = chats.singleOrNull()?.id
+    /**
+     * The ongoing notification the service holds while anything works. The timer is a chronometer from the turn's start,
+     * so it ticks without reposting. On Android 16 running work asks to be a Live Update (lock screen, top of the shade
+     * and a status bar chip showing the timer, or the count for several chats); elsewhere it's a plain ongoing one.
+     */
+    fun working(context: Context, notice: LiveNotice): Notification {
+        val details = notice.lines.joinToString("\n").ifEmpty { notice.text }
         return Notification.Builder(context, WORKING).setSmallIcon(R.drawable.ic_notification).setColor(context.getColor(R.color.brand_teal))
-            .setContentTitle(title).setContentText(text).setOngoing(true).setOnlyAlertOnce(true).setCategory(Notification.CATEGORY_PROGRESS)
-            .setContentIntent(openIntent(context, single)).setStyle(Notification.BigTextStyle().bigText(text))
+            .setContentTitle(notice.title).setContentText(notice.text).setOngoing(true).setOnlyAlertOnce(true).setCategory(Notification.CATEGORY_PROGRESS)
+            .setContentIntent(openIntent(context, notice.chatId))
+            .setDeleteIntent(broadcast(context, Intent(context, AlertActionReceiver::class.java).setAction(ACTION_LIVE_DISMISSED), 0))
             .apply {
-                if (since != null) { setWhen(since); setUsesChronometer(true); setShowWhen(true) } else setShowWhen(false)
-                if (Build.VERSION.SDK_INT >= 36) { setShortCriticalText("Working"); addExtras(android.os.Bundle().apply { putBoolean(EXTRA_PROMOTED, true) }) }
+                if (notice.folder.isNotEmpty()) setSubText(notice.folder)
+                if (notice.since != null) { setWhen(notice.since); setUsesChronometer(true); setShowWhen(true) } else setShowWhen(false)
+                if (notice.stoppable && notice.chatId != null) addAction(stopAction(context, notice.chatId, notice.title))
+                if (Build.VERSION.SDK_INT >= 36 && notice.promoted) {
+                    // API 36 has no builder method for this yet; Android 16 reads the extra.
+                    addExtras(Bundle().apply { putBoolean(EXTRA_PROMOTED, true) })
+                    notice.chip?.let(::setShortCriticalText)
+                    setStyle(if (notice.lines.isEmpty()) Notification.ProgressStyle().setProgressIndeterminate(true) else Notification.BigTextStyle().bigText(details))
+                } else setStyle(Notification.BigTextStyle().bigText(details))
             }.build()
     }
+
+    /** Stop asks for an unlocked phone, so a pocket or a passer-by can't end the owner's work from the lock screen. */
+    private fun stopAction(context: Context, chatId: String, title: String): Notification.Action {
+        val intent = Intent(context, AlertActionReceiver::class.java).setAction(ACTION_STOP).putExtra(EXTRA_CHAT, chatId).putExtra(EXTRA_TITLE, title)
+        return Notification.Action.Builder(null, "Stop", broadcast(context, intent, (chatId + ACTION_STOP).hashCode()))
+            .apply { if (Build.VERSION.SDK_INT >= 31) setAuthenticationRequired(true) }.build()
+    }
+
+    private fun broadcast(context: Context, intent: Intent, code: Int) =
+        PendingIntent.getBroadcast(context, code, intent, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
 
     private fun notify(context: Context, chatId: String, notification: Notification) {
         if (allowed(context)) context.getSystemService(NotificationManager::class.java).notify(chatId, CHAT_ID, notification)
@@ -229,7 +253,8 @@ object Alerts {
 
 /**
  * Watches the Mac while PocketBridge is closed and a chat works: one status-only event stream, a state fetch per
- * burst of changes, backoff on failure. It stops as soon as nothing is running or waiting, alerts go off, or the
+ * burst of changes, backoff on failure. Step hints on that stream read only new messages, at most every ten seconds,
+ * for the working notification's step line. It stops as soon as nothing is running or waiting, alerts go off, or the
  * pairing is gone, so it never sits idle.
  */
 class AlertService : Service() {
@@ -237,7 +262,15 @@ class AlertService : Service() {
     private var watcher: Job? = null
     private var statuses = mutableMapOf<String, String>()
     private val started = mutableMapOf<String, Long>()
-    private var lastSummary: Pair<List<ChatStatus>, Long?>? = null
+    /** What works now, and what the ongoing notification last showed of it. */
+    private var active = emptyList<ChatStatus>()
+    private var shown: LiveNotice? = null
+    /** Per running chat, its newest messages and the tool step they end on; and chats with new steps since the last look. */
+    private var running = emptySet<String>()
+    private val tails = mutableMapOf<String, JSONObject>()
+    private val steps = mutableMapOf<String, String>()
+    private val stepsChanged = ConcurrentHashMap.newKeySet<String>()
+    private var lastLook = 0L
     /** Waiting chats announced without their approvals (the fetch failed): asked again until Allow and Deny can be added. */
     private val unfetched = mutableSetOf<String>()
     /** Per waiting chat, the request its notification shows; and chats whose requests changed since the last look. */
@@ -251,9 +284,11 @@ class AlertService : Service() {
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         Alerts.channels(this)
+        // Leaving the app again brings back a working notification the owner swiped away.
+        Alerts.liveDismissed = false
         // Android needs the service in the foreground within seconds of starting it.
         val promoted = runCatching {
-            val notification = Alerts.working(this, emptyList(), null)
+            val notification = Alerts.working(this, liveNotice(active, started, steps).also { shown = it })
             if (Build.VERSION.SDK_INT >= 34) startForeground(Alerts.WORKING_ID, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE)
             else startForeground(Alerts.WORKING_ID, notification)
         }.isSuccess
@@ -287,16 +322,25 @@ class AlertService : Service() {
                 val seq = refresh(api) ?: return
                 backoff = 2000L; failingSince = 0L
                 val changes = Channel<Unit>(Channel.CONFLATED)
+                val newSteps = Channel<Unit>(Channel.CONFLATED)
                 coroutineScope {
                     // Bursts of changes become one state fetch a second. A question still missing its actions asks again a little later.
                     val fetcher = launch {
                         if (unfetched.isNotEmpty() || Alerts.deliveries.isNotEmpty()) changes.trySend(Unit)
                         for (change in changes) { delay(if (unfetched.isEmpty()) 1000 else 5000); if (refresh(api) == null) return@launch; if (unfetched.isNotEmpty() || Alerts.deliveries.isNotEmpty()) changes.trySend(Unit) }
                     }
-                    api.watch(seq, "status") { line ->
-                        if (line.startsWith("data:")) { approvalChat(line.removePrefix("data:").trim())?.let(approvalsChanged::add); changes.trySend(Unit) }
+                    // Step hints never fetch state: at most one look at the new messages every ten seconds updates the step line.
+                    val looker = launch {
+                        for (hint in newSteps) { delay(stepLookDelay(lastLook, System.currentTimeMillis())); lastLook = System.currentTimeMillis(); lookAtSteps(api) }
                     }
-                    fetcher.cancel()
+                    api.watch(seq, "status") { line ->
+                        if (!line.startsWith("data:")) return@watch
+                        val data = line.removePrefix("data:").trim()
+                        val step = stepChat(data)
+                        if (step != null) { stepsChanged += step; newSteps.trySend(Unit) }
+                        else { approvalChat(data)?.let(approvalsChanged::add); changes.trySend(Unit) }
+                    }
+                    fetcher.cancel(); looker.cancel()
                 }
                 throw IOException("The event stream closed.")
             } catch (cancelled: CancellationException) { throw cancelled }
@@ -338,7 +382,7 @@ class AlertService : Service() {
         // Alerts may have gone off while that was on its way.
         if (!Alerts.answerable(Store(this))) { finish(clear = true); return null }
         if (store.get("token") != pairing) { finish(); return null }
-        val chats = state.optJSONArray("chats")?.objects().orEmpty().map(::chatStatus)
+        val chats = chatStatuses(state)
         val viewing = if (Alerts.foreground) Alerts.viewing else ""
         val unresolved = Alerts.deliveries.filterValues { awaitingDelivery(it, it.promptId in Alerts.inFlight, System.currentTimeMillis()) }.keys
         val events = alertEvents(statuses, chats, viewing, proven.keys)
@@ -358,21 +402,53 @@ class AlertService : Service() {
         unresolved.forEach { if (!isWorking(statuses[it]) && (it in awaitingProof || statuses[it] == null)) statuses[it] = "sending" }
         val working = chats.filter { isWorking(it.status) }
         val active = working + unresolved.filter { id -> working.none { it.id == id } }.map { id ->
-            chats.find { it.id == id }?.copy(status = "running") ?: ChatStatus(id, "Sending prompt", "running")
+            chats.find { it.id == id }?.copy(status = "sending") ?: ChatStatus(id, "Sending prompt", "sending")
         }
         if (active.isEmpty()) { finish(); return null }
+        // A turn that ended, or waits on the owner, lets go of its timer and step; the live notification follows.
+        running = working.filter { it.status == "running" }.map { it.id }.toSet()
         started.keys.retainAll(active.filter { it.status != "waiting" }.map { it.id }.toSet())
-        for (chat in working.filter { it.status == "running" && it.id !in started }) started[chat.id] = turnStart(api, chat.id) ?: System.currentTimeMillis()
-        val since = active.singleOrNull()?.let { started[it.id] }
-        if (lastSummary != active to since) {
-            lastSummary = active to since
-            getSystemService(NotificationManager::class.java).notify(Alerts.WORKING_ID, Alerts.working(this, active, since))
-        }
+        tails.keys.retainAll(running); steps.keys.retainAll(running)
+        for (id in running.filter { it !in started }) started[id] = track(api, id) ?: System.currentTimeMillis()
+        this.active = active
+        post()
         return state.optLong("lastSeq")
     }
 
+    /** Shows what works now on the ongoing notification, unless nothing changed or the owner swiped it away. */
+    private fun post() {
+        val notice = liveNotice(active, started, steps)
+        if (notice == shown || Alerts.liveDismissed) return
+        shown = notice
+        getSystemService(NotificationManager::class.java).notify(Alerts.WORKING_ID, Alerts.working(this, notice))
+    }
+
+    /** The first look at a running chat: its turn's start for the timer, and the step it's on. */
+    private suspend fun track(api: Api, chatId: String): Long? {
+        val messages = messages(api, chatId) ?: return null
+        follow(chatId, null, messages)
+        return runningSince(parseTurns(messages), null)
+    }
+
+    /** New steps in running chats, read from only the messages since the last look. A failed look waits for the next hint. */
+    private suspend fun lookAtSteps(api: Api) {
+        for (id in stepsChanged.toSet().also { stepsChanged.removeAll(it) }) {
+            if (id !in running) continue
+            val tail = tails[id]
+            val since = tail?.optString("cursor")?.takeIf { it.isNotEmpty() }?.let { "?since=" + URLEncoder.encode(it, "UTF-8") }.orEmpty()
+            val response = runCatching { withContext(Dispatchers.IO) { api.request("/api/chats/$id/messages$since") } }.getOrNull() ?: continue
+            if (id in running) follow(id, tail.takeIf { since.isNotEmpty() }, response)
+        }
+        post()
+    }
+
+    private fun follow(chatId: String, tail: JSONObject?, response: JSONObject) {
+        val next = runCatching { stepTail(tail, response) }.getOrNull() ?: return
+        tails[chatId] = next
+        runningStep(next)?.let { steps[chatId] = it } ?: steps.remove(chatId)
+    }
+
     private suspend fun messages(api: Api, chatId: String) = runCatching { withContext(Dispatchers.IO) { api.request("/api/chats/$chatId/messages") } }.getOrNull()
-    private suspend fun turnStart(api: Api, chatId: String) = messages(api, chatId)?.let { runningSince(parseTurns(it), null) }
     /**
      * Posts the chat's pending request with its permission actions, once per request. A failed fetch posts a [fresh]
      * one plainly and tries again. A request answered meanwhile takes its notification with it.
@@ -393,9 +469,13 @@ class AlertService : Service() {
     }
 }
 
-/** Allow or Deny from a permission notification, sent straight to the Mac. */
+/** Allow or Deny from a permission notification, or Stop from the working one, sent straight to the Mac. */
 class AlertActionReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
+        when (intent.action) {
+            Alerts.ACTION_LIVE_DISMISSED -> { Alerts.liveDismissed = true; return }
+            Alerts.ACTION_STOP -> return stop(context.applicationContext, intent)
+        }
         val (approval, chat, allow) = Alerts.answer(intent)
         if (approval.isEmpty() || chat.isEmpty()) return
         val title = Alerts.title(intent)
@@ -425,6 +505,33 @@ class AlertActionReceiver : BroadcastReceiver() {
                 }
             } catch (failure: Exception) {
                 if (current()) Alerts.unanswered(app, intent, "Couldn't reach your Mac. Try again.")
+            } finally { result.finish() }
+        }
+    }
+
+    /**
+     * The chat's own Stop. The working notification then follows the Mac: Stopping, then Stopped. A lost reply is
+     * checked against the Mac's state before saying the stop didn't arrive; Stop stays on the notification for another try.
+     */
+    private fun stop(app: Context, intent: Intent) {
+        val chat = Alerts.answer(intent).second
+        if (chat.isEmpty()) return
+        val result = goAsync()
+        CoroutineScope(Dispatchers.IO).launch {
+            val token = Store(app).get("token")
+            fun current() = Store(app).let { Alerts.answerable(it) && it.get("token") == token }
+            try {
+                if (!current()) return@launch
+                val store = Store(app)
+                val api = Api(normalizeServer(store.get("base")), store.token())
+                try {
+                    withTimeout(6000) { api.request("/api/chats/$chat/stop", JSONObject()) }
+                } catch (failure: Exception) {
+                    val state = runCatching { withTimeout(3000) { api.request("/api/state") } }.getOrNull()
+                    if (current() && !stopSettled(state, chat)) Alerts.answered(app, chat, Alerts.title(intent), notStopped(failure))
+                }
+            } catch (failure: Exception) {
+                if (current()) Alerts.answered(app, chat, Alerts.title(intent), notStopped(failure))
             } finally { result.finish() }
         }
     }

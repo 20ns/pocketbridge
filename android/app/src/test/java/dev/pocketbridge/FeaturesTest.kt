@@ -226,13 +226,6 @@ class FeaturesTest {
         assertNull(approvalOutcome(null, "a"))
     }
 
-    @Test fun `the ongoing summary names one chat or counts several`() {
-        assertEquals("Chat a" to "Reading Api.kt", workingSummary(listOf(status("a", "running").copy(activity = "Reading Api.kt"))))
-        assertEquals("Chat a" to "Working", workingSummary(listOf(status("a", "running"))))
-        assertEquals("2 chats active" to "Chat a · Chat b", workingSummary(listOf(status("a", "running"), status("b", "waiting"))))
-        assertEquals("Waiting for your answer" to "Chat b", workingSummary(listOf(status("b", "waiting"))))
-    }
-
     @Test fun `a steer taken between turns starts its own turn for Copy and Worked alike`() {
         val entries = transcript(listOf(
             said("t1", "user", "go", 0), said("r1", "assistant", "done", 10),

@@ -191,6 +191,12 @@ import org.json.JSONObject
         "On Samsung, set PocketBridge's battery use to Unrestricted so alerts arrive on time.",
         Modifier.padding(start = Spacing.xxxl, end = Spacing.xxl, top = Spacing.sm), style = MaterialTheme.typography.bodySmall, color = colors.onSurfaceVariant,
     )
+    // Android 16 lets the owner turn off Live Updates per app; work then shows only in the shade.
+    val liveOff = remember(lifecycle) { Alerts.liveUpdatesOff(context) }
+    if (on && liveOff && Build.VERSION.SDK_INT >= 36) TextButton(
+        onClick = { context.startActivity(Intent(android.provider.Settings.ACTION_APP_NOTIFICATION_PROMOTION_SETTINGS).putExtra(android.provider.Settings.EXTRA_APP_PACKAGE, context.packageName)) },
+        Modifier.padding(start = Spacing.xxxl - Spacing.md),
+    ) { Text("Live updates are off. Turn on", style = MaterialTheme.typography.bodySmall) }
 }
 
 @Composable private fun UpdateRow(model: BridgeModel) {

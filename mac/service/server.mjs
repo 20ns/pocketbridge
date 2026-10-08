@@ -53,8 +53,9 @@ export async function createService(options = {}) {
       }
       const events = all('SELECT * FROM events WHERE seq>? ORDER BY seq LIMIT 128', client.seq);
       for (const event of events) {
-        // A status-only stream (background alerts) skips the many message events streaming text produces.
-        if (client.statusOnly && event.type === 'message') { client.seq = event.seq; continue; }
+        // A status-only stream (background alerts) skips the many message events streaming text produces and gets step
+        // hints instead; full streams already see those steps as message events.
+        if (event.type === (client.statusOnly ? 'message' : 'step')) { client.seq = event.seq; continue; }
         const ready = client.response.write(`id: ${event.seq}\nevent: change\ndata: ${JSON.stringify(event)}\n\n`); client.seq = event.seq;
         if (!ready) { client.response.once('drain', batch); return; }
       }
