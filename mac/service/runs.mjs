@@ -89,7 +89,7 @@ export function createRuns(ctx) {
     child.stdout.setEncoding('utf8');
     child.stdout.on('data', chunk => {
       entry.buffer += chunk;
-      if (entry.buffer.length > 10_000_000) { entry.parseError = `${agentNames[agent]} output exceeded the structured event limit.`; stop(id); return; }
+      if (entry.buffer.length > 10_000_000) { entry.parseError = `${agentNames[agent]} output exceeded the structured event limit.`; stop(id, 'overflow'); return; }
       let newline; while ((newline = entry.buffer.indexOf('\n')) !== -1) { const line = entry.buffer.slice(0, newline); entry.buffer = entry.buffer.slice(newline + 1); if (line.trim()) safely(line); }
     });
     child.stderr.setEncoding('utf8'); child.stderr.on('data', chunk => { entry.stderr = (entry.stderr + chunk).slice(-16_000); });
@@ -119,7 +119,8 @@ export function createRuns(ctx) {
         // These prompts never reached the CLI; written but unacknowledged steers remain uncertain.
         const dropped = new Map([...entry.after, ...(entry.queue ?? []), ...(entry.early ?? [])].map(next => [next.promptId, next])), shutdown = entry.stopped === 'shutdown';
         for (const next of dropped.values()) message(id, 'activity', `${shutdown ? 'Mac service restarted' : 'Stopped'} before "${oneLine(next.text, 80)}" ran. Send it again if you still need it.`);
-        status(id, 'interrupted', shutdown ? restarted : 'Stopped by you. Completed changes remain on disk.');
+        if (entry.stopped === 'overflow') status(id, 'error', entry.parseError);
+        else status(id, 'interrupted', shutdown ? restarted : 'Stopped by you. Completed changes remain on disk.');
       }
       else if (codex && (entry.parseError || !entry.result.ok)) status(id, 'error', entry.parseError ?? entry.failure ?? entry.codex?.state.failure ?? (entry.stderr.trim().split('\n').slice(-12).join('\n') || `Codex exited ${code ?? signal} without a completed turn.`));
       else if (!codex && (entry.parseError || code !== 0 || entry.result?.is_error || !entry.result)) status(id, 'error', entry.parseError ?? (entry.result?.errors?.join('\n') || entry.result?.result || entry.stderr.trim() || `Claude exited ${code ?? signal} without a completed result.`));
