@@ -170,7 +170,7 @@ import org.json.JSONObject
     GroupRow(
         1, rows, onClick = model::lockMac.takeIf { model.online && !model.busy && !locked }, onClickLabel = "Lock the Mac",
         leading = { Tile(Color.Transparent) { Icon(Icons.Default.Lock, null, tint = colors.onSurfaceVariant) } },
-        supporting = { model.mac.locked?.let { Text(if (it) "Locked" else "Unlocked") } },
+        supporting = { if (model.mac.locked == false) Text("Unlocked") },
     ) { Text(if (locked) "Screen locked" else "Lock screen") }
 }
 
@@ -208,7 +208,11 @@ import org.json.JSONObject
     // Android 16 lets the owner turn off Live Updates per app; work then shows only in the shade.
     val liveOff = remember(lifecycle) { Alerts.liveUpdatesOff(context) }
     if (on && liveOff && Build.VERSION.SDK_INT >= 36) TextButton(
-        onClick = { context.startActivity(Intent(android.provider.Settings.ACTION_APP_NOTIFICATION_PROMOTION_SETTINGS).putExtra(android.provider.Settings.EXTRA_APP_PACKAGE, context.packageName)) },
+        // Some Android 16 builds have no promotion screen; the app's notification settings hold the switch there.
+        onClick = {
+            val promotion = Intent(android.provider.Settings.ACTION_APP_NOTIFICATION_PROMOTION_SETTINGS).putExtra(android.provider.Settings.EXTRA_APP_PACKAGE, context.packageName)
+            try { context.startActivity(promotion) } catch (_: android.content.ActivityNotFoundException) { openSettings() }
+        },
         Modifier.padding(start = Spacing.xxxl - Spacing.md),
     ) { Text("Live updates are off. Turn on", style = MaterialTheme.typography.bodySmall) }
 }
