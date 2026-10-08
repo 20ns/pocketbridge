@@ -41,8 +41,8 @@ fun hasNetwork(context: Context) = runCatching {
 
 /**
  * Reconnect delays that double from [first] to [max], each spread by up to a fifth either way so a phone and a
- * browser don't knock on a restarting Mac in step. [reset] belongs after a stream has proven itself, not after any
- * one request worked, or a stream that fails at once would be retried every second for ever.
+ * browser don't knock on a restarting Mac in step. [reset] belongs after a stream has proven itself ([StreamProof]),
+ * not after any one request worked, or a stream that fails at once would be retried every second for ever.
  */
 class Backoff(private val first: Long, private val max: Long, private val random: Random = Random.Default) {
     private var next = first
@@ -52,6 +52,27 @@ class Backoff(private val first: Long, private val max: Long, private val random
         return base + (base * (random.nextDouble() * 0.4 - 0.2)).toLong()
     }
     fun reset() { next = first }
+}
+
+/** A stream open this long, or one that brought a keepalive, has proven itself. */
+const val STREAM_PROVEN_MILLIS = 20_000L
+
+/**
+ * Whether an event stream proved itself before it ended. A proxy can accept a stream and drop it at once; counting
+ * that open as success would reset the backoff and the outage clock every time. ": connected" at the open doesn't
+ * count; the Mac's ": keepalive" every 15 seconds does.
+ */
+class StreamProof {
+    @Volatile private var openedAt = -1L
+    @Volatile private var keepalive = false
+    fun opened(now: Long) { openedAt = now; keepalive = false }
+    fun line(line: String) { if (line.startsWith(": keepalive")) keepalive = true }
+    /** Answers whether the stream that just ended (at [now]) proved itself, and forgets it. */
+    fun take(now: Long): Boolean {
+        val proven = openedAt >= 0 && (keepalive || now - openedAt >= STREAM_PROVEN_MILLIS)
+        openedAt = -1; keepalive = false
+        return proven
+    }
 }
 
 /** Waits up to [millis], or less when [wake] fires first. Answers whether it was woken. */

@@ -50,16 +50,23 @@ class BackgroundAlertsTest {
         val minute = 60_000L
         val outage = OutageTimer(15 * minute)
         assertFalse(outage.failed(0, network = true))
-        // Ten minutes in airplane mode don't count.
+        // Ten minutes in airplane mode don't count, nor the gap from there to the next failure with a network.
         assertFalse(outage.failed(10 * minute, network = false))
         assertFalse(outage.failed(20 * minute, network = true))
-        assertFalse(outage.failed(25 * minute, network = true))
-        assertTrue(outage.failed(26 * minute, network = true))
-        // A stream that opened starts it over.
+        assertFalse(outage.failed(30 * minute, network = true))
+        assertTrue(outage.failed(36 * minute, network = true))
+        // A proven stream starts it over.
         outage.reset()
         assertFalse(outage.failed(100 * minute, network = true))
         assertFalse(outage.failed(110 * minute, network = true))
         assertTrue(outage.failed(116 * minute, network = true))
+        // An hour offline between two failures with a network (seen by the network callback) doesn't hand over at once.
+        outage.reset()
+        assertFalse(outage.failed(200 * minute, network = true))
+        outage.offline()
+        assertFalse(outage.failed(260 * minute, network = true))
+        assertFalse(outage.failed(270 * minute, network = true))
+        assertTrue(outage.failed(276 * minute, network = true))
     }
 
     @Test fun `the catch-up job looks soon after a scheduled prompt goes, or later for unwatched work`() {
@@ -70,8 +77,21 @@ class BackgroundAlertsTest {
         assertEquals(hour + SCHEDULED_LOOK_MILLIS, catchUpDelay(now, listOf(now + 2 * hour, now + hour), unwatched = false))
         assertEquals(CATCH_UP_RETRY_MILLIS, catchUpDelay(now, listOf(now + hour), unwatched = true))
         assertEquals(5 * 60_000L + SCHEDULED_LOOK_MILLIS, catchUpDelay(now, listOf(now + 5 * 60_000L), unwatched = true))
-        // Overdue (a sleeping Mac): a minute from now, not a tight loop.
-        assertEquals(SCHEDULED_LOOK_MILLIS, catchUpDelay(now, listOf(now - hour), unwatched = false))
+        // Gone within the last minute: its look is still a minute from now.
+        assertEquals(SCHEDULED_LOOK_MILLIS, catchUpDelay(now, listOf(now - 30_000), unwatched = false))
+        // Overdue past its look (a sleeping Mac): every quarter hour, not every minute all night.
+        assertEquals(CATCH_UP_RETRY_MILLIS, catchUpDelay(now, listOf(now - hour), unwatched = false))
+        // An overdue prompt doesn't delay another's look.
+        assertEquals(2 * 60_000L + SCHEDULED_LOOK_MILLIS, catchUpDelay(now, listOf(now - hour, now + 2 * 60_000L), unwatched = false))
+    }
+
+    @Test fun `the catch-up job gives up after a day unreached or an unreadable pairing`() {
+        val now = 10 * CATCH_UP_GIVE_UP_MILLIS
+        assertFalse(catchUpGivesUp(null, 0, now))
+        assertFalse(catchUpGivesUp(now - CATCH_UP_GIVE_UP_MILLIS + 1, 0, now))
+        assertTrue(catchUpGivesUp(now - CATCH_UP_GIVE_UP_MILLIS, 0, now))
+        assertFalse(catchUpGivesUp(null, 1, now))
+        assertTrue(catchUpGivesUp(null, 2, now))
     }
 
     @Test fun `chat rows name their scheduled prompt, and stream resets and pending requests are read`() {

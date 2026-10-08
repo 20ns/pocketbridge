@@ -27,6 +27,7 @@ import org.json.JSONObject
 
 private const val PROJECT_ATTEMPT = "newProject"
 private const val DELETIONS = "deletions"
+private const val PAIR_ATTEMPT = "pairAttempt"
 
 /**
  * The phone's view of the Mac: pairing, the live connection, chats and delivery. Usage, app updates and per-project
@@ -50,6 +51,7 @@ class BridgeModel(application: Application) : AndroidViewModel(application) {
     /** Cuts the reconnect loop's wait short: a network change, Retry, or a read that reached the Mac. */
     private val wake = Channel<Unit>(Channel.CONFLATED)
     private val backoff = Backoff(1000, 15000)
+    private val proof = StreamProof()
     /** Failed connection attempts in a row, and the current attempt with the network it started on. */
     private var failures = 0
     private var failingSince = 0L
@@ -310,24 +312,23 @@ class BridgeModel(application: Application) : AndroidViewModel(application) {
         if (paired) { error = "Already paired. Disconnect in Settings before changing Macs."; return }
         pairUrl = uri.getQueryParameter("url").orEmpty(); pairCode = uri.getQueryParameter("code").orEmpty()
     }
-    private var pairAttempt: Pair<String, String>? = null
     fun pair() = action {
         require(!paired) { "Disconnect before changing Macs." }
         val base = normalizeServer(pairUrl)
         require(pairCode.isNotBlank()) { "Enter the pairing code shown on your Mac." }
         val code = pairCode.trim()
         val pairingSession = store.session()
-        // One attempt id per Mac and code: if the answer is lost, asking again (now, or by tapping Pair) gets the same
-        // token instead of finding the one-time code used.
-        val attempt = pairAttempt?.takeIf { it.first == "$base $code" }?.second ?: UUID.randomUUID().toString()
-        pairAttempt = "$base $code" to attempt
+        // One attempt id per Mac and code, saved before asking: if the answer is lost, asking again (now, by tapping
+        // Pair, or after the app was killed) gets the same token instead of finding the one-time code used.
+        // Pairing clears every preference, this one too.
+        val attempt = pairAttemptId(store.get(PAIR_ATTEMPT), base, code) ?: UUID.randomUUID().toString()
         val request = JSONObject().put("code", code).put("attempt", attempt)
         val token = withContext(Dispatchers.IO) {
+            store.commit(PAIR_ATTEMPT, pairAttemptValue(base, code, attempt), pairingSession)
             val answer = try { Api(base).request("/api/pair", request) }
             catch (lost: java.io.IOException) { if (lost is ApiError) throw lost; delay(1500); Api(base).request("/api/pair", request) }
             answer.getString("token").also { store.savePair(base, it, pairingSession) }
         }
-        pairAttempt = null
         api = Api(base, token); paired = true; pairCode = ""; connectionIssue = ""; revoked = false
         projects = emptyList(); chats = emptyList(); messages = emptyList(); approvals = emptyList(); selected = ""; draft = ""; pastes = emptyList(); pending = null; localDraftIds = emptyList(); options = ChatOptions("bypassPermissions")
         forgetPairingData()
@@ -404,6 +405,8 @@ class BridgeModel(application: Application) : AndroidViewModel(application) {
                     try { connect(currentApi) } catch (cancelled: CancellationException) { throw cancelled } catch (problem: Exception) { failure = problem }
                 }.also { it.join() }
                 online = false
+                // Only a stream that stayed up starts the count and backoff over; a proxy dropping it at once doesn't.
+                if (proof.take(android.os.SystemClock.elapsedRealtime())) { failures = 0; backoff.reset() }
                 // No failure: the attempt was dropped for a new network or Retry, so the next one starts now.
                 val problem = failure ?: continue
                 if (failures++ == 0) failingSince = System.currentTimeMillis()
@@ -423,6 +426,7 @@ class BridgeModel(application: Application) : AndroidViewModel(application) {
         val onOpen = launch { opened.await(); streamOpened(currentApi) }
         try {
             currentApi.watch(seq, onOpen = { opened.complete(Unit) }) { line ->
+                proof.line(line)
                 if (line.startsWith("data:")) { pendingSync.getAndUpdate { it or syncKind(line.removePrefix("data:").trim(), selected) }; changes.tryEmit(Unit) }
                 // A keepalive retries reads still owed from a failure.
                 else if (line.startsWith(":") && pendingSync.get() != 0) changes.tryEmit(Unit)
@@ -433,11 +437,13 @@ class BridgeModel(application: Application) : AndroidViewModel(application) {
     private fun streamOpened(currentApi: Api) {
         if (api !== currentApi) return
         online = true; wasOnline = true; connectionIssue = ""; revoked = false
-        failures = 0; backoff.reset()
+        proof.opened(android.os.SystemClock.elapsedRealtime())
         // The stream starts at the state snapshot's sequence. Messages are read now and owed until that read succeeds,
         // so no change before that sequence is missed (the transcript's own cursor carries the rest).
         pendingSync.getAndUpdate { it or SYNC_MESSAGES }; changes.tryEmit(Unit)
-        if (reconcileJob?.isActive != true) reconcileJob = viewModelScope.launch { reconcilePrompts(currentApi) }
+        // A lookup stalled on the old network could outlive its stream and leave a prompt unsent: this one starts afresh.
+        val stale = reconcileJob
+        reconcileJob = viewModelScope.launch { stale?.cancelAndJoin(); reconcilePrompts(currentApi) }
         retryFailedUploads()
     }
     /** Pooled sockets belong to the old network; an attempt on a network that went can only time out, so it restarts. */
@@ -579,7 +585,11 @@ class BridgeModel(application: Application) : AndroidViewModel(application) {
     })
     fun discardDraft(id: String) {
         if (store.get("pending:$id").isNotEmpty() || draftChat(id) == null || chats.any { it.optString("id") == id }) return
+        removeDraft(id)
+    }
+    private fun removeDraft(id: String) {
         if (selected == id) draftSave?.cancel()
+        Alerts.deliveries.remove(id)
         store.removeChat(id)
         attachmentLists.remove(id)
         refreshDraftIds()
@@ -663,7 +673,8 @@ class BridgeModel(application: Application) : AndroidViewModel(application) {
         // A scheduled prompt starts no turn now, so background alerts have nothing to wait for.
         if (prompt.schedule == null) Alerts.deliveries[id] = watch
         sending = sending + id
-        if (selected == id) pending = prompt
+        // A resend shows in the composer only while the store still holds it, so a settled or deleted prompt stays gone.
+        if (selected == id && (save || savedPromptId(id) == prompt.id)) pending = prompt
         try {
             if (save) withContext(Dispatchers.IO) { store.savePrompt(id, prompt, watch.until, deliverySession) }
             if (api !== currentApi) return
@@ -729,11 +740,14 @@ class BridgeModel(application: Application) : AndroidViewModel(application) {
             if (api !== currentApi) return
             if (prompt.id in Alerts.inFlight || settle(id, prompt, deliverySession, status)) continue
             if (!resendable(prompt, store.get("watch:$id").toLongOrNull(), System.currentTimeMillis())) continue
+            // The lookup took time: a deletion, a Retry or a settled prompt since then wins over this resend.
+            if (id in deletions || id in sending || prompt.id in Alerts.inFlight || savedPromptId(id) != prompt.id) continue
             try { deliver(currentApi, id, prompt, deliverySession, save = false) }
             catch (cancelled: CancellationException) { throw cancelled }
             catch (failure: Exception) { if (selected == id && api === currentApi) error = failureReason(failure) }
         }
     }
+    private fun savedPromptId(id: String) = runCatching { PendingPrompt.parse(store.get("pending:$id")).id }.getOrNull()
     /** Cancels whose answer was lost: a prompt the Mac did cancel puts its text back, as a confirmed cancel would. */
     private suspend fun checkCancels(currentApi: Api) {
         for ((promptId, target) in uncertainCancels.toList()) {
@@ -854,9 +868,29 @@ class BridgeModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             try {
                 snapshotFlow { busy || id in sending }.first { !it }
-                if (chats.none { it.optString("id") == id }) { discardDraft(id); forgetDeletion(id) } else delete(id)
+                when {
+                    chats.any { it.optString("id") == id } -> delete(id)
+                    // A failure leaves it hidden in deletions; the next state read tries again.
+                    store.get("pending:$id").isNotEmpty() -> orNull { settleDeletedDraft(id) }
+                    else -> { discardDraft(id); forgetDeletion(id) }
+                }
             } finally { sendingDeletions -= id }
         }
+    }
+    /**
+     * A deleted local chat whose first prompt may have reached the Mac. It stays in [deletions], so it's never resent,
+     * until the Mac's ledger says: accepted, the new chat is deleted there too; never recorded, it's dropped here.
+     */
+    private suspend fun settleDeletedDraft(id: String) {
+        val currentApi = api ?: return
+        val session = store.session()
+        val prompt = runCatching { PendingPrompt.parse(store.get("pending:$id")) }.getOrNull() ?: return
+        val status = orNull { withContext(Dispatchers.IO) { deliveryStatus(currentApi, id, prompt.id, promptStatus) } } ?: return
+        if (api !== currentApi || id !in deletions || id in sending) return
+        if (!status.optBoolean("accepted")) { removeDraft(id); forgetDeletion(id); return }
+        completeAccepted(id, prompt, session)
+        snapshotFlow { busy }.first { !it }
+        delete(id)
     }
     /** Deletions saved before a restart (or a lost connection) go to the Mac once it answers again. */
     private fun sendLeftoverDeletions() {
@@ -1112,6 +1146,8 @@ class BridgeModel(application: Application) : AndroidViewModel(application) {
         if (!on) { Alerts.stop(getApplication()); Alerts.clear(getApplication()) }
     }
     val alertsActive get() = alertsOn && notificationsAllowed()
+    /** Android refused to start the alerts service the last time the app was left. */
+    fun alertsBlocked() = store.alertsBlocked() != null
     /** The chat list came from the Mac since the app last came back, not only from the cache. */
     private var freshState = false
     /** Leaving the app with work running hands the watch to the alerts service, with what each chat was doing. */
@@ -1124,7 +1160,7 @@ class BridgeModel(application: Application) : AndroidViewModel(application) {
             id to chat.optString("status").let { if (!freshState) UNKNOWN else if (it == "waiting" && id != selected) "running" else it }
         }.toMutableMap()
         // A prompt still on its way will start a turn the Mac hasn't reported yet.
-        watchedDeliveries(store.pendingPrompts()).forEach { (id, prompt) -> Alerts.deliveries.putIfAbsent(id, DeliveryWatch(prompt.id, store.get("watch:$id").toLongOrNull() ?: 0)) }
+        watchedDeliveries(store.pendingPrompts().filterKeys { it !in deletions }).forEach { (id, prompt) -> Alerts.deliveries.putIfAbsent(id, DeliveryWatch(prompt.id, store.get("watch:$id").toLongOrNull() ?: 0)) }
         Alerts.deliveries.keys.forEach { baseline.putIfAbsent(it, "sending") }
         // A prompt the Mac holds for the reset gets a look soon after it goes, so its turn still alerts.
         Alerts.watchScheduled(getApplication(), chats.mapNotNull { chat -> chatScheduled(chat)?.let { (prompt, at) -> chat.optString("id") to ScheduledPrompt(prompt, at) } }.toMap())

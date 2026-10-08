@@ -113,11 +113,12 @@ const val RESEND_WINDOW_MILLIS = 10 * 60_000L
 
 /**
  * Whether a saved prompt the Mac never recorded goes again by itself after a reconnect, under its same id (the Mac
- * runs an id at most once). [watchUntil] is its saved delivery watch, two minutes past the save. An interrupt would cut
- * into whatever runs by then, and an older prompt may no longer be wanted: those wait for Retry.
+ * runs an id at most once). [watchUntil] is its saved delivery watch, two minutes past the save. Only a normal turn
+ * (scheduled or not) goes: a late steer could land in a different turn and an interrupt would cut into whatever runs
+ * by then, and an older prompt may no longer be wanted. Those wait for Retry.
  */
 fun resendable(prompt: PendingPrompt, watchUntil: Long?, now: Long) =
-    prompt.delivery != INTERRUPT && watchUntil != null && now - (watchUntil - DELIVERY_WATCH_MILLIS) in 0..RESEND_WINDOW_MILLIS
+    prompt.delivery == null && watchUntil != null && now - (watchUntil - DELIVERY_WATCH_MILLIS) in 0..RESEND_WINDOW_MILLIS
 
 /**
  * Chats deleted on this phone whose deletion hasn't reached the Mac yet, id to title. Saved before a chat is hidden,
@@ -130,3 +131,9 @@ fun decodeDeletions(value: String): Map<String, String> = if (value.isBlank()) e
 
 /** Whether a failed deletion is settled for good (the Mac refused it), rather than worth sending again later. */
 fun deletionSettled(failure: Throwable) = failure is ApiError && failure.definitiveRejection && failure.status != 429
+
+/** A pairing attempt as saved before its POST: the Mac and code it was for, and its id. */
+fun pairAttemptValue(base: String, code: String, attempt: String) = "$base $code|$attempt"
+/** The saved attempt's id when it was for this Mac and code, so a retry reuses it; null otherwise. */
+fun pairAttemptId(saved: String, base: String, code: String): String? =
+    saved.substringAfterLast('|', "").takeIf { it.isNotBlank() && saved.substringBeforeLast('|') == "$base $code" }

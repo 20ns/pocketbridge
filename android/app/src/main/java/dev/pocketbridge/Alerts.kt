@@ -25,7 +25,6 @@ import java.io.File
 import java.io.IOException
 import java.net.URLEncoder
 import java.util.concurrent.ConcurrentHashMap
-import java.util.concurrent.atomic.AtomicBoolean
 import kotlinx.coroutines.*
 import kotlinx.coroutines.channels.Channel
 import org.json.JSONObject
@@ -234,11 +233,22 @@ object Alerts {
     }
 
     /** The request a chat's "Needs your answer" notification still shows ("" for one without its request), or null when none is up. */
-    private fun asking(context: Context, chatId: String): String? = runCatching {
+    internal fun asking(context: Context, chatId: String): String? = runCatching {
         context.getSystemService(NotificationManager::class.java).activeNotifications.find {
             it.tag == chatId && it.id == CHAT_ID && it.notification.channelId == NEEDS && it.notification.category == Notification.CATEGORY_REMINDER
         }?.notification?.extras?.getString(EXTRA_APPROVAL, "")
     }.getOrNull()
+
+    /**
+     * A chat still waiting, read again: if its request isn't the one its notification shows (answered, and the next
+     * asked), the notification follows, so Allow and Deny never answer an old one. A stand-in without actions gains them quietly.
+     */
+    fun requestChanged(context: Context, chat: ChatStatus, approval: JSONObject?) {
+        val showing = asking(context, chat.id) ?: return
+        val key = approval?.optString("id").orEmpty()
+        if (key == showing) return
+        if (key.isEmpty()) dismiss(context, chat.id) else needsAnswer(context, chat, approval, quiet = showing.isEmpty())
+    }
 
     /** A permission request with Deny and Allow. [problem] says why the last answer from here didn't reach the Mac. */
     private fun permission(context: Context, chat: ChatStatus, approval: String, text: String, body: String, quiet: Boolean, problem: String = "") {
@@ -424,16 +434,18 @@ class AlertService : Service() {
 
     private suspend fun watch() {
         val api = api() ?: return finish(clear = true)
-        // Both start over only once a stream opens: a Mac that answers state but drops the stream still backs off and gives up.
+        // Both start over only once a stream proves itself: a Mac (or a proxy) that answers but drops the stream at once
+        // still backs off and gives up.
         val backoff = Backoff(2000, 60_000)
         val outage = OutageTimer()
-        val opened = AtomicBoolean(false)
+        val proof = StreamProof()
         val networkChanged = Channel<Unit>(Channel.CONFLATED)
         scope.launch {
             var last = network()
             // Registering reports the current network at once; only a real change counts, once it has settled.
             networkChanges(this@AlertService).collect {
                 delay(1000)
+                if (!hasNetwork(this@AlertService)) outage.offline()
                 val now = network()
                 if (now != last) { last = now; api.evictConnections(); networkChanged.trySend(Unit) }
             }
@@ -458,7 +470,8 @@ class AlertService : Service() {
                             delay(stepLookDelay(lastLook, System.currentTimeMillis())); lastLook = System.currentTimeMillis(); lookAtSteps(api)
                         }
                     }
-                    api.watch(seq, "status", onOpen = { opened.set(true) }) { line ->
+                    api.watch(seq, "status", onOpen = { proof.opened(SystemClock.elapsedRealtime()) }) { line ->
+                        proof.line(line)
                         if (!line.startsWith("data:")) return@watch
                         val data = line.removePrefix("data:").trim()
                         val step = stepChat(data)
@@ -473,7 +486,7 @@ class AlertService : Service() {
                 if (failure is ApiError && failure.status == 401) return finish(clear = true)
                 // Approval events while disconnected never arrive: the next look reads every waiting chat's request again.
                 recheckApprovals = true
-                if (opened.getAndSet(false)) { backoff.reset(); outage.reset() }
+                if (proof.take(SystemClock.elapsedRealtime())) { backoff.reset(); outage.reset() }
                 if (failure is NetworkChanged) continue
                 val now = System.currentTimeMillis()
                 if (statuses.values.none(::mayWork) && Alerts.deliveries.values.none { awaitingDelivery(it, it.promptId in Alerts.inFlight, now) }) return finish()

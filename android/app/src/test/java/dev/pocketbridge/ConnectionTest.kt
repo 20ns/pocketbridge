@@ -72,13 +72,14 @@ class ConnectionTest {
         assertEquals(NO_NETWORK, connectionIssue(UnknownHostException("mac"), failures = 1, failingFor = 0, network = false))
         assertEquals(REVOKED, connectionIssue(ApiError(401, "Unauthorized"), failures = 1, failingFor = 0, network = true))
     }
-    @Test fun `only a recent prompt that does not interrupt is sent again by itself`() {
+    @Test fun `only a recent normal turn is sent again by itself`() {
         val now = 1_000_000_000L
         val savedAt = now - 60_000
         val watch = savedAt + DELIVERY_WATCH_MILLIS
         assertTrue(resendable(PendingPrompt("id", "hi"), watch, now))
-        assertTrue(resendable(PendingPrompt("id", "hi", delivery = STEER), watch, now))
         assertTrue(resendable(PendingPrompt("id", "later", schedule = SCHEDULE_RESET), watch, now))
+        // A late steer could join a different turn, and an interrupt would cut into it: both wait for Retry.
+        assertFalse(resendable(PendingPrompt("id", "hi", delivery = STEER), watch, now))
         assertFalse(resendable(PendingPrompt("id", "hi", delivery = INTERRUPT), watch, now))
         // Older than ten minutes, or with no saved watch: Retry stays the owner's call.
         assertTrue(resendable(PendingPrompt("id", "hi"), now - RESEND_WINDOW_MILLIS + DELIVERY_WATCH_MILLIS, now))
@@ -86,6 +87,27 @@ class ConnectionTest {
         assertFalse(resendable(PendingPrompt("id", "hi"), null, now))
         // A save dated in the future (the clock moved back) isn't trusted either.
         assertFalse(resendable(PendingPrompt("id", "hi"), now + 60_000 + DELIVERY_WATCH_MILLIS, now))
+    }
+    @Test fun `a stream proves itself with a keepalive or by staying open, not by opening`() {
+        val proof = StreamProof()
+        // Never opened, or a proxy that accepted the stream and dropped it at once.
+        assertFalse(proof.take(1_000))
+        proof.opened(1_000); proof.line(": connected")
+        assertFalse(proof.take(2_000))
+        proof.opened(10_000); proof.line(": keepalive")
+        assertTrue(proof.take(11_000))
+        proof.opened(20_000)
+        assertTrue(proof.take(20_000 + STREAM_PROVEN_MILLIS))
+        // Taken once: the next attempt starts unproven.
+        assertFalse(proof.take(100_000))
+    }
+    @Test fun `a pairing attempt is reused only for the same Mac and code`() {
+        val saved = pairAttemptValue("https://mac.example.ts.net", "123 456", "attempt-1")
+        assertEquals("attempt-1", pairAttemptId(saved, "https://mac.example.ts.net", "123 456"))
+        assertNull(pairAttemptId(saved, "https://mac.example.ts.net", "654321"))
+        assertNull(pairAttemptId(saved, "https://other.example.ts.net", "123 456"))
+        assertNull(pairAttemptId("", "https://mac.example.ts.net", "123 456"))
+        assertNull(pairAttemptId("https://mac.example.ts.net 123 456|", "https://mac.example.ts.net", "123 456"))
     }
     @Test fun `a rate limited deletion is tried again later`() {
         assertFalse(deletionSettled(ApiError(429, "Too many requests")))

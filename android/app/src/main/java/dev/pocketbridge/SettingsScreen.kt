@@ -201,8 +201,11 @@ import org.json.JSONObject
         supporting = { Text(if (model.alertsOn && !permitted) "Notifications are off for PocketBridge in Android settings." else "Done, failed and questions while the app is closed.") },
         trailing = { Switch(on, null, modifier = Modifier.semantics { contentDescription = "Alerts ${if (on) "on" else "off"}" }) },
     ) { Text("Alerts when closed") }
+    // Android refused the alerts service when the app was last left: battery restrictions, so say how to lift them.
+    val blocked = remember(lifecycle) { model.alertsBlocked() }
     if (on) Text(
-        "On Samsung, set PocketBridge's battery use to Unrestricted so alerts arrive on time.",
+        if (blocked) "Android blocked background alerts. Set battery use to Unrestricted for PocketBridge."
+        else "On Samsung, set PocketBridge's battery use to Unrestricted so alerts arrive on time.",
         Modifier.padding(start = Spacing.xxxl, end = Spacing.xxl, top = Spacing.sm), style = MaterialTheme.typography.bodySmall, color = colors.onSurfaceVariant,
     )
     // Android 16 lets the owner turn off Live Updates per app; work then shows only in the shade.
