@@ -968,9 +968,10 @@ test('continuing a Terminal session forks it into a new chat that brings the las
   assert.equal((await f.request('/api/chats/continue', { projectId: project.id, agent: 'claude', sessionId: randomUUID() })).status, 404);
 });
 
-test('a status-only event stream skips streaming text events', async t => {
+test('a status-only event stream skips streaming text events and hints tool steps', async t => {
   const f = await fixture(t), chat = await f.createChat(), before = f.service.state().lastSeq;
   await f.send(chat, 'hello'); await f.finished(chat);
+  await f.send(chat, 'odd-output'); await f.finished(chat);
   const read = async scope => {
     const controller = new AbortController(), response = await fetch(f.service.url + `/api/events?after=${before}${scope}`, { headers: { Authorization: `Bearer ${f.token}` }, signal: controller.signal });
     const reader = response.body.getReader(); let text = '';
@@ -980,6 +981,7 @@ test('a status-only event stream skips streaming text events', async t => {
   };
   const all = await read(''), status = await read('&scope=status');
   assert.ok(all.includes('message')); assert.ok(!status.includes('message')); assert.ok(status.includes('state'));
+  assert.ok(status.includes('step')); assert.ok(!all.includes('step'));
 });
 
 test('unexpected CLI output fails only that turn and the service keeps answering', async t => {

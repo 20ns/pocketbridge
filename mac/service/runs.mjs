@@ -11,7 +11,10 @@ export function createRuns(ctx) {
   const { options, get, run, change, status, agents, projects, active, waiting } = ctx;
   const message = (chatId, role, value, id = randomUUID(), extra = {}) => {
     run('INSERT INTO messages (id,chatId,role,text,createdAt,attachments,kind) VALUES (?,?,?,?,?,?,?)', id, chatId, role, value, Date.now(), extra.attachments?.length ? JSON.stringify(extra.attachments) : null, extra.kind ?? null);
-    change('message', chatId); return id;
+    change('message', chatId);
+    // Status-only streams skip message events; a tool step or notice still tells them the chat's current step moved.
+    if (role === 'activity') change('step', chatId);
+    return id;
   };
   /** Sub-agents a turn started: created on first sight, then patched with whatever each later event adds. */
   const subagent = (chatId, promptId, agent, patch) => {
