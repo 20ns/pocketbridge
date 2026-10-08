@@ -51,6 +51,15 @@ data class VersionParts(val major: Int, val minor: Int, val patch: Int) : Compar
     override fun toString() = "$major.$minor.$patch"
 }
 
+/** Updates come from GitHub over this phone's own connection, not from the Mac, so their failures say so. */
+fun updateFailure(failure: Throwable) = when (failure) {
+    is javax.net.ssl.SSLHandshakeException, is javax.net.ssl.SSLPeerUnverifiedException -> "GitHub's secure connection could not be verified."
+    is java.net.SocketTimeoutException -> "GitHub took too long to answer. Try again."
+    is java.net.UnknownHostException, is java.net.ConnectException, is java.net.NoRouteToHostException -> "Can't reach GitHub. Check this phone's internet connection."
+    is java.io.IOException -> "The download was interrupted. Try again."
+    else -> failure.message?.takeIf { it.isNotBlank() } ?: "Something went wrong. Try again."
+}
+
 private val VersionPattern = Regex("""v?(\d+)\.(\d+)\.(\d+)""")
 fun parseVersion(value: String) = VersionPattern.matchEntire(value.trim())?.destructured?.let { (major, minor, patch) ->
     VersionParts(major.toIntOrNull() ?: return@let null, minor.toIntOrNull() ?: return@let null, patch.toIntOrNull() ?: return@let null)
@@ -153,7 +162,7 @@ internal fun recoverUpdate(record: String, dir: File, waiting: Boolean, installe
         status.copy(message = "Update ready to install.", apkPath = apk.absolutePath, waitingForPermission = waiting)
     }.getOrElse { failure ->
         apk.delete()
-        status.copy(message = "${failureReason(failure)} Download again.")
+        status.copy(message = "${updateFailure(failure)} Download again.")
     }
 }
 
@@ -322,7 +331,7 @@ class UpdateModel(private val context: Context, private val scope: CoroutineScop
         busy = true
         scope.launch {
             try { block() } catch (cancelled: CancellationException) { throw cancelled }
-            catch (failure: Exception) { status = status.copy(message = failureReason(failure)) }
+            catch (failure: Exception) { status = status.copy(message = updateFailure(failure)) }
             finally { readyFileStamp = fileStamp(); busy = false }
         }
     }

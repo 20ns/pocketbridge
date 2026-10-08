@@ -93,11 +93,15 @@ import androidx.compose.ui.unit.dp
     }
 }
 
-/** Only a problem is worth a word. Connected stays silent; connecting and offline get a small labelled pill. */
+/** Only a problem is worth a word. Connected stays silent; connecting, a reconnect and offline get a small labelled pill. */
 @Composable fun ConnectionDot(model: BridgeModel) {
     if (model.online) return
     val colors = MaterialTheme.colorScheme
-    val (label, dot) = if (model.connectionIssue.isEmpty()) "Connecting" to colors.outline else "Offline" to colors.error
+    val (label, dot) = when {
+        model.connectionIssue.isNotEmpty() -> "Offline" to colors.error
+        model.wasOnline -> "Reconnecting" to colors.outline
+        else -> "Connecting" to colors.outline
+    }
     Surface(shape = CircleShape, color = colors.surfaceContainerHigh, modifier = Modifier.semantics(mergeDescendants = true) { liveRegion = LiveRegionMode.Polite }) {
         Row(Modifier.padding(horizontal = Spacing.sm + Spacing.xxs, vertical = Spacing.xs), verticalAlignment = Alignment.CenterVertically) {
             Box(Modifier.size(7.dp).background(dot, CircleShape))
@@ -118,9 +122,11 @@ import androidx.compose.ui.unit.dp
         Row(Modifier.padding(start = Spacing.lg, end = Spacing.sm, top = Spacing.md, bottom = Spacing.md).semantics { liveRegion = LiveRegionMode.Polite }, verticalAlignment = Alignment.CenterVertically) {
             Icon(PocketIcons.Error, null, Modifier.size(20.dp), tint = if (revoked) colors.onErrorContainer else colors.error)
             Column(Modifier.weight(1f).padding(horizontal = Spacing.md), verticalArrangement = Arrangement.spacedBy(Spacing.xxs)) {
-                Text(if (revoked) "Pairing removed" else "Can't reach your Mac", style = MaterialTheme.typography.titleSmall)
+                val phoneOffline = model.connectionIssue == NO_NETWORK
+                Text(if (revoked) "Pairing removed" else if (phoneOffline) "No internet connection" else "Can't reach your Mac", style = MaterialTheme.typography.titleSmall)
                 Text(
-                    if (revoked) model.connectionIssue else model.connectionIssue.removePrefix("Can't reach your Mac. ") + if (saved) " Showing saved copies." else "",
+                    if (revoked) model.connectionIssue
+                    else (if (phoneOffline) "Reconnects when this phone is back online." else model.connectionIssue.removePrefix("Can't reach your Mac. ")) + if (saved) " Showing saved copies." else "",
                     style = MaterialTheme.typography.bodySmall, color = if (revoked) colors.onErrorContainer else colors.onSurfaceVariant,
                 )
             }

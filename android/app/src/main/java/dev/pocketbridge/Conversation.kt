@@ -286,7 +286,7 @@ private const val PROMPT_LINES = 8
 
 /** A prompt whose delivery the Mac hasn't confirmed. Retry reuses its ID, so it can never run twice. */
 @Composable private fun Unconfirmed(prompt: PendingPrompt?, model: BridgeModel, onImage: (List<String>, Int) -> Unit, modifier: Modifier = Modifier) {
-    val sending = model.busy
+    val sending = model.isSending
     val colors = MaterialTheme.colorScheme
     Column(modifier.fillMaxWidth(), horizontalAlignment = Alignment.End, verticalArrangement = Arrangement.spacedBy(Spacing.xs)) {
         prompt?.let { UserMessage(model, Said(it.id, "user", it.text, attachments = it.attachments), onImage, Modifier.graphicsLayer { alpha = if (sending) 0.7f else 1f }) }

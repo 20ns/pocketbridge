@@ -17,7 +17,8 @@ import okhttp3.MediaType.Companion.toMediaType
 import org.json.JSONArray
 import org.json.JSONObject
 
-class ApiError(val status: Int, message: String) : IOException(message) {
+/** [fromMac]: the PocketBridge service wrote the error itself, so its handling of the request is over (a proxy's bare 502 says nothing of that). */
+class ApiError(val status: Int, message: String, val fromMac: Boolean = false) : IOException(message) {
     val definitiveRejection get() = status in 400..499 && status != 408
 }
 
@@ -26,7 +27,7 @@ internal fun rejection(status: Int, error: String?, fallback: String) = ApiError
     // Tailscale Serve answers for the Mac when the service behind it is down or restarting.
     502, 503, 504 -> "Your Mac is reachable, but PocketBridge isn't answering on it. It restarts on its own; check the Mac if this lasts."
     else -> fallback
-})
+}, fromMac = !error.isNullOrBlank())
 
 fun normalizeServer(input: String, allowLocalHttp: Boolean = BuildConfig.DEBUG): String {
     val uri = URI(input.trim())
@@ -157,11 +158,3 @@ data class PendingPrompt(
 
 const val STEER = "steer"
 const val INTERRUPT = "interrupt"
-
-/** SSE IDs are only committed after the snapshot has been successfully reconciled. */
-class EventCursor(var committed: Long = 0) {
-    var observed: Long = committed
-        private set
-    fun observe(line: String) { if (line.startsWith("id:")) line.drop(3).trim().toLongOrNull()?.let { observed = maxOf(observed, it) } }
-    fun commit(snapshotSequence: Long) { committed = maxOf(committed, snapshotSequence) }
-}
