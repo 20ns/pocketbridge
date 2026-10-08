@@ -371,8 +371,6 @@ class BridgeModel(application: Application) : AndroidViewModel(application) {
         if (!active) { writeTranscripts(flush = true); flushDraft() }
         foreground = active; Alerts.foreground = active
         if (active) freshState = false
-        // The chat on screen is being looked at: its finished or question notification has done its job.
-        if (active && selected.isNotEmpty()) Alerts.dismiss(getApplication(), selected)
         if (active && paired) start() else if (!active) stopConnection()
     }
     private fun stopConnection() { session?.cancel(); session = null; attempt = null; online = false; wasOnline = false }
@@ -836,6 +834,8 @@ class BridgeModel(application: Application) : AndroidViewModel(application) {
     fun requestNewChat() { if (paired) { if (selected.isNotEmpty()) open(""); newChatRequested = true } }
     fun newChatShown() { newChatRequested = false }
     fun chatShown() { showChat = false }
+    /** The open chat is on screen: its finished or question notification has done its job. */
+    fun chatSeen() { if (selected.isNotEmpty()) Alerts.dismiss(getApplication(), selected) }
 
     /** Settings for this phone's lists (filters, sorts, the open project); they go with the pairing. */
     fun uiSetting(key: String) = store.get("ui:$key")
@@ -881,6 +881,7 @@ class BridgeModel(application: Application) : AndroidViewModel(application) {
      */
     private suspend fun deleteUnlisted(id: String) {
         val currentApi = api ?: return
+        val removalSession = store.session()
         try { withContext(Dispatchers.IO) { currentApi.request("/api/chats/$id/delete", JSONObject()) } }
         catch (failure: ApiError) {
             if (api !== currentApi) return
@@ -891,6 +892,9 @@ class BridgeModel(application: Application) : AndroidViewModel(application) {
         }
         catch (lost: java.io.IOException) { return }
         if (api !== currentApi) return
+        // A state read meanwhile may have listed it (its first prompt landed): that row and its cache go too.
+        orNull { withContext(Dispatchers.IO) { store.commitChatRemoval(id, removalSession) } }
+        chats = chats.filter { it.optString("id") != id }
         removeDraft(id); forgetDeletion(id)
     }
     /**

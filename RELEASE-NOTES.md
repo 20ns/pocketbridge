@@ -1,3 +1,15 @@
+PocketBridge 0.9.1
+
+- Reconnects as soon as the phone has a network again (airplane mode off, Wi-Fi to mobile data, Tailscale back on) instead of waiting out a retry delay. Short outages show a quiet "Reconnecting"; the banner only appears if it lasts, and says whether there's no internet, the Mac is asleep, or PocketBridge isn't running on it.
+- A message whose answer was lost is checked with the Mac after reconnecting and resent automatically with the same delivery ID, so it never runs twice. Steers and Send now keep the manual Retry.
+- Background alerts keep going through long outages, restarts, reboots and app updates, and the working notification shows "Reconnecting to your Mac" while it's out of reach. Prompts scheduled for a limit reset now alert when they finish.
+- Questions and approvals no longer get denied when you take more than 5 minutes to answer.
+- Stop and approvals work while a send is still waiting on the Mac. Rotating the screen no longer reconnects.
+- The Mac keeps itself from idle sleep while a turn runs, also on battery (a closed lid still sleeps), and a service restart no longer reports "Stopped by you".
+- In the Mac browser, one tab is active at a time; another tab offers Use here.
+
+Update the Mac service too: the 5-minute fix, keep-awake, safer deletes and pairing retries need it. Install the APK over the existing app to preserve pairing.
+
 PocketBridge 0.9.0
 
 - Long messages: the message box stops growing at a few lines and scrolls inside, with an expand button for a full-screen editor. Large pastes become a removable "Pasted text · N lines" chip and are kept with the draft. Long prompts in the chat fold with Show more and Copy. The Mac now accepts prompts up to 500,000 characters.

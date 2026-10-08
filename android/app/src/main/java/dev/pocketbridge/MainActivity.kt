@@ -39,6 +39,7 @@ import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.semantics.LiveRegionMode
@@ -130,6 +131,8 @@ private data class Destination(val screen: Screen, val project: String)
         project.isNotEmpty() -> Screen.Chats
         else -> Screen.Projects
     }
+    // Coming back to the open chat (not to Settings over it) clears its notification.
+    LifecycleResumeEffect(screen, model.selected) { if (screen == Screen.Chat) model.chatSeen(); onPauseOrDispose {} }
     val back: () -> Unit = {
         when (screen) {
             Screen.Settings -> settings = false

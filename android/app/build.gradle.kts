@@ -4,7 +4,7 @@ android {
     compileSdk = 36
     useLibrary("android.test.runner", false)
     useLibrary("android.test.base", false)
-    defaultConfig { applicationId = "dev.pocketbridge"; minSdk = 26; targetSdk = 36; versionCode = 19; versionName = "0.9.0" }
+    defaultConfig { applicationId = "dev.pocketbridge"; minSdk = 26; targetSdk = 36; versionCode = 20; versionName = "0.9.1" }
     defaultConfig.testInstrumentationRunnerArguments["class"] = "dev.pocketbridge.ImageOrientationTest,dev.pocketbridge.ConnectionStateTest,dev.pocketbridge.HttpsConnectionTest"
     val signingKey = System.getenv("POCKETBRIDGE_SIGNING_KEY")
     if (!signingKey.isNullOrBlank()) {
