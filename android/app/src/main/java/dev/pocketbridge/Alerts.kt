@@ -94,7 +94,7 @@ fun approvalOutcome(messages: JSONObject?, approval: String): String? {
     }
 }
 
-fun endedLabel(status: String) = when (status) { "error" -> "Failed"; "interrupted" -> "Stopped"; else -> "Done" }
+fun endedLabel(status: String) = when (status) { "error" -> "Failed"; "interrupted" -> "Interrupted"; else -> "Done" }
 
 /** A grace period for late acceptance, never a new execution attempt. Saved pending IDs remain available for Retry. */
 data class DeliveryWatch(val promptId: String, val until: Long)

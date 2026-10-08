@@ -371,6 +371,8 @@ class BridgeModel(application: Application) : AndroidViewModel(application) {
         if (!active) { writeTranscripts(flush = true); flushDraft() }
         foreground = active; Alerts.foreground = active
         if (active) freshState = false
+        // The chat on screen is being looked at: its finished or question notification has done its job.
+        if (active && selected.isNotEmpty()) Alerts.dismiss(getApplication(), selected)
         if (active && paired) start() else if (!active) stopConnection()
     }
     private fun stopConnection() { session?.cancel(); session = null; attempt = null; online = false; wasOnline = false }

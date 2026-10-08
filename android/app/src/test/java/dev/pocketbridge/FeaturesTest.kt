@@ -210,7 +210,7 @@ class FeaturesTest {
         assertTrue(alertEvents(previous, current, viewing = "a").none { it.chat.id == "a" })
         // A chat never seen working can't have finished.
         assertTrue(alertEvents(emptyMap(), listOf(status("x", "idle")), "").isEmpty())
-        assertEquals(listOf("Done", "Failed", "Stopped"), listOf("idle", "error", "interrupted").map(::endedLabel))
+        assertEquals(listOf("Done", "Failed", "Interrupted"), listOf("idle", "error", "interrupted").map(::endedLabel))
     }
 
     @Test fun `a notification answer is judged by the Mac's record before its actions come back`() {
