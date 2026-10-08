@@ -18,8 +18,9 @@ export function createRoutes(ctx) {
   const { stop, message } = runs;
   const uploadsDir = join(dataDir, 'uploads'); mkdirSync(uploadsDir, { recursive: true, mode: 0o700 });
   const uploadPath = row => join(uploadsDir, `${row.id}.${imageExtensions[row.type]}`);
-  const pairAttempts = new Map();
-  let latestPair;
+  const pairAttempts = new Map(), loggedHosts = new Set();
+  // usedPair keeps the last exchange's token in memory, so the same attempt can fetch an answer it lost.
+  let latestPair, usedPair;
   const schedules = ctx.schedules = createSchedules(ctx, uploadPath);
   const deliver = createPrompts(ctx, uploadPath);
   // Transcripts are mostly text; gzip keeps phone refreshes small over Tailscale.
@@ -51,7 +52,11 @@ export function createRoutes(ctx) {
       if (ctx.closed) throw fail(503, 'Mac service is shutting down');
       const port = ctx.server.address().port, localUrl = ctx.localUrl, publicUrl = ctx.publicUrl;
       const allowedHosts = new Set([new URL(localUrl).host, `localhost:${port}`, `10.0.2.2:${port}`, new URL(publicUrl).host]);
-      if (!allowedHosts.has(request.headers.host)) throw fail(403, 'Unknown host');
+      if (!allowedHosts.has(request.headers.host)) {
+        const host = String(request.headers.host ?? '').slice(0, 200);
+        if (!loggedHosts.has(host) && loggedHosts.size < 20) { loggedHosts.add(host); console.error(`Rejected a request for unknown host ${JSON.stringify(host)}. If that is this Mac's private address, run "Setup private connection" again.`); }
+        throw fail(403, 'Unknown host');
+      }
       if (request.headers.origin && ![localUrl, localUrl.replace('127.0.0.1', 'localhost'), publicUrl].includes(request.headers.origin)) throw fail(403, 'Unknown origin');
       const url = new URL(request.url, localUrl), route = url.pathname, bearer = request.headers.authorization?.replace(/^Bearer /, '');
       if (route === '/internal/approval' && request.method === 'POST') {
@@ -77,13 +82,19 @@ export function createRoutes(ctx) {
         const key = request.socket.remoteAddress, attempt = pairAttempts.get(key) ?? { count: 0, until: Date.now() + 60_000 };
         if (attempt.until < Date.now()) { attempt.count = 0; attempt.until = Date.now() + 60_000; } attempt.count++; pairAttempts.set(key, attempt);
         if (attempt.count > 10) throw fail(429, 'Too many pairing attempts; wait a minute');
-        const input = await body(request);
-        if (!latestPair || latestPair.expiresAt < Date.now() || !equal(typeof input.code === 'string' ? input.code.toUpperCase() : undefined, latestPair.code)) throw fail(401, 'Pairing code is invalid or expired');
-        latestPair = undefined; const token = secret(); run('INSERT INTO tokens VALUES (?,?)', token, Date.now()); return json(response, 200, { token });
+        const input = await body(request), code = typeof input.code === 'string' ? input.code.toUpperCase() : undefined;
+        if (input.attempt != null && !uuid(input.attempt)) throw fail(400, 'attempt must be a UUID for this pairing attempt');
+        // The same attempt asking again gets its token again until the code would have expired; any other finds it used.
+        if (input.attempt && usedPair && usedPair.expiresAt >= Date.now() && equal(code, usedPair.code) && equal(input.attempt.toLowerCase(), usedPair.attempt) && get('SELECT token FROM tokens WHERE token=?', usedPair.token)) return json(response, 200, { token: usedPair.token });
+        if (!latestPair || latestPair.expiresAt < Date.now() || !equal(code, latestPair.code)) throw fail(401, 'Pairing code is invalid or expired');
+        const token = secret(); run('INSERT INTO tokens VALUES (?,?)', token, Date.now());
+        usedPair = input.attempt ? { code: latestPair.code, expiresAt: latestPair.expiresAt, attempt: input.attempt.toLowerCase(), token } : undefined;
+        latestPair = undefined; return json(response, 200, { token });
       }
       if (route.startsWith('/api/')) {
         if (!equal(bearer, ctx.localToken) && !(typeof bearer === 'string' && get('SELECT token FROM tokens WHERE token=?', bearer))) throw fail(401, 'Unauthorized');
-        if (route === '/api/state' && request.method === 'GET') { projects.refreshDiscovery(); projects.refreshIcons(); return json(response, 200, ctx.state()); }
+        // Discovery reads session files; it runs after the answer, and a found folder sends a state event.
+        if (route === '/api/state' && request.method === 'GET') { json(response, 200, ctx.state()); setImmediate(() => { if (!ctx.closed) { projects.refreshDiscovery(); projects.refreshIcons(); } }); return; }
         if (route === '/api/pairing' && request.method === 'GET') return json(response, 200, pairing());
         if (route === '/api/usage' && request.method === 'GET') return json(response, 200, { agents: await agents.usageReport() });
         if (route === '/api/usage/codex/reset' && request.method === 'POST') {
@@ -271,6 +282,8 @@ export function createRoutes(ctx) {
         if (approvalRoute && request.method === 'POST') {
           const id = approvalRoute[1], row = get('SELECT * FROM approvals WHERE id=?', id); if (!row) throw fail(404, 'Approval not found');
           const input = await body(request); if (!['allow', 'deny'].includes(input.decision)) throw fail(400, 'Decision must be allow or deny');
+          // A retry after a lost answer finds its own decision recorded; a different one is too late.
+          if (row.status === input.decision) return json(response, 200, { ok: true });
           if (row.status !== 'pending' || !waiting.has(id)) throw fail(409, 'Approval is no longer pending');
           const toolInput = JSON.parse(row.input);
           if (row.tool === 'AskUserQuestion' && input.decision === 'allow' && (!input.answers || typeof input.answers !== 'object' || Array.isArray(input.answers) || (toolInput.questions ?? []).some(q => typeof input.answers[q.question] !== 'string' || !input.answers[q.question].trim()))) throw fail(400, 'Answer every question before continuing');
@@ -281,8 +294,10 @@ export function createRoutes(ctx) {
         if (route === '/api/events' && request.method === 'GET') {
           const after = Number(url.searchParams.get('after') ?? request.headers['last-event-id'] ?? 0); if (!Number.isSafeInteger(after) || after < 0) throw fail(400, 'Invalid event cursor');
           response.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', Connection: 'keep-alive', 'X-Accel-Buffering': 'no' }); response.write(': connected\n\n');
-          const client = { response, seq: Math.min(after, ctx.lastSeq()), statusOnly: url.searchParams.get('scope') === 'status' }; ctx.clients.add(client); ctx.replay(client);
-          const heartbeat = setInterval(() => { if (!client.replaying) response.write(': keepalive\n\n'); }, 15_000); response.on('close', () => { clearInterval(heartbeat); ctx.clients.delete(client); }); return;
+          // A cursor ahead of this Mac (a replaced database) gets the reset hint, so the client reconciles everything.
+          const client = { response, seq: after > ctx.lastSeq() ? -1 : after, statusOnly: url.searchParams.get('scope') === 'status' }; ctx.clients.add(client); ctx.replay(client);
+          // Replay bounds its own waits; a peer that hasn't taken earlier keepalives in 15 seconds is dropped.
+          const heartbeat = setInterval(() => { if (client.replaying) return; if (response.writableNeedDrain) response.destroy(); else response.write(': keepalive\n\n'); }, 15_000); response.on('close', () => { clearInterval(heartbeat); ctx.clients.delete(client); }); return;
         }
         throw fail(404, 'Route not found');
       }

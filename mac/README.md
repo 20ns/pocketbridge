@@ -37,6 +37,8 @@ When rebuilding from source, copy `android/app/build/outputs/apk/release/app-rel
 
 If you already configured private Serve, you can save its address with `mac/scripts/configure-url.sh https://your-mac.your-tailnet.ts.net` from the project root, then restart PocketBridge.
 
+Serve forwards to the port it was set up with. If you change `port` in `config.json`, run **Setup private connection** again; until then the phone reaches the old port and cannot connect. The service refuses requests for an address it doesn't know and notes the first one in `service-error.log`; running setup again fixes that too.
+
 The app stores its connection until you clear its data or revoke its token. The short-lived pairing code is used once. Claude login is independent and may need renewal. Tailscale device key expiry can be disabled for your own two devices if you want to avoid scheduled reconnection. Keep the Mac connected to power, online, awake and logged in with its lid open.
 
 ## Lock from the phone
@@ -65,7 +67,7 @@ The service normally saves data in `~/Library/Application Support/PocketBridge`.
 }
 ```
 
-With `keepAwake` enabled, `caffeinate -s` prevents system sleep while on AC power. Set it to `false` and restart to turn this off. It does not bypass a closed lid. `POCKETBRIDGE_DATA_DIR`, `POCKETBRIDGE_PUBLIC_URL`, `POCKETBRIDGE_CLAUDE_PATH`, `POCKETBRIDGE_CODEX_PATH`, `POCKETBRIDGE_PORT`, `POCKETBRIDGE_CLAUDE_PROJECTS_DIR` and `POCKETBRIDGE_CODEX_SESSIONS_DIR` environment variables override the corresponding settings. The projects directories default to `~/.claude/projects` and `~/.codex/sessions`.
+With `keepAwake` enabled, `caffeinate -s` prevents system sleep while on AC power, and each running chat holds off idle sleep with `caffeinate -i` until its CLI exits, on battery too. Set it to `false` and restart to turn both off. Neither bypasses a closed lid: closing the lid still sleeps the Mac and pauses running work. `POCKETBRIDGE_DATA_DIR`, `POCKETBRIDGE_PUBLIC_URL`, `POCKETBRIDGE_CLAUDE_PATH`, `POCKETBRIDGE_CODEX_PATH`, `POCKETBRIDGE_PORT`, `POCKETBRIDGE_CLAUDE_PROJECTS_DIR` and `POCKETBRIDGE_CODEX_SESSIONS_DIR` environment variables override the corresponding settings. The projects directories default to `~/.claude/projects` and `~/.codex/sessions`.
 
 Lifecycle logs are `service.log` and `service-error.log`. On startup, logs larger than 5 MB move to a single `.previous` file. Chat text is kept in SQLite and Claude's conversation files, not copied into those logs.
 

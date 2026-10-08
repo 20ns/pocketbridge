@@ -18,6 +18,7 @@ for (const [key,value] of Object.entries({
   POCKETBRIDGE_CLAUDE_PATH:config.claudePath,
   POCKETBRIDGE_CODEX_PATH:config.codexPath,
   POCKETBRIDGE_PORT:config.port,
+  POCKETBRIDGE_KEEP_AWAKE:config.keepAwake === false ? '0' : undefined,
 })) if (value !== undefined && !process.env[key]) process.env[key] = String(value);
 
 // ponytail: rotate on startup; ongoing service logging contains lifecycle errors, not chat events.
@@ -31,6 +32,8 @@ if (config.keepAwake !== false) {
   awake.on('error', error => console.error(`Keep-awake unavailable: ${error.message}`));
   process.on('exit', () => awake.kill());
 }
+// A stray promise rejection is logged; it must not take every running chat down with the service.
+process.on('unhandledRejection', error => console.error(`Unhandled rejection: ${error?.stack ?? error}`));
 const {createService} = await import('../service/server.mjs');
 const service = await createService();
 const pidFile = join(data,'service.pid');

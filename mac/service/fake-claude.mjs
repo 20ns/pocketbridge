@@ -51,6 +51,11 @@ async function run(message) {
     spawn(process.execPath, ['-e', 'setTimeout(()=>{},2000)'], { stdio: ['ignore', 'inherit', 'inherit'] });
     writeFileSync('closing.pid', String(process.pid)); result('Done'); process.exit(0);
   }
+  if (prompt === 'pipe-holder') {
+    // A tool process that keeps stdout and stderr open long after the CLI exits.
+    const holder = spawn(process.execPath, ['-e', 'setInterval(()=>{},1000)'], { stdio: ['ignore', 'inherit', 'inherit'] });
+    writeFileSync('child.pid', String(holder.pid)); result('Done'); process.exit(0);
+  }
   if (prompt === 'thinking' || prompt === 'thinking-background') {
     emit({ type: 'stream_event', event: { type: 'message_start', message: { id: 'thought-1' } } });
     emit({ type: 'stream_event', event: { type: 'content_block_start', index: 0, content_block: { type: 'thinking', thinking: '' } } });

@@ -1,13 +1,19 @@
 // Official CLI permission host and question hook. No Claude credentials cross this bridge.
+import http from 'node:http';
 import { createInterface } from 'node:readline';
+// Not fetch: its headers timeout (300s) would deny a question nobody answered within five minutes, though the hook
+// may wait a day. node:http with no agent applies no timeout; the request lasts until the Mac answers.
+const post = (url, payload) => new Promise((resolvePost, reject) => {
+  const data = JSON.stringify(payload);
+  const request = http.request(url, { method: 'POST', agent: false, headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(data), Authorization: `Bearer ${process.env.POCKETBRIDGE_INTERNAL_TOKEN}` } }, response => {
+    let text = ''; response.setEncoding('utf8'); response.on('data', chunk => text += chunk); response.on('error', reject);
+    response.on('end', () => { try { if (response.statusCode !== 200) throw new Error(); resolvePost(JSON.parse(text)); } catch (error) { reject(error); } });
+  });
+  request.on('error', reject); request.end(data);
+});
 async function decision(input) {
   try {
-    const response = await fetch(`${process.env.POCKETBRIDGE_INTERNAL_URL}/internal/approval`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${process.env.POCKETBRIDGE_INTERNAL_TOKEN}` },
-      body: JSON.stringify({ chatId: process.env.POCKETBRIDGE_CHAT_ID, tool: input.tool_name, input: input.tool_input ?? input.input ?? {} }),
-    });
-    if (!response.ok) throw new Error();
-    return await response.json();
+    return await post(`${process.env.POCKETBRIDGE_INTERNAL_URL}/internal/approval`, { chatId: process.env.POCKETBRIDGE_CHAT_ID, tool: input.tool_name, input: input.tool_input ?? input.input ?? {} });
   } catch { return { behavior: 'deny', message: 'Permission connection lost. Reconnect and send another prompt.' }; }
 }
 if (process.argv.includes('--hook')) {

@@ -10,7 +10,7 @@ import { agentIds, agentModes } from './agents.mjs';
 import { openDatabase } from './database.mjs';
 import { createAgents, legacyModels, legacyEfforts } from './catalogs.mjs';
 import { createProjects } from './projects.mjs';
-import { createRuns } from './runs.mjs';
+import { createRuns, restarted } from './runs.mjs';
 import { createRoutes } from './routes.mjs';
 import { createScreen, macScreen } from './screen.mjs';
 import { secret, fail, plainText, pause, processStamp, terminateGroup } from './util.mjs';
@@ -41,6 +41,11 @@ export async function createService(options = {}) {
   ctx.publicUrl = publicUrl;
 
   const lastSeq = ctx.lastSeq = () => Number(get("SELECT seq FROM sqlite_sequence WHERE name='events'")?.seq ?? 0);
+  // A peer that stops reading must not hold a stream and its buffer forever: drop it, and it reconnects with its cursor.
+  const afterDrain = (client, next) => {
+    const deadline = setTimeout(() => client.response.destroy(), options.drainTimeoutMs ?? 60_000); deadline.unref();
+    client.response.once('drain', () => { clearTimeout(deadline); next(); });
+  };
   ctx.replay = client => {
     if (ctx.closed || client.replaying || client.response.destroyed || client.response.writableEnded) return;
     client.replaying = true;
@@ -51,7 +56,7 @@ export async function createService(options = {}) {
       if (client.seq < (first ?? lastSeq() + 1) - 1) {
         const event = { seq: lastSeq(), chatId: null, type: 'state', reset: true };
         const ready = client.response.write(`id: ${event.seq}\nevent: change\ndata: ${JSON.stringify(event)}\n\n`); client.seq = event.seq;
-        if (!ready) { client.response.once('drain', batch); return; }
+        if (!ready) { afterDrain(client, batch); return; }
       }
       const events = all('SELECT * FROM events WHERE seq>? ORDER BY seq LIMIT 128', client.seq);
       for (const event of events) {
@@ -59,7 +64,7 @@ export async function createService(options = {}) {
         // hints instead; full streams already see those steps as message events.
         if (event.type === (client.statusOnly ? 'message' : 'step')) { client.seq = event.seq; continue; }
         const ready = client.response.write(`id: ${event.seq}\nevent: change\ndata: ${JSON.stringify(event)}\n\n`); client.seq = event.seq;
-        if (!ready) { client.response.once('drain', batch); return; }
+        if (!ready) { afterDrain(client, batch); return; }
       }
       if (events.length === 128) setImmediate(batch);
       else client.replaying = false;
@@ -133,7 +138,7 @@ export async function createService(options = {}) {
     run('DELETE FROM runtimes');
     run('UPDATE chats SET thinking=NULL');
     for (const row of all("SELECT id FROM chats WHERE status IN ('running','stopping','waiting')")) {
-      status(row.id, 'interrupted', 'Mac service restarted during this task. Review the conversation before continuing.');
+      status(row.id, 'interrupted', restarted);
       run("UPDATE approvals SET status='deny' WHERE chatId=? AND status='pending'", row.id);
       // Its turn and any sub-agents ended with the old process; nothing should keep ticking.
       run("UPDATE subagents SET status='stopped',endedAt=? WHERE chatId=? AND status='running'", Date.now(), row.id);
@@ -149,7 +154,9 @@ export async function createService(options = {}) {
   // Tests never reach the real screen: they lock a fake or nothing.
   const screen = ctx.screen = createScreen(ctx, options.screen !== undefined ? options.screen : testing || process.platform !== 'darwin' ? null : macScreen, { settleMs: options.screenSettleMs });
   const server = ctx.server = http.createServer(createRoutes(ctx));
-  server.requestTimeout = 30_000; server.headersTimeout = 20_000;
+  // Slow links get two minutes for a full upload. Idle connections outlive Tailscale Serve's (Go's default is 90s),
+  // so Serve never reuses one Node is closing (a spurious 502). Node 22 times headers from a request's first byte.
+  server.requestTimeout = 120_000; server.headersTimeout = 20_000; server.keepAliveTimeout = 120_000;
   try {
     await new Promise((resolveListening, reject) => { server.once('error', reject); server.listen(options.port ?? Number(process.env.POCKETBRIDGE_PORT ?? 8787), options.host ?? '127.0.0.1', resolveListening); });
   } catch (error) { ctx.closed = true; ctx.probes.abort(); screen.close(); projects.close(); clearTimeout(eventTimer); releaseOwner(); db.close(); throw error; }
@@ -159,8 +166,10 @@ export async function createService(options = {}) {
   ctx.schedules.wake();
   let closePromise;
   const close = () => closePromise ??= (async () => {
-    ctx.closed = true; ctx.probes.abort(); ctx.schedules.close(); for (const id of ctx.active.keys()) ctx.runs.stop(id);
-    while (ctx.active.size) await pause(20);
+    ctx.closed = true; ctx.probes.abort(); ctx.schedules.close(); for (const id of ctx.active.keys()) ctx.runs.stop(id, 'shutdown');
+    // Bounded: a run that never finishes is marked interrupted by the next startup instead.
+    const until = Date.now() + (options.shutdownWaitMs ?? 15_000);
+    while (ctx.active.size && Date.now() < until) await pause(20);
     screen.close(); await projects.close(); clearTimeout(eventTimer);
     for (const client of ctx.clients) client.response.end();
     await new Promise(resolveClosed => {
@@ -172,6 +181,7 @@ export async function createService(options = {}) {
   return { server, url: ctx.localUrl, publicUrl: ctx.publicUrl, close, state, ready: catalogsReady };
 }
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  process.on('unhandledRejection', error => console.error(`Unhandled rejection: ${error?.stack ?? error}`));
   const service = await createService(); console.log(`PocketBridge listening on ${service.url}`);
   for (const signal of ['SIGINT', 'SIGTERM']) process.once(signal, async () => { await service.close(); process.exit(0); });
 }
