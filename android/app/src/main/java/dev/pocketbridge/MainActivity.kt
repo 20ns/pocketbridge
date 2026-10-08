@@ -183,7 +183,9 @@ private data class Destination(val screen: Screen, val project: String)
     // One image viewer over every screen, opened from prompts and the composer.
     var viewer by remember { mutableStateOf<Pair<List<String>, Int>?>(null) }
     LaunchedEffect(model.selected) { viewer = null }
-    CompositionLocalProvider(LocalImageViewer provides { ids, index -> viewer = ids to index }) {
+    // The composer's message or one of its pastes, full screen. It belongs to the open chat and closes with it.
+    var editing by rememberSaveable(model.selected) { mutableStateOf<String?>(null) }
+    CompositionLocalProvider(LocalImageViewer provides { ids, index -> viewer = ids to index }, LocalTextEditor provides { editing = it }) {
     Box(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.surfaceContainerHighest)) {
         AnimatedContent(
             Destination(screen, project),
@@ -260,6 +262,7 @@ private data class Destination(val screen: Screen, val project: String)
                 }
             }
         }
+        editing?.let { TextEditor(model, snackbar, it) { editing = null } }
         viewer?.let { (ids, index) -> ImageViewer(model, ids, index) { viewer = null } }
     }
     }

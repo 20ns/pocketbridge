@@ -4,6 +4,9 @@ import { existsSync, statSync } from 'node:fs';
 import { agentIds, agentNames } from './agents.mjs';
 import { fail, text, listed, uuid, terminateGroup } from './util.mjs';
 
+/** Long pastes are welcome; 500,000 characters is about as much as a model's context can take in one prompt. */
+export const MAX_PROMPT = 500_000;
+
 export function createPrompts(ctx, uploadPath) {
   const { get, run, transaction, change, status, active, agents, runs } = ctx;
   const { available, enabled } = agents;
@@ -15,7 +18,8 @@ export function createPrompts(ctx, uploadPath) {
     if (!Array.isArray(attachmentIds) || attachmentIds.length > 8 || attachmentIds.some(item => typeof item !== 'string' || !uuid(item))) throw fail(400, 'Attachments must be up to 8 upload ids');
     // A screenshot alone is a complete prompt; the agent gets a plain instruction to look at it.
     const imageOnly = attachmentIds.length > 0 && typeof input.text === 'string' && !input.text.trim();
-    const promptId = text(input.id, 'prompt id', 128), prompt = imageOnly ? (attachmentIds.length === 1 ? 'Look at the attached image.' : 'Look at the attached images.') : text(input.text, 'prompt');
+    if (typeof input.text === 'string' && input.text.length > MAX_PROMPT) throw fail(400, `Prompt is too long: ${input.text.length.toLocaleString('en-US')} characters, the limit is ${MAX_PROMPT.toLocaleString('en-US')}`);
+    const promptId = text(input.id, 'prompt id', 128), prompt = imageOnly ? (attachmentIds.length === 1 ? 'Look at the attached image.' : 'Look at the attached images.') : text(input.text, 'prompt', MAX_PROMPT);
     // A retry is judged on the recorded payload alone, so a later catalog change cannot turn it into a new turn.
     const recorded = () => get('SELECT * FROM prompts WHERE id=?', promptId);
     const duplicate = previous => {

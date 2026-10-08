@@ -62,10 +62,16 @@ async function openImage(id) {
 }
 $('viewer').onclick = () => $('viewer').close();
 
+// Long prompts fold to a few lines. Unfolded ones stay open when the transcript redraws.
+const unfolded = new Set();
+const longPrompt = text => text.length > 1200 || text.split('\n', 13).length > 12;
+
 function renderMessage(message, author, copyable, worked) {
   const article = el('article', `message ${message.role}${message.kind === 'imported' ? ' imported' : ''}`);
   const body = el('div', 'message-body');
   if (message.role === 'user') body.textContent = message.text; else body.append(markdown(message.text));
+  const long = message.role === 'user' && longPrompt(message.text);
+  if (long) body.classList.toggle('folded', !unfolded.has(message.id));
   const label = el('div', 'message-label', message.role === 'user' ? 'You' : author);
   if (message.kind === 'steer' || message.kind === 'interrupt') label.append(el('span', 'message-kind', message.kind === 'steer' ? 'Steered' : 'Sent now'));
   article.append(label);
@@ -75,9 +81,10 @@ function renderMessage(message, author, copyable, worked) {
     article.append(strip);
   }
   article.append(body);
-  if (copyable || worked) {
+  if (copyable || worked || long) {
     const footer = el('div', 'message-footer');
-    if (copyable) { const copy = el('button', 'quiet small copy-reply', 'Copy'); copy.type = 'button'; copy.dataset.text = message.text; footer.append(copy); }
+    if (long) { const more = el('button', 'quiet small show-more', unfolded.has(message.id) ? 'Show less' : 'Show more'); more.type = 'button'; more.dataset.id = message.id; footer.append(more); }
+    if (copyable || long) { const copy = el('button', 'quiet small copy-reply', 'Copy'); copy.type = 'button'; copy.dataset.text = message.text; footer.append(copy); }
     if (worked) footer.append(el('span', 'worked', `Worked ${elapsedLabel(worked)}`));
     article.append(footer);
   }
@@ -314,6 +321,13 @@ $('delete').onclick = async () => {
 };
 
 $('messages').addEventListener('click', async event => {
+  const more = event.target.closest('.show-more');
+  if (more) {
+    const open = !unfolded.delete(more.dataset.id); if (open) unfolded.add(more.dataset.id);
+    more.closest('.message').querySelector('.message-body').classList.toggle('folded', !open);
+    more.textContent = open ? 'Show less' : 'Show more';
+    return;
+  }
   const button = event.target.closest('.copy-code, .copy-reply'); if (!button) return;
   const text = button.classList.contains('copy-reply') ? button.dataset.text : button.closest('.code-block').querySelector('code').textContent;
   try { await navigator.clipboard.writeText(text); button.textContent = 'Copied'; setTimeout(() => { button.textContent = 'Copy'; }, 1500); }

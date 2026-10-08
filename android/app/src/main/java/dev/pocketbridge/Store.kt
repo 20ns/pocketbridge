@@ -21,6 +21,11 @@ class Store internal constructor(private val prefs: SharedPreferences) {
     fun get(key: String) = prefs.getString(key, "").orEmpty()
     fun localDraftIds() = prefs.all.keys.mapNotNull { key -> key.removePrefix("draftChat:").takeIf { key.startsWith("draftChat:") && it.isNotEmpty() } }
     fun put(key: String, value: String) = synchronized(prefs) { prefs.edit().putString(key, value).apply() }
+    /** The composer's typed text and pasted blocks for chat [id], in one write. */
+    fun saveDraft(id: String, text: String, pastes: List<Paste>) = synchronized(prefs) {
+        prefs.edit().putString("draft:$id", text).apply { if (pastes.isEmpty()) remove("pastes:$id") else putString("pastes:$id", encodePastes(pastes)) }.apply()
+    }
+    fun pastes(id: String) = decodePastes(get("pastes:$id"))
     fun remove(key: String) = synchronized(prefs) { prefs.edit().remove(key).apply() }
     fun removePrefixed(prefix: String) {
         val keys = prefs.all.keys.filter { it.startsWith(prefix) }
@@ -51,7 +56,7 @@ class Store internal constructor(private val prefs: SharedPreferences) {
         requireSession(session)
         if (runCatching { PendingPrompt.parse(get("pending:$id")).id }.getOrNull() != prompt.id) return@synchronized false
         val edit = prefs.edit().remove("pending:$id").remove("watch:$id")
-        if (accepted && get("draft:$id").trim() == prompt.text) edit.remove("draft:$id")
+        if (accepted && promptText(get("draft:$id"), pastes(id)) == prompt.text) edit.remove("draft:$id").remove("pastes:$id")
         if (accepted) edit.remove("draftChat:$id")
         if (accepted) edit.remove("options:$id")
         // Images sent with this prompt leave the composer with it; ones added since stay.
@@ -75,7 +80,7 @@ class Store internal constructor(private val prefs: SharedPreferences) {
         check(edit.commit()) { "Could not save chat deletion." }
     }
     @Synchronized fun removeChat(id: String) { chatRemoval(id).apply() }
-    private fun chatRemoval(id: String) = prefs.edit().remove("messages:$id").remove("draft:$id").remove("pending:$id").remove("watch:$id").remove("draftChat:$id").remove("options:$id").remove("attachments:$id")
+    private fun chatRemoval(id: String) = prefs.edit().remove("messages:$id").remove("draft:$id").remove("pending:$id").remove("watch:$id").remove("draftChat:$id").remove("options:$id").remove("attachments:$id").remove("pastes:$id")
     /** Prepared image files some composer still holds, so the outbox can drop the rest. */
     fun attachmentFiles(): Set<String> = prefs.all.filterKeys { it.startsWith("attachments:") }.values.flatMap { decodeAttachments(it as? String ?: "").map(Attachment::file) }.toSet()
     private fun requireSession(session: Int) {

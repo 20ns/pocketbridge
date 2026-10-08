@@ -60,6 +60,20 @@ test('prompt delivery is durable and idempotent; stream chunks reconcile with fi
   assert.ok(calls.every(c => c.args.includes(chat.id) && c.args.includes('--dangerously-skip-permissions')));
 });
 
+test('long pasted prompts are delivered whole, up to a clear limit', async t => {
+  const f = await fixture(t), chat = await f.createChat();
+  // Accented text takes two bytes a character, well past the 200 KB other requests may use.
+  const long = 'Explain this log:\n' + 'ligne é\n'.repeat(40_000);
+  assert.equal((await f.send(chat, long)).status, 202);
+  await f.finished(chat);
+  const messages = (await f.request(`/api/chats/${chat.id}/messages`)).data.messages;
+  assert.equal(messages.find(m => m.role === 'user').text, long.trim());
+  const tooLong = await f.send(chat, 'x'.repeat(500_001));
+  assert.equal(tooLong.status, 400); assert.match(tooLong.data.error, /too long.*500,000/);
+  assert.equal((await f.send(chat, '"'.repeat(1_100_000))).status, 413);
+  assert.equal((await f.request(`/api/chats/${chat.id}/rename`, { title: 'x'.repeat(250_000) })).status, 413);
+});
+
 test('prompt acceptance lookup is read-only, chat-scoped and survives completion, restart and deletion', async t => {
   const f = await fixture(t), chatId = randomUUID(), promptId = randomUUID();
   const lookup = async (chat = chatId, prompt = promptId) => f.request(`/api/chats/${chat}/prompts/${prompt}`);

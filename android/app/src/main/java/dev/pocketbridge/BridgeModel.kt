@@ -109,6 +109,9 @@ class BridgeModel(application: Application) : AndroidViewModel(application) {
     var newChatRequested by mutableStateOf(false); private set
     var selected by mutableStateOf(store.get("selected")); private set
     var draft by mutableStateOf(store.get("draft:$selected")); private set
+    /** Large pastes in the open chat's composer, held as blocks and sent inside the prompt text. */
+    var pastes by mutableStateOf(store.pastes(selected)); private set
+    private var draftSave: Job? = null
     var pending by mutableStateOf(loadPending(selected)); private set
     var pairUrl by mutableStateOf(store.get("base"))
     var pairCode by mutableStateOf("")
@@ -159,7 +162,7 @@ class BridgeModel(application: Application) : AndroidViewModel(application) {
         val pendingId = pending?.id
         if (pendingId != null && pendingId !in Alerts.inFlight && store.get("pending:$selected").isEmpty()) {
             attachmentLists.remove(selected)
-            pending = null; draft = store.get("draft:$selected"); attachments = attachmentsOf(selected); applyOptionsFromSelection()
+            pending = null; loadDraft(selected); attachments = attachmentsOf(selected); applyOptionsFromSelection()
             cleanOutbox()
         }
     }
@@ -181,7 +184,7 @@ class BridgeModel(application: Application) : AndroidViewModel(application) {
     }
     private fun refreshDraftIds() { localDraftIds = store.localDraftIds() }
     private fun discardEmptyDraft(id: String) {
-        if (id.isNotEmpty() && draftChat(id) != null && loadPending(id) == null && store.get("draft:$id").isBlank() && attachmentsOf(id).isEmpty()) {
+        if (id.isNotEmpty() && draftChat(id) != null && loadPending(id) == null && store.get("draft:$id").isBlank() && store.get("pastes:$id").isEmpty() && attachmentsOf(id).isEmpty()) {
             store.removeChat(id)
             refreshDraftIds()
         }
@@ -242,14 +245,31 @@ class BridgeModel(application: Application) : AndroidViewModel(application) {
     }
     fun open(id: String) {
         if (id != selected) writeTranscripts(flush = true)
+        flushDraft()
         if (id != selected) discardEmptyDraft(selected)
         selected = id; store.put("selected", id); Alerts.viewing = id
         if (attachmentLists[id].orEmpty().none { it.preparing || it.state == UploadState.Uploading }) attachmentLists.remove(id)
-        draft = store.get("draft:$id"); pending = loadPending(id); applyOptionsFromSelection(); loadMessages(id); attachments = attachmentsOf(id)
+        loadDraft(id); pending = loadPending(id); applyOptionsFromSelection(); loadMessages(id); attachments = attachmentsOf(id)
         if (id.isNotEmpty()) Alerts.dismiss(getApplication(), id)
         refresh()
     }
-    fun editDraft(text: String) { draft = text; store.put("draft:$selected", text) }
+    private fun loadDraft(id: String) { draft = store.get("draft:$id"); pastes = store.pastes(id) }
+    /** Typing shows at once and saves a moment later, so a long draft isn't rewritten to disk on every key. */
+    fun editDraft(text: String) { draft = text; saveDraftSoon() }
+    fun addPaste(text: String) { if (pending == null && selected.isNotEmpty()) { pastes = pastes + Paste(UUID.randomUUID().toString(), text); saveDraftSoon() } }
+    fun editPaste(key: String, text: String) { if (pending == null && pastes.any { it.key == key }) { pastes = pastes.map { if (it.key == key) it.copy(text = text) else it }; saveDraftSoon() } }
+    fun removePaste(key: String) { if (pending == null && pastes.any { it.key == key }) { pastes = pastes.filter { it.key != key }; saveDraftSoon() } }
+    private fun saveDraftSoon() {
+        val id = selected; val text = draft; val blocks = pastes; val session = store.session()
+        draftSave?.cancel()
+        draftSave = viewModelScope.launch { delay(400); if (store.session() == session) store.saveDraft(id, text, blocks) }
+    }
+    /** Writes a draft still waiting for its save now: before switching chats, sending or leaving the app. */
+    private fun flushDraft() {
+        if (draftSave?.isActive != true) return
+        draftSave?.cancel()
+        if (selected.isNotEmpty()) store.saveDraft(selected, draft, pastes)
+    }
     fun handleLink(uri: Uri?) {
         if (uri?.scheme != "pocketbridge" || uri.host != "pair") return
         if (paired) { error = "Already paired. Disconnect in Settings before changing Macs."; return }
@@ -265,7 +285,7 @@ class BridgeModel(application: Application) : AndroidViewModel(application) {
             Api(base).request("/api/pair", JSONObject().put("code", code)).getString("token").also { store.savePair(base, it, pairingSession) }
         }
         api = Api(base, token); paired = true; pairCode = ""; cursor.committed = 0; connectionIssue = ""; revoked = false
-        projects = emptyList(); chats = emptyList(); messages = emptyList(); approvals = emptyList(); selected = ""; draft = ""; pending = null; localDraftIds = emptyList(); options = ChatOptions("bypassPermissions")
+        projects = emptyList(); chats = emptyList(); messages = emptyList(); approvals = emptyList(); selected = ""; draft = ""; pastes = emptyList(); pending = null; localDraftIds = emptyList(); options = ChatOptions("bypassPermissions")
         forgetPairingData()
         if (foreground) start()
     }
@@ -273,7 +293,7 @@ class BridgeModel(application: Application) : AndroidViewModel(application) {
         // The client goes first so a sync already on the IO thread can't write this pairing's transcript again.
         api = null; actionJob?.cancel(); refreshJob?.cancel(); cachedMessagesJob?.cancel(); stopConnection(); store.clear()
         transcriptClearJob = viewModelScope.launch(Dispatchers.IO) { syncMutex.withLock { transcripts.clear() } }
-        paired = false; online = false; usage.clear(); selected = ""; messages = emptyList(); chats = emptyList(); projects = emptyList(); draft = ""; pending = null; localDraftIds = emptyList(); error = ""; connectionIssue = ""; revoked = false
+        paired = false; online = false; usage.clear(); selected = ""; messages = emptyList(); chats = emptyList(); projects = emptyList(); draft = ""; pastes = emptyList(); pending = null; localDraftIds = emptyList(); error = ""; connectionIssue = ""; revoked = false
         forgetPairingData()
         Alerts.stop(getApplication()); Alerts.clear(getApplication())
     }
@@ -293,7 +313,7 @@ class BridgeModel(application: Application) : AndroidViewModel(application) {
     }
     /** Mac-specific caches belong to one pairing. */
     private fun forgetPairingData() {
-        transcriptWriteJob?.cancel(); transcriptWriteJob = null; transcriptWrites.clear(); messageEntries = emptyList()
+        draftSave?.cancel(); transcriptWriteJob?.cancel(); transcriptWriteJob = null; transcriptWrites.clear(); messageEntries = emptyList()
         transcript = null; loadedChat = ""
         cancelShare()
         Alerts.deliveries.clear(); Alerts.inFlight.clear()
@@ -303,7 +323,7 @@ class BridgeModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch(Dispatchers.IO) { outbox.deleteRecursively(); images.clear() }
     }
     fun foreground(active: Boolean) {
-        if (!active) writeTranscripts(flush = true)
+        if (!active) { writeTranscripts(flush = true); flushDraft() }
         foreground = active; Alerts.foreground = active
         if (active && paired) start() else if (!active) stopConnection()
     }
@@ -436,12 +456,13 @@ class BridgeModel(application: Application) : AndroidViewModel(application) {
         if (saved.isEmpty()) return@mapNotNull null
         val draft = runCatching { DraftChat.parse(id, saved) }.getOrNull() ?: return@mapNotNull null
         val pendingRaw = store.get("pending:$id")
-        val typed = store.get("draft:$id")
+        val typed = store.get("draft:$id").ifBlank { store.pastes(id).firstOrNull()?.text.orEmpty() }
         val text = typed.ifBlank { pendingRaw.takeIf { it.isNotEmpty() }?.let { runCatching { PendingPrompt.parse(it).text }.getOrNull() }.orEmpty() }
         ListedDraft(draft.id, draft.projectId, text, pendingRaw.isNotEmpty(), draft.createdAt, draft.agent, attachmentsOf(id).size)
     })
     fun discardDraft(id: String) {
         if (store.get("pending:$id").isNotEmpty() || draftChat(id) == null || chats.any { it.optString("id") == id }) return
+        if (selected == id) draftSave?.cancel()
         store.removeChat(id)
         attachmentLists.remove(id)
         refreshDraftIds()
@@ -477,6 +498,8 @@ class BridgeModel(application: Application) : AndroidViewModel(application) {
         require(id.isNotEmpty()) { "Open a chat first." }
         require(pending != null || store.get("pending:$id").isEmpty()) { "Saved delivery state could not be read. Check this chat on your Mac before sending again." }
         val deliverySession = store.session()
+        // The saved draft must match what goes out, so acceptance can clear exactly that from the composer.
+        flushDraft()
         val local = draftChat(id)
         val chosen = options
         val images = attachmentsOf(id)
@@ -484,7 +507,7 @@ class BridgeModel(application: Application) : AndroidViewModel(application) {
         val working = isWorking(chats.find { it.optString("id") == id }?.optString("status"))
         // A chosen delivery goes as chosen: the Mac runs it as a normal turn if the chat turns out idle.
         val prompt = pending ?: PendingPrompt(
-            UUID.randomUUID().toString(), draft.trim(), chosen.mode, chosen.model, chosen.effort, local?.projectId.orEmpty(), chosen.agent,
+            UUID.randomUUID().toString(), promptText(draft, pastes), chosen.mode, chosen.model, chosen.effort, local?.projectId.orEmpty(), chosen.agent,
             images.map { it.upload }, delivery ?: if (working) STEER else null, chosen.speed,
         )
         require(prompt.text.isNotEmpty() || prompt.attachments.isNotEmpty()) { "Write a prompt first." }
@@ -533,7 +556,7 @@ class BridgeModel(application: Application) : AndroidViewModel(application) {
         acceptedAt[id] = syncStarts.get()
         rememberOptions(prompt.options)
         attachmentLists.remove(id)
-        if (selected == id) { pending = null; draft = store.get("draft:$id"); attachments = attachmentsOf(id) }
+        if (selected == id) { pending = null; loadDraft(id); attachments = attachmentsOf(id) }
         cleanOutbox()
     }
     /** A state request begun after acceptance can safely hand this chat back to its reported status. */

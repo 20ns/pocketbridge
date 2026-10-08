@@ -169,7 +169,7 @@ private val Mine = RoundedCornerShape(Corners.bubble, Corners.bubble, Corners.ta
     Column(modifier.fillMaxWidth(), horizontalAlignment = Alignment.End, verticalArrangement = Arrangement.spacedBy(Spacing.xs)) {
         if (said.attachments.isNotEmpty()) PromptImages(model, said.attachments) { onImage(said.attachments, it) }
         // An image sent alone carries the Mac's stand-in text; the image already says it.
-        if (said.text.isNotBlank() && !(said.attachments.isNotEmpty() && said.text in imageOnlyText)) UserBubble(said.text, quiet = said.kind == "imported")
+        if (said.text.isNotBlank() && !(said.attachments.isNotEmpty() && said.text in imageOnlyText)) UserBubble(said.id, said.text, quiet = said.kind == "imported")
         deliveryLabel(said.kind)?.let { (icon, label) ->
             Row(Modifier.padding(end = Spacing.sm), verticalAlignment = Alignment.CenterVertically) {
                 Icon(icon, null, Modifier.size(Sizes.tinyIcon), tint = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -229,21 +229,43 @@ private fun deliveryLabel(kind: String) = when (kind) { STEER -> PocketIcons.Arr
     }
 }
 
-/** [quiet]: a prompt copied in from a Mac session, tonal instead of teal so it reads as context, not as sent from here. */
-@Composable private fun UserBubble(text: String, modifier: Modifier = Modifier, quiet: Boolean = false) {
+/**
+ * [quiet]: a prompt copied in from a Mac session, tonal instead of teal so it reads as context, not as sent from here.
+ * A long prompt folds to a few lines with Show more; its Copy takes the whole text.
+ */
+@Composable private fun UserBubble(id: String, text: String, modifier: Modifier = Modifier, quiet: Boolean = false) {
     val pocket = Pocket.colors
     val container = if (quiet) MaterialTheme.colorScheme.secondaryContainer else pocket.userBubble
     val content = if (quiet) MaterialTheme.colorScheme.onSecondaryContainer else pocket.onUserBubble
-    Row(modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-        Spacer(Modifier.width(Spacing.huge))
-        Surface(color = container, contentColor = content, shape = Mine) {
-            // Default selection colours are the accent, which would vanish on an accent bubble.
-            CompositionLocalProvider(LocalTextSelectionColors provides TextSelectionColors(content, content.copy(alpha = 0.35f))) {
-                SelectionContainer { Text(text, Modifier.padding(horizontal = Spacing.lg, vertical = Spacing.sm + Spacing.xxs), style = MaterialTheme.typography.bodyLarge) }
+    var expanded by rememberSaveable(id) { mutableStateOf(false) }
+    var folds by remember(text) { mutableStateOf(false) }
+    Column(modifier.fillMaxWidth(), horizontalAlignment = Alignment.End) {
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+            Spacer(Modifier.width(Spacing.huge))
+            Surface(color = container, contentColor = content, shape = Mine) {
+                // Default selection colours are the accent, which would vanish on an accent bubble.
+                CompositionLocalProvider(LocalTextSelectionColors provides TextSelectionColors(content, content.copy(alpha = 0.35f))) {
+                    SelectionContainer {
+                        Text(
+                            text, Modifier.padding(horizontal = Spacing.lg, vertical = Spacing.sm + Spacing.xxs), style = MaterialTheme.typography.bodyLarge,
+                            maxLines = if (expanded) Int.MAX_VALUE else PROMPT_LINES, overflow = TextOverflow.Ellipsis,
+                            onTextLayout = { if (!expanded) folds = it.hasVisualOverflow },
+                        )
+                    }
+                }
             }
+        }
+        if (folds) Row(verticalAlignment = Alignment.CenterVertically) {
+            TextButton(onClick = { expanded = !expanded }, contentPadding = PaddingValues(horizontal = Spacing.md)) {
+                Text(if (expanded) "Show less" else "Show more", style = MaterialTheme.typography.labelMedium)
+            }
+            CopyButton(text, "Copy prompt")
         }
     }
 }
+
+/** A prompt longer than this folds in the conversation. */
+private const val PROMPT_LINES = 8
 
 @Composable private fun Reply(text: String, copyable: Boolean, worked: Long?, modifier: Modifier = Modifier) {
     Column(modifier.fillMaxWidth()) {

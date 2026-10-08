@@ -237,6 +237,34 @@ class StoreTest {
         assertEquals(listOf("chat"), chatIds(store.get("state")))
     }
 
+    @Test fun `pasted blocks persist with the draft and leave with the prompt they were sent in`() {
+        val prefs = Preferences()
+        val log = Paste("p1", "line\n".repeat(40))
+        Store(prefs.value).saveDraft("chat", "Why does this fail?", listOf(log))
+        // A restart reads the same preferences.
+        val store = Store(prefs.value)
+        assertEquals("Why does this fail?", store.get("draft:chat"))
+        assertEquals(listOf(log), store.pastes("chat"))
+        val prompt = PendingPrompt("delivery", promptText(store.get("draft:chat"), store.pastes("chat")))
+        store.savePrompt("chat", prompt, 100, store.session())
+        store.completePrompt("chat", prompt, store.session(), accepted = false)
+        assertEquals(listOf(log), store.pastes("chat"))
+        store.savePrompt("chat", prompt, 100, store.session())
+        store.completePrompt("chat", prompt, store.session(), accepted = true)
+        assertEquals("", store.get("draft:chat"))
+        assertEquals(emptyList<Paste>(), store.pastes("chat"))
+        // Edited while it was on its way: the newer draft stays.
+        store.saveDraft("chat", "Why does this fail?", listOf(log, Paste("p2", "more")))
+        store.savePrompt("chat", prompt, 100, store.session())
+        store.completePrompt("chat", prompt, store.session(), accepted = true)
+        assertEquals(2, store.pastes("chat").size)
+        store.saveDraft("chat", "", emptyList())
+        assertEquals("", store.get("pastes:chat"))
+        store.saveDraft("chat", "x", listOf(log))
+        store.removeChat("chat")
+        assertEquals("", store.get("pastes:chat"))
+    }
+
     private fun snapshot(vararg chats: Pair<String, String>) = JSONObject()
         .put("projects", JSONArray().put(JSONObject().put("id", "app").put("name", "App")))
         .put("chats", JSONArray().apply { chats.forEach { put(JSONObject().put("id", it.first).put("title", it.second)) } })
