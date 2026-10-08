@@ -265,3 +265,20 @@ test('a reset waits for the limits of the model the prompt runs with, even when 
   assert.equal(queued.status, 202); assert.equal(queued.data.schedule.notBefore, opusReset + resetMarginMs);
   assert.equal((await f.chatOf(chat.id)).model, 'opus');
 });
+
+test('a reset lookup that fails for the old model is retried after the chat changes model', async t => {
+  const f = await fixture(t), opusReset = Date.now() + 72 * 3_600_000;
+  // Only Opus has a future reset, so a lookup for Sonnet alone would be refused.
+  writeFileSync(join(f.dir, 'data', 'fake-usage.json'), JSON.stringify([
+    { kind: 'session', percent: 100, resets_at: new Date(Date.now() - 60_000).toISOString(), scope: null },
+    { kind: 'weekly_scoped', percent: 100, severity: 'critical', resets_at: new Date(opusReset).toISOString(), scope: { model: { id: null, display_name: 'Opus' } } },
+  ]));
+  const chat = await f.createChat();
+  await f.prompt(chat.id, { id: randomUUID(), text: 'pick sonnet', model: 'sonnet' }); await f.idle(chat.id);
+  writeFileSync(join(f.dir, 'data', 'fake-usage-delay'), '600');
+  const scheduled = f.prompt(chat.id, { id: randomUUID(), text: 'at reset', schedule: 'reset' });
+  await pause(200);
+  assert.equal((await f.prompt(chat.id, { id: randomUUID(), text: 'switch to opus', model: 'opus' })).status, 202);
+  const queued = await scheduled;
+  assert.equal(queued.status, 202); assert.equal(queued.data.schedule.notBefore, opusReset + resetMarginMs);
+});

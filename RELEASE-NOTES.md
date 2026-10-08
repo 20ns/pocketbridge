@@ -1,3 +1,12 @@
+PocketBridge 0.9.0
+
+- Long messages: the message box stops growing at a few lines and scrolls inside, with an expand button for a full-screen editor. Large pastes become a removable "Pasted text · N lines" chip and are kept with the draft. Long prompts in the chat fold with Show more and Copy. The Mac now accepts prompts up to 500,000 characters.
+- Live progress: while you're away from the app, running chats show an ongoing notification with the current step, a ticking timer and Stop. On Android 16 it asks to be a Live Update, appearing on the lock screen and as a status bar chip where the phone allows it.
+- Send at reset: when a plan limit is used up, Send becomes "Send at <time>". Long-press Send to schedule at the next reset at any time. The Mac keeps the prompt and sends it once when the limit resets, even with the phone off. Scheduled prompts show their time with Send now and Cancel.
+- Lock your Mac: Settings > Mac > Lock screen locks the Mac immediately and shows whether it is locked. Remote unlock is not offered.
+
+Update the Mac service too, since scheduling, the live notification's step updates, longer prompts and Lock all need it. Install the APK over the existing app to preserve pairing.
+
 PocketBridge 0.8.7
 
 - Every remote app connection requires HTTPS, including prompts, replies, images and background alerts. The release APK blocks all cleartext networking, verifies certificates and never follows API redirects or falls back to HTTP.

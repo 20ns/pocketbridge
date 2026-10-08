@@ -48,14 +48,16 @@ export function createPrompts(ctx, uploadPath) {
     for (let attempt = 0; ; attempt++) {
       requested = await agents.chatOptions(agent, input, stored);
       // A reset depends on the model the prompt will run with, so it is resolved against the same options.
-      if (schedule === 'reset') notBefore = await schedules.resolveReset(agent, requested.model ?? stored?.model);
+      // A failed lookup counts only once the options are known to be current; a changed chat retries with its new model.
+      let resetError = null;
+      if (schedule === 'reset') notBefore = await schedules.resolveReset(agent, requested.model ?? stored?.model).catch(error => { resetError = error; return null; });
       // Shutdown or a concurrent retry could have begun meanwhile.
       if (ctx.closed) throw fail(503, 'Mac service is shutting down');
       if (recorded()) return duplicate(recorded());
       if (get('SELECT id FROM deleted_chats WHERE id=?', id)) throw fail(410, 'Chat was deleted');
       const latest = get('SELECT * FROM chats WHERE id=?', id), changed = optionsOf(latest) !== optionsOf(stored);
       stored = latest;
-      if (!changed) break;
+      if (!changed) { if (resetError) throw resetError; break; }
       if (attempt === 2) throw fail(409, 'Chat options are changing; send again');
     }
     if (stored && (stored.agent || 'claude') !== agent) throw fail(409, 'Chat already uses another agent');

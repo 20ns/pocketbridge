@@ -1,3 +1,30 @@
+PocketBridge 0.9.0 verification, 8 October 2026
+
+- Mac: pnpm test passed, 111 tests. New checks cover scheduled prompts (duplicate
+  retries, cancel against the due time, restart with an overdue schedule, deleted
+  chats, agent off, a running turn at the due time, reset selection including the
+  default model and a model change during the usage wait), 360,000-character
+  prompts and the size limits, background step events, and screen lock via a fake
+  (tests can never lock the real Mac).
+- Android: assembleDebug, testDebugUnitTest and lintDebug passed. 173 JVM tests,
+  no failures.
+- Two Codex reviews: the first found six bugs, all fixed (default-model reset,
+  options changing during the reset wait, unauthenticated Stop below API 31, a
+  cancelled step lookup reposting the notification, cancel restoring text beside
+  pasted blocks, fold controls lost after rotation). The second pass found that a
+  failed reset lookup skipped the options recheck; fixed with a regression test.
+- API 36 emulator against the isolated demo service: the live notification shows
+  ProgressStyle, project subtext, timer and Stop, and requests promotion. API 36.0
+  doesn't promote, so the chip and Now Bar are unverified. Stop interrupted the turn
+  and the Done alert replaced the notification. "Live updates are off. Turn on"
+  crashed where the system has no promotion screen; it now opens notification
+  settings. The message box capped at 7 lines with the expand button. Long-press
+  Send offered "Send at <reset>"; the scheduled bubble, the chat list label and
+  Cancel restoring the text worked. Paste chips and the full-screen editor were
+  checked on the emulator by the composer agent.
+- Not checked: actually locking the Mac, Live Update promotion on One UI 8, any
+  physical phone. Remote unlock was not built.
+
 PocketBridge 0.8.3 verification, 7 October 2026
 
 - Mac: pnpm test passed, 85 tests. New checks cover Claude/Codex live thinking,
