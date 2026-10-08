@@ -1,6 +1,6 @@
 // The composer: next-prompt options, images, "/" commands, the git line and delivery.
 import {withAttachments, slashMatches, editDraft, prepareDelivery, afterDelivery, promptPayload, blankLocalDraft, usableAgent, findModel, resolveOptions, supportedOptions, modeLabels, effortLabel, modeHelp, modelName, effortName, speedName, scheduleReset, scheduleTime} from './support.mjs';
-import {$, el, app, drafts, localChats, overrides, persist, persistDrafts, persistLocalChats, persistLastOptions, notice, api, imageUrl, rememberImage, currentChat, storedChat, agentFor, agentName, busy, isGeneral} from './core.mjs';
+import {$, el, app, drafts, localChats, overrides, persist, persistDrafts, persistLocalChats, persistLastOptions, mergeDrafts, notice, api, readJson, imageUrl, rememberImage, currentChat, storedChat, agentFor, agentName, busy, isGeneral} from './core.mjs';
 import {controls, refresh, renderState} from './app.mjs';
 import {renderChatList} from './sidebar.mjs';
 import {limitsOf, onUsage} from './usage.mjs';
@@ -93,8 +93,10 @@ function resetOffer(chat) {
 onUsage(() => composerControls());
 
 export function composerControls() {
-  const chat = currentChat(), selected = app.selected, online = app.online;
+  const chat = currentChat(), selected = app.selected, online = app.online, attempted = Boolean(drafts[selected]?.attempted);
   $('prompt').disabled = !chat;
+  // An unconfirmed send keeps its text with its delivery ID until the Mac confirms or refuses it, so a retry can't run twice.
+  $('prompt').readOnly = attempted;
   // A saved chat whose agent is switched off stays readable but can't continue until it's back on.
   const off = chat && storedChat(chat.id) && agentFor(chat.agent)?.enabled === false && !drafts[selected]?.attempted;
   const images = drafts[selected]?.attachments ?? [];
@@ -106,7 +108,7 @@ export function composerControls() {
   $('send').setAttribute('aria-label', app.sending ? 'Sending' : drafts[selected]?.attempted ? 'Retry message' : working ? 'Steer' : 'Send');
   $('send').title = drafts[selected]?.attempted ? 'Retry with the same delivery ID' : working ? 'Steer the running turn (Enter)' : 'Send (Enter)';
   $('send').classList.toggle('steer', working);
-  $('send-now').hidden = !working || !hasContent;
+  $('send-now').hidden = !working || !hasContent || attempted;
   $('send-now').disabled = $('send').disabled;
   const offer = resetOffer(chat);
   $('send-later').hidden = !offer || !hasContent || Boolean(drafts[selected]?.attempted);
@@ -119,7 +121,7 @@ export function composerControls() {
   $('stop').lastChild.textContent = chat?.status === 'stopping' ? 'Stopping…' : 'Stop';
   // Options apply to the next prompt, so they stay available while work runs.
   for (const id of ['model', 'effort', 'mode', 'speed', 'speed-select']) $(id).disabled = !chat || app.sending || Boolean(drafts[selected]?.attempted);
-  $('composer-hint').textContent = !online ? 'Mac is disconnected. Your draft is saved on this device.' : off ? `${agentName(chat)} is off. Turn it on in the sidebar to continue this chat.` : offer && !busy(chat) ? 'Plan limit reached. The Mac can send it when the limit resets, even with this page closed.' : chat?.status === 'waiting' ? 'Answer above, or stop this turn.' : busy(chat) ? 'Enter steers the running turn · Send now stops the current step first' : uploading ? 'Uploading images…' : drafts[selected]?.attempted ? 'Not confirmed by your Mac. Retry uses the same delivery ID.' : chat ? 'Enter to send · Shift+Enter for a new line' : 'Chats started here also appear on your phone.';
+  $('composer-hint').textContent = !online ? 'Mac is disconnected. Your draft is saved on this device.' : attempted && !app.sending ? 'Not confirmed by your Mac. Retry uses the same delivery ID.' : off ? `${agentName(chat)} is off. Turn it on in the sidebar to continue this chat.` : offer && !busy(chat) ? 'Plan limit reached. The Mac can send it when the limit resets, even with this page closed.' : chat?.status === 'waiting' ? 'Answer above, or stop this turn.' : busy(chat) ? 'Enter steers the running turn · Send now stops the current step first' : uploading ? 'Uploading images…' : chat ? 'Enter to send · Shift+Enter for a new line' : 'Chats started here also appear on your phone.';
 }
 
 // Images: picked, pasted or dropped, shrunk to 2048 px JPEG when large, uploaded at once, sent by id.
@@ -146,8 +148,9 @@ async function attach(files) {
     setImages(chatId, list => [...list, {key, uploading: true, local: URL.createObjectURL(file)}]);
     try {
       const blob = await shrink(file);
-      const response = await fetch('/api/uploads', {method:'POST', headers:{Authorization:`Bearer ${app.token}`, 'Content-Type': blob.type || file.type}, body: blob});
-      const result = await response.json(); if (!response.ok) throw new Error(result.error || 'Upload failed');
+      const response = await fetch('/api/uploads', {method:'POST', headers:{Authorization:`Bearer ${app.token}`, 'Content-Type': blob.type || file.type}, body: blob, signal:AbortSignal.timeout(60000)});
+      if (response.status === 401) app.token = null;
+      const result = await readJson(response); if (!response.ok) throw new Error(result.error || `Upload failed (${response.status})`);
       rememberImage(result.id, URL.createObjectURL(blob));
       setImages(chatId, list => list.map(item => item.key === key ? {id: result.id, type: result.type} : item));
     } catch (error) { setImages(chatId, list => list.filter(item => item.key !== key)); notice(`Image not attached: ${error.message}`); }
@@ -257,21 +260,25 @@ $('prompt').addEventListener('blur', () => setTimeout(hideSlash, 150));
 $('send-now').onclick = () => submit('interrupt');
 $('send-later').onclick = () => submit(null, 'reset');
 // Always ask to steer: the Mac runs it as a normal turn when idle, so a stale busy state can't make it 409.
-// A retry keeps the delivery it was sent with, and so its id; Send now on a retry is a new delivery.
-$('composer').onsubmit = event => { event.preventDefault(); const attempt = drafts[app.selected]?.attempted ? drafts[app.selected] : null; submit(attempt ? attempt.delivery ?? null : 'steer', attempt?.schedule ?? null); };
+// A retry keeps the delivery it was sent with, and so its id; Send now is hidden until that attempt is settled.
+$('composer').onsubmit = event => { event.preventDefault(); submit('steer'); };
 // schedule: 'reset' sends once the plan limit resets; the Mac keeps it, so this page can close.
 async function submit(delivery, schedule = null) {
-  if (schedule === null || drafts[app.selected]?.attempted ? $('send').disabled : $('send-later').disabled) return;
-  const chatId = app.selected;
-  const draft = prepareDelivery(drafts[chatId], $('prompt').value, chatOptions(), delivery, schedule);
+  const chatId = app.selected, previous = drafts[chatId], attempt = previous?.attempted ? previous : null;
+  if (schedule === null || attempt ? $('send').disabled : $('send-later').disabled) return;
+  // An unconfirmed send is only ever retried as it was: same text, delivery, schedule and so the same ID.
+  const draft = attempt ?? prepareDelivery(previous, $('prompt').value, chatOptions(), delivery, schedule);
   if (localChats[chatId]?.projectId) draft.projectId ??= localChats[chatId].projectId;
-  drafts[chatId] = draft; persistDrafts(); if (localChats[chatId]) persistLocalChats(); app.sending = true; controls();
+  drafts[chatId] = draft;
+  // A delivery ID this browser can't keep could be lost on reload and sent twice, so it isn't sent.
+  if (!persistDrafts() && !attempt) { if (previous) drafts[chatId] = previous; else delete drafts[chatId]; notice('This browser could not save your message, so it was not sent. Allow site storage for this page, then try again.'); return; }
+  if (localChats[chatId]) persistLocalChats(); app.sending = true; controls();
   const projectId = storedChat(chatId) ? undefined : (localChats[chatId]?.projectId ?? draft.projectId);
   try {
     const answer = await api(`/chats/${encodeURIComponent(chatId)}/prompts`, promptPayload(draft, projectId));
     delete overrides[chatId]; persist('pocketbridge.options', overrides);
     persistLastOptions(optionsOf(draft));
-    // Text typed while sending stays; the images that were just sent don't.
+    // A newer draft (another tab's) stays; the images that were just sent don't.
     const left = afterDelivery(drafts[chatId], draft);
     if (left) drafts[chatId] = left; else delete drafts[chatId];
     persistDrafts();
@@ -287,9 +294,49 @@ async function submit(delivery, schedule = null) {
       // A definitive rejection ran nothing: unlock the draft so its text and options can change.
       drafts[chatId] = {...drafts[chatId], attempted: false}; persistDrafts();
       notice(error.message); renderOptions();
-    } else if (drafts[chatId]?.id === draft.id) notice(`${error.message}. Your message is saved. Retry will use the same delivery ID.`);
+    } else if (drafts[chatId]?.id === draft.id) { notice(`${error.message}. ${unconfirmedNote}`); unconfirmedFor = chatId; }
     else notice();
   }
   finally { app.sending = false; controls(); }
 }
+
+// A send whose answer was lost says so until the Mac confirms or refuses that delivery ID.
+const unconfirmedNote = 'Your message is saved. Retry will use the same delivery ID.';
+let unconfirmedFor = null;
+/** Drops a draft the Mac has recorded, as an answered send would, or one whose chat was deleted, as a 410 would. */
+export function settleDraft(chatId, gone = false) {
+  delete drafts[chatId]; persistDrafts();
+  if (gone) { delete localChats[chatId]; persistLocalChats(); }
+  if (unconfirmedFor === chatId) { unconfirmedFor = null; if ($('notice').textContent.endsWith(unconfirmedNote)) notice(); }
+  if (app.selected !== chatId) { renderChatList(); return; }
+  if (gone) { app.selected = null; persist('pocketbridge.chat', null); }
+  clearPrompt(); renderState(); renderAttachments();
+}
+/** Asks the Mac about unconfirmed sends in other chats, after a reconnect. Read-only: nothing is sent again. */
+export async function reconcileDrafts(ids = Object.keys(drafts).filter(id => id !== app.selected)) {
+  if (!app.state?.capabilities?.promptStatus) return [];
+  const open = [];
+  for (const id of ids) {
+    const draft = drafts[id]; if (!draft?.attempted) continue;
+    try {
+      const status = await api(`/chats/${encodeURIComponent(id)}/prompts/${encodeURIComponent(draft.id)}`);
+      if (drafts[id] !== draft) continue;
+      if (status.deleted || status.accepted) settleDraft(id, status.deleted); else open.push(id);
+    } catch { open.push(id); }
+  }
+  return open;
+}
+// Another tab saved its drafts: keep both tabs' unconfirmed sends. One it dropped unsettled is checked, then saved again.
+addEventListener('storage', async event => {
+  if (event.key !== 'pocketbridge.drafts' || event.storageArea !== localStorage) return;
+  let stored; try { stored = JSON.parse(event.newValue) ?? {}; } catch { return; }
+  const before = drafts[app.selected];
+  const lost = mergeDrafts(stored);
+  if (drafts[app.selected] !== before) { $('prompt').value = drafts[app.selected]?.text ?? ''; autosize(); renderOptions(); renderAttachments(); }
+  renderChatList(); controls();
+  if (!lost.length) return;
+  const open = app.state?.capabilities?.promptStatus ? await reconcileDrafts(lost) : lost;
+  if (open.some(id => drafts[id]?.attempted)) persistDrafts();
+});
+
 $('stop').onclick = async () => { $('stop').disabled = true; try { await api(`/chats/${encodeURIComponent(app.selected)}/stop`, {}); await refresh(); } catch (error) { notice(error.message); controls(); } };

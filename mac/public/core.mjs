@@ -7,7 +7,8 @@ export const $ = id => document.getElementById(id);
 export const el = (tag, className, text) => { const node = document.createElement(tag); if (className) node.className = className; if (text !== undefined) node.textContent = text; return node; };
 
 const saved = (key, fallback) => { try { return JSON.parse(localStorage.getItem(key)) ?? fallback; } catch { return fallback; } };
-export const persist = (key, value) => { try { localStorage.setItem(key, JSON.stringify(value)); } catch { /* Storage may be disabled; the live session still works. */ } };
+// Storage may be disabled or full; the live session still works, and false tells a sender its delivery ID wasn't kept.
+export const persist = (key, value) => { try { localStorage.setItem(key, JSON.stringify(value)); return true; } catch { return false; } };
 
 /** The live session: what the Mac last reported and what this page is doing now. */
 export const app = {
@@ -26,6 +27,21 @@ export const overrides = saved('pocketbridge.options', {});
 export const lastOptions = saved('pocketbridge.lastOptions', {});
 
 export const persistDrafts = () => persist('pocketbridge.drafts', Object.fromEntries(Object.entries(drafts).map(([id, draft]) => [id, storedDraft(draft)])));
+/**
+ * Takes in drafts another tab saved, so neither tab's unconfirmed send loses its delivery ID. An attempt wins over
+ * plain text, the other tab settling an attempt wins, and this tab keeps the open chat's own text.
+ * Returns the chats whose attempt the other tab dropped without settling; the caller checks them with the Mac.
+ */
+export function mergeDrafts(stored) {
+  const lost = [];
+  for (const id of new Set([...Object.keys(drafts), ...Object.keys(stored)])) {
+    const ours = drafts[id], theirs = stored[id];
+    if (theirs?.attempted) { if (!ours?.attempted) drafts[id] = theirs; }
+    else if (ours?.attempted) { if (theirs?.id === ours.id) drafts[id] = theirs; else lost.push(id); }
+    else if (id !== app.selected) { if (theirs) drafts[id] = theirs; else delete drafts[id]; }
+  }
+  return lost;
+}
 export function persistLocalChats() {
   const stored = {};
   for (const [id, chat] of Object.entries(localChats)) if (!blankLocalDraft(drafts[id])) stored[id] = chat;
@@ -51,10 +67,13 @@ export async function api(path, body) {
   });
   // A rotated local token (for example after resetting the Mac's data) is re-fetched by the reconnect loop.
   if (response.status === 401) app.token = null;
-  const result = await response.json();
+  const result = await readJson(response);
   if (!response.ok) throw Object.assign(new Error(result.error || `Mac returned ${response.status}`), {status: response.status});
   return result;
 }
+
+// An error page may not be JSON; its status still makes the message. A success must be JSON.
+export const readJson = response => response.ok ? response.json() : response.json().catch(() => ({}));
 
 // Images and project icons need the bearer token, so they load as object URLs. A failed load is tried again next time.
 const blobs = new Map();

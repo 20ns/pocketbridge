@@ -1,8 +1,8 @@
 // The open conversation: its header, transcript, tool activity, sub-agents and pending answers.
 import {markdown, turnPlacement, groupMessages, copyableReplies, activitySummary, effortLabel, liveStep, elapsedLabel, mergeTranscript, scheduleTime} from './support.mjs';
 import {$, el, app, drafts, localChats, overrides, persist, persistDrafts, persistLocalChats, notice, api, imageUrl, currentChat, storedChat, projectFor, projectName, agentName, busy, statusBadge, projectAvatar} from './core.mjs';
-import {refresh, controls} from './app.mjs';
-import {renderOptions, clearPrompt} from './composer.mjs';
+import {refresh} from './app.mjs';
+import {clearPrompt, settleDraft} from './composer.mjs';
 import {showDrawer, toggleProjectForm} from './sidebar.mjs';
 
 const liveText = {idle:'Finished. Ready for your next message.', running:'Working.', waiting:'Needs your answer.', stopping:'Stopping.', interrupted:'Work stopped.', error:'This turn failed.'};
@@ -185,9 +185,8 @@ export async function loadMessages() {
   const result = mergeTranscript(previous, response);
   transcriptChat = id; transcript = result;
   const pendingDraft = drafts[id];
-  if (pendingDraft?.attempted && result.messages.some(message => message.role === 'user' && message.id === pendingDraft.id)) {
-    delete drafts[id]; persistDrafts(); clearPrompt(); renderOptions(); controls();
-  }
+  // A send whose answer was lost is confirmed once its message is in the transcript.
+  if (pendingDraft?.attempted && result.messages.some(message => message.role === 'user' && message.id === pendingDraft.id)) settleDraft(id);
   const chat = currentChat();
   const scroller = $('messages'), target = $('log');
   const previousScroll = scroller.scrollTop;
@@ -285,7 +284,8 @@ function approvalForm(approval, restore) {
   const respond = async decision => {
     allow.disabled = deny.disabled = true;
     try { await api(`/approvals/${encodeURIComponent(approval.id)}`, {decision, ...(decision === 'allow' && answers.length ? {answers:Object.fromEntries(answers.map(answer => [answer.question, answer.value()]))} : {})}); await loadMessages(); }
-    catch (error) { notice(error.message); deny.disabled = false; update(); }
+    // The question may already be answered elsewhere or gone, so the form is redrawn from the Mac.
+    catch (error) { notice(error.message); deny.disabled = false; update(); loadMessages().catch(() => {}); }
   };
   form.onsubmit = event => { event.preventDefault(); if (!allow.disabled) respond('allow'); };
   deny.onclick = () => respond('deny');
