@@ -868,14 +868,28 @@ class BridgeModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             try {
                 snapshotFlow { busy || id in sending }.first { !it }
-                when {
-                    chats.any { it.optString("id") == id } -> delete(id)
-                    // A failure leaves it hidden in deletions; the next state read tries again.
-                    store.get("pending:$id").isNotEmpty() -> orNull { settleDeletedDraft(id) }
-                    else -> { discardDraft(id); forgetDeletion(id) }
-                }
+                if (chats.any { it.optString("id") == id }) delete(id) else deleteUnlisted(id)
             } finally { sendingDeletions -= id }
         }
+    }
+    /**
+     * A chat the last state read didn't list: a local draft, or one whose first prompt was accepted since. Deleting
+     * it on the Mac leaves a tombstone, so a first prompt still on its way can't create it afterwards. A Mac before
+     * tombstones answers 404 and its prompt ledger decides. Unreachable, it stays hidden and goes at the next state read.
+     */
+    private suspend fun deleteUnlisted(id: String) {
+        val currentApi = api ?: return
+        try { withContext(Dispatchers.IO) { currentApi.request("/api/chats/$id/delete", JSONObject()) } }
+        catch (failure: ApiError) {
+            if (api !== currentApi) return
+            if (failure.status == 404) { if (store.get("pending:$id").isNotEmpty()) orNull { settleDeletedDraft(id) } else { discardDraft(id); forgetDeletion(id) } }
+            // Its first prompt already runs there: the chat comes back with the reason, as for any working chat.
+            else if (deletionSettled(failure)) { forgetDeletion(id); error = failureReason(failure); refresh() }
+            return
+        }
+        catch (lost: java.io.IOException) { return }
+        if (api !== currentApi) return
+        removeDraft(id); forgetDeletion(id)
     }
     /**
      * A deleted local chat whose first prompt may have reached the Mac. It stays in [deletions], so it's never resent,
@@ -1159,6 +1173,8 @@ class BridgeModel(application: Application) : AndroidViewModel(application) {
             val id = chat.optString("id")
             id to chat.optString("status").let { if (!freshState) UNKNOWN else if (it == "waiting" && id != selected) "running" else it }
         }.toMutableMap()
+        // A chat deleted here is never watched, even with a send still unsettled.
+        Alerts.deliveries.keys.removeAll(deletions.keys)
         // A prompt still on its way will start a turn the Mac hasn't reported yet.
         watchedDeliveries(store.pendingPrompts().filterKeys { it !in deletions }).forEach { (id, prompt) -> Alerts.deliveries.putIfAbsent(id, DeliveryWatch(prompt.id, store.get("watch:$id").toLongOrNull() ?: 0)) }
         Alerts.deliveries.keys.forEach { baseline.putIfAbsent(it, "sending") }

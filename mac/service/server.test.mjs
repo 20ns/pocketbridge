@@ -619,7 +619,11 @@ test('delete blocks active work and a later prompt cannot recreate it; rename st
   const before = (await f.request('/api/state')).data.lastSeq;
   assert.equal((await f.request(`/api/chats/${chat.id}/delete`, {})).status, 200);
   assert.equal((await f.request(`/api/chats/${chat.id}/delete`, {})).status, 200);
-  assert.equal((await f.request(`/api/chats/${randomUUID()}/delete`, {})).status, 404);
+  // A chat id never seen yet (a phone draft whose first prompt may still be on its way) is tombstoned, so that prompt can't create it.
+  const draft = randomUUID();
+  assert.equal((await f.request(`/api/chats/${draft}/delete`, {})).status, 200);
+  assert.equal((await f.request(`/api/chats/${draft}/prompts`, { id: randomUUID(), text: 'late first prompt', projectId: project.id })).status, 410);
+  assert.equal((await f.request('/api/chats/not-a-chat/delete', {})).status, 404);
   assert.equal((await f.request(`/api/chats/${chat.id}/messages`)).status, 404);
   assert.equal((await f.request(`/api/chats/${chat.id}/prompts`, { id: promptId, text: 'hang', projectId: project.id })).status, 410);
   assert.equal((await f.request(`/api/chats/${chat.id}/prompts`, { id: randomUUID(), text: 'again', projectId: project.id })).status, 410);

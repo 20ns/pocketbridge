@@ -227,7 +227,9 @@ export function createRoutes(ctx) {
           if (action === 'delete' && request.method === 'POST') {
             await body(request);
             const row = get('SELECT status FROM chats WHERE id=?', id);
-            if (!row) { if (get('SELECT id FROM deleted_chats WHERE id=?', id)) return json(response, 200, { ok: true }); throw fail(404, 'Chat not found'); }
+            // A chat id never seen here may be a phone's draft whose first prompt is still on its way: the tombstone
+            // makes that prompt 410 instead of creating the chat the owner deleted.
+            if (!row) { if (!uuid(id)) throw fail(404, 'Chat not found'); run('INSERT OR IGNORE INTO deleted_chats VALUES (?,?)', id, Date.now()); return json(response, 200, { ok: true }); }
             if (active.has(id) || ['running', 'stopping', 'waiting'].includes(row.status)) throw fail(409, 'Stop this chat before deleting it');
             transaction(() => {
               run('DELETE FROM messages WHERE chatId=?', id); run('DELETE FROM approvals WHERE chatId=?', id); run('DELETE FROM raw_events WHERE chatId=?', id); run('DELETE FROM runtimes WHERE chatId=?', id);
