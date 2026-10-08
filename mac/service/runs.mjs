@@ -7,6 +7,8 @@ import { claudeArgs, claudeRun } from './claude-run.mjs';
 import { codexRun } from './codex-run.mjs';
 import { oneLine, processStamp, terminateGroup } from './util.mjs';
 
+export const restarted = 'Mac service restarted during this task. Review the conversation before continuing.';
+
 export function createRuns(ctx) {
   const { options, get, run, change, status, agents, projects, active, waiting } = ctx;
   const message = (chatId, role, value, id = randomUUID(), extra = {}) => {
@@ -40,9 +42,10 @@ export function createRuns(ctx) {
       run("UPDATE approvals SET status='deny' WHERE id=?", approvalId); entry.resolve({ behavior: 'deny', message: 'User stopped the task', interrupt: true }); waiting.delete(approvalId); change('approval', id);
     }
   };
-  const stop = id => {
+  // reason 'shutdown': the service is quitting (restart, update, logout), not the owner pressing Stop.
+  const stop = (id, reason = 'user') => {
     ctx.chat(id); const entry = active.get(id); if (!entry || entry.stopped) return;
-    entry.stopped = true; thinkingFor(id, null); status(id, 'stopping'); cancelApprovals(id);
+    entry.stopped = reason; thinkingFor(id, null); status(id, 'stopping'); cancelApprovals(id);
     entry.stopPromise = terminateGroup(entry.child.pid, options.stopTimeoutMs ?? 3000).catch(error => console.error(`Stop ${id}: ${error.message}`));
   };
 
@@ -68,6 +71,8 @@ export function createRuns(ctx) {
     active.set(id, entry);
     thinkingFor(id, null);
     if (child.pid) run('INSERT OR REPLACE INTO runtimes VALUES (?,?,?)', id, child.pid, processStamp(child.pid) ?? '');
+    // Idle sleep on battery would suspend the turn; -i holds it off only while this run lives. A closed lid still sleeps.
+    if (child.pid && process.platform === 'darwin' && !ctx.testing && process.env.POCKETBRIDGE_KEEP_AWAKE !== '0') spawn('/usr/bin/caffeinate', ['-i', '-w', String(child.pid)], { stdio: 'ignore' }).on('error', () => {}).unref();
     const turnStarted = promptId => { thinkingFor(id, null); entry.turnPrompt = promptId; run('UPDATE prompts SET startedAt=COALESCE(startedAt,?) WHERE id=?', Date.now(), promptId); change('message', id); };
     const turnEnded = () => { thinkingFor(id, null); if (entry.turnPrompt) { run('UPDATE prompts SET endedAt=? WHERE id=?', Date.now(), entry.turnPrompt); change('message', id); } };
     const append = value => {
@@ -90,7 +95,8 @@ export function createRuns(ctx) {
     child.stderr.setEncoding('utf8'); child.stderr.on('data', chunk => { entry.stderr = (entry.stderr + chunk).slice(-16_000); });
     child.stdin.on('error', () => {}); child.on('error', error => { entry.parseError = `Could not start ${agentNames[agent]}: ${error.message}`; });
     // Once the process is gone, steers and interrupts wait for the next run instead of writing to a closed pipe.
-    child.on('exit', () => { entry.finishing = true; });
+    // A tool process still holding stdout or stderr would keep 'close' away and the chat running forever.
+    child.on('exit', () => { entry.finishing = true; setTimeout(() => { child.stdout.destroy(); child.stderr.destroy(); }, options.pipeGraceMs ?? 5000).unref(); });
     child.on('close', (code, signal) => finished(code, signal).catch(error => {
       console.error(`Chat ${id} cleanup: ${error.stack ?? error.message}`);
       active.delete(id);
@@ -111,9 +117,9 @@ export function createRuns(ctx) {
       if (!entry.stopped && entry.after.length) { start(id, entry.after.shift(), entry.after); return; }
       if (entry.stopped) {
         // These prompts never reached the CLI; written but unacknowledged steers remain uncertain.
-        const dropped = new Map([...entry.after, ...(entry.queue ?? []), ...(entry.early ?? [])].map(next => [next.promptId, next]));
-        for (const next of dropped.values()) message(id, 'activity', `Stopped before "${oneLine(next.text, 80)}" ran. Send it again if you still need it.`);
-        status(id, 'interrupted', 'Stopped by you. Completed changes remain on disk.');
+        const dropped = new Map([...entry.after, ...(entry.queue ?? []), ...(entry.early ?? [])].map(next => [next.promptId, next])), shutdown = entry.stopped === 'shutdown';
+        for (const next of dropped.values()) message(id, 'activity', `${shutdown ? 'Mac service restarted' : 'Stopped'} before "${oneLine(next.text, 80)}" ran. Send it again if you still need it.`);
+        status(id, 'interrupted', shutdown ? restarted : 'Stopped by you. Completed changes remain on disk.');
       }
       else if (codex && (entry.parseError || !entry.result.ok)) status(id, 'error', entry.parseError ?? entry.failure ?? entry.codex?.state.failure ?? (entry.stderr.trim().split('\n').slice(-12).join('\n') || `Codex exited ${code ?? signal} without a completed turn.`));
       else if (!codex && (entry.parseError || code !== 0 || entry.result?.is_error || !entry.result)) status(id, 'error', entry.parseError ?? (entry.result?.errors?.join('\n') || entry.result?.result || entry.stderr.trim() || `Claude exited ${code ?? signal} without a completed result.`));

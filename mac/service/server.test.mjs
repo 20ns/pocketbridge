@@ -8,7 +8,8 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { DatabaseSync } from 'node:sqlite';
 import { randomUUID } from 'node:crypto';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
+import net from 'node:net';
 import { createService } from './server.mjs';
 import { newestCli, compareVersions } from './agents.mjs';
 import { findIcons, measure, renderIcon } from './icons.mjs';
@@ -227,6 +228,14 @@ test('pairing is one-time, QR matches the issued code, phone token persists, and
   assert.equal((await f.request('/api/pair', { code: pair.code })).status, 401);
   const phoneToken = paired.data.token;
   assert.equal((await f.request('/api/projects', { path: f.projectPath }, { Authorization: `Bearer ${phoneToken}` })).status, 403);
+  // An attempt id lets a phone that lost the answer fetch the same token again; another attempt finds the code used.
+  const next = (await f.request('/api/pairing')).data, attempt = randomUUID(), exchange = body => f.request('/api/pair', body, { Authorization: '' });
+  assert.equal((await exchange({ code: next.code, attempt: 'not-a-uuid' })).status, 400);
+  const first = await exchange({ code: next.code, attempt }); assert.equal(first.status, 200);
+  assert.deepEqual((await exchange({ code: next.code.toLowerCase(), attempt: attempt.toUpperCase() })).data, first.data);
+  assert.equal((await exchange({ code: next.code, attempt: randomUUID() })).status, 401);
+  assert.equal((await exchange({ code: next.code })).status, 401);
+  assert.equal((await f.request('/api/state', undefined, { Authorization: `Bearer ${first.data.token}` })).status, 200);
   await f.restart(); assert.equal((await f.request('/api/state', undefined, { Authorization: `Bearer ${phoneToken}` })).status, 200);
 });
 
@@ -238,7 +247,12 @@ test('auth rejects unknown hosts, cross-origin bootstrap, proxy bootstrap, missi
   assert.equal((await f.request('/api/local-session', undefined, { 'X-Forwarded-For': '1.2.3.4' })).status, 403);
   assert.equal((await f.request('/api/local-session', undefined, { 'Sec-Fetch-Site': 'cross-site' })).status, 403);
   assert.equal((await f.request('/api/local-session', undefined, { Host: `10.0.2.2:${f.service.server.address().port}` })).status, 403);
+  const errors = t.mock.method(console, 'error', () => {});
   assert.equal((await f.request('/api/health', undefined, { Host: 'evil.test' })).status, 403);
+  assert.equal((await f.request('/api/health', undefined, { Host: 'evil.test' })).status, 403);
+  // Logged once, with what to do when it is the Mac's own new address.
+  assert.deepEqual(errors.mock.calls.map(call => call.arguments[0]).filter(line => /unknown host/.test(line)), ['Rejected a request for unknown host "evil.test". If that is this Mac\'s private address, run "Setup private connection" again.']);
+  errors.mock.restore();
   assert.equal((await f.request('/api/events?after=-1')).status, 400);
   assert.equal((await f.request('/api/chats', { projectId: 'missing' })).status, 404);
   assert.equal((await f.request('/api/projects', { path: '/this/does/not/exist' })).status, 400);
@@ -373,7 +387,9 @@ test('pending questions require answers, are visible after disconnect, and resol
   assert.equal((await f.request('/api/state')).data.chats.find(c => c.id === chat.id).status, 'waiting');
   assert.equal((await f.request(`/api/approvals/${approval.id}`, { decision: 'allow' })).status, 400);
   assert.equal((await f.request(`/api/approvals/${approval.id}`, { decision: 'allow', answers: { 'Which color?': 'Blue' } })).status, 200);
-  assert.equal((await f.request(`/api/approvals/${approval.id}`, { decision: 'allow' })).status, 409);
+  // A retry after a lost answer is fine; changing the answer is not.
+  assert.deepEqual((await f.request(`/api/approvals/${approval.id}`, { decision: 'allow', answers: { 'Which color?': 'Blue' } })).data, { ok: true });
+  assert.equal((await f.request(`/api/approvals/${approval.id}`, { decision: 'deny' })).status, 409);
   assert.equal((await f.finished(chat)).status, 'idle');
   const reply = (await f.request(`/api/chats/${chat.id}/messages`)).data.messages.find(m => m.role === 'assistant');
   assert.equal(JSON.parse(reply.text).updatedInput.answers['Which color?'], 'Blue');
@@ -1475,4 +1491,80 @@ test('without a screen interface (tests, other platforms) locking is not offered
   assert.equal((await f.request('/api/mac/lock', {})).status, 404);
   const { macScreen } = await import('./screen.mjs');
   await assert.rejects(createService({ screen: macScreen, port: 0, dataDir: join(f.dir, 'other'), claudeProjectsDir: f.claudeProjectsDir }), /must not lock the real screen/);
+});
+
+test('the question bridge waits for its answer with node:http, not fetch and its 300-second headers timeout', async t => {
+  let seen;
+  const internal = http.createServer((request, response) => {
+    let data = ''; request.on('data', chunk => data += chunk);
+    request.on('end', () => {
+      seen = { body: JSON.parse(data), auth: request.headers.authorization, connection: request.headers.connection };
+      setTimeout(() => { response.writeHead(200, { 'Content-Type': 'application/json' }); response.end(JSON.stringify({ behavior: 'allow', updatedInput: { answers: { 'Which color?': 'Blue' } } })); }, 300);
+    });
+  });
+  await new Promise(resolveListening => internal.listen(0, '127.0.0.1', resolveListening)); t.after(() => internal.close());
+  // fetch is poisoned: a bridge that still used it would deny the question.
+  const child = spawn(process.execPath, ['--import', 'data:text/javascript,globalThis.fetch=()=>Promise.reject(new Error("fetch"))', join(here, 'approval-bridge.mjs'), '--hook'], { env: { ...process.env, POCKETBRIDGE_INTERNAL_URL: `http://127.0.0.1:${internal.address().port}`, POCKETBRIDGE_INTERNAL_TOKEN: 'internal-token', POCKETBRIDGE_CHAT_ID: 'chat-1' } });
+  let output = ''; child.stdout.on('data', chunk => output += chunk);
+  child.stdin.end(JSON.stringify({ tool_name: 'AskUserQuestion', tool_input: { questions: [{ question: 'Which color?' }] } }));
+  await new Promise(resolveClosed => child.on('close', resolveClosed));
+  assert.deepEqual(JSON.parse(output).hookSpecificOutput, { hookEventName: 'PreToolUse', permissionDecision: 'allow', updatedInput: { answers: { 'Which color?': 'Blue' } } });
+  assert.deepEqual(seen, { body: { chatId: 'chat-1', tool: 'AskUserQuestion', input: { questions: [{ question: 'Which color?' }] } }, auth: 'Bearer internal-token', connection: 'close' });
+});
+
+test('a service shutdown reads as a restart, not as the owner pressing Stop', async t => {
+  const f = await fixture(t), restarted = 'Mac service restarted during this task. Review the conversation before continuing.';
+  const hanging = await f.createChat(); await f.send(hanging, 'hang'); await wait(() => existsSync(join(f.projectPath, 'child.pid')));
+  // A steer accepted while a run is closing is dropped by the shutdown and says so.
+  const closing = await f.createChat(); await f.send(closing, 'stop-closing');
+  await wait(() => {
+    if (!existsSync(join(f.projectPath, 'closing.pid'))) return false;
+    try { process.kill(Number(readFileSync(join(f.projectPath, 'closing.pid'), 'utf8')), 0); return false; } catch { return true; }
+  });
+  assert.equal((await f.request(`/api/chats/${closing.id}/prompts`, { id: randomUUID(), text: 'check staging', delivery: 'steer' })).status, 202);
+  await f.restart();
+  const chats = (await f.request('/api/state')).data.chats;
+  assert.deepEqual(chats.filter(chat => [hanging.id, closing.id].includes(chat.id)).map(chat => [chat.status, chat.error]), [['interrupted', restarted], ['interrupted', restarted]]);
+  const notes = (await f.request(`/api/chats/${closing.id}/messages`)).data.messages.filter(message => message.role === 'activity').map(message => message.text);
+  assert.ok(notes.includes('Mac service restarted before "check staging" ran. Send it again if you still need it.'));
+  assert.ok(!notes.some(note => note.startsWith('Stopped')));
+});
+
+test('a tool process holding the CLI output open cannot keep a chat running', async t => {
+  const f = await fixture(t, { pipeGraceMs: 200 }), chat = await f.createChat();
+  await f.send(chat, 'pipe-holder');
+  assert.equal((await f.finished(chat)).status, 'idle');
+  const pid = Number(readFileSync(join(f.projectPath, 'child.pid'), 'utf8'));
+  await wait(() => { try { process.kill(pid, 0); return false; } catch { return true; } });
+});
+
+test('connections outlive Tailscale Serve idle reuse and allow slow uploads', async t => {
+  const { server } = (await fixture(t)).service;
+  assert.ok(server.keepAliveTimeout > 90_000); assert.equal(server.requestTimeout, 120_000);
+  assert.ok(server.headersTimeout <= server.requestTimeout);
+});
+
+test('an event cursor ahead of the Mac gets the reset hint instead of silently skipping changes', async t => {
+  const f = await fixture(t), lastSeq = (await f.request('/api/state')).data.lastSeq, controller = new AbortController();
+  const response = await fetch(f.service.url + `/api/events?after=${lastSeq + 1000}`, { headers: { Authorization: `Bearer ${f.token}` }, signal: controller.signal });
+  const reader = response.body.getReader(), decoder = new TextDecoder(); let data = '';
+  const event = await wait(async () => { data += decoder.decode((await reader.read()).value); return data.match(/^data: (.*)$/m)?.[1]; });
+  controller.abort();
+  assert.deepEqual(JSON.parse(event), { seq: lastSeq, chatId: null, type: 'state', reset: true });
+});
+
+test('an event stream whose reader stalls is dropped once a write waits too long', async t => {
+  const f = await fixture(t, { drainTimeoutMs: 200 }), before = f.service.state().lastSeq;
+  const db = new DatabaseSync(join(f.dir, 'data/data.sqlite')), insert = db.prepare('INSERT INTO events (chatId,type) VALUES (?,?)');
+  db.exec('BEGIN'); for (let i = 0; i < 9000; i++) insert.run(randomUUID(), 'message'); db.exec('COMMIT'); db.close();
+  const port = f.service.server.address().port, socket = net.connect(port, '127.0.0.1');
+  t.after(() => socket.destroy());
+  socket.write(`GET /api/events?after=${before} HTTP/1.1\r\nHost: 127.0.0.1:${port}\r\nAuthorization: Bearer ${f.token}\r\n\r\n`);
+  socket.pause();
+  await new Promise(resolvePause => setTimeout(resolvePause, 1000));
+  let data = ''; socket.setEncoding('utf8'); socket.on('data', chunk => data += chunk);
+  const closed = new Promise(resolveClosed => socket.on('close', resolveClosed)); socket.resume();
+  await Promise.race([closed, new Promise((_, reject) => setTimeout(() => reject(new Error('Stalled stream was not dropped')), 4000))]);
+  const ids = [...data.matchAll(/^id: (\d+)$/gm)].map(match => Number(match[1]));
+  assert.ok(!data.includes('reset')); assert.ok(ids.length > 0 && ids.at(-1) < before + 9000);
 });
