@@ -60,14 +60,18 @@ export async function refresh() {
     // A turn that ended used some of the plan, and may have hit its limit.
     if (stopped) { loadGit(true); loadUsage(true); }
   } catch (error) {
-    // The stream may still look healthy: drop it so the connect loop fetches a token, refreshes and backs off.
-    refreshError = error.message; streamController?.abort();
+    refreshError = error.message;
+    // A lost connection or a rotated token: drop the stream so the connect loop fetches a token, refreshes and backs
+    // off. Any other answer (one chat's transcript failing) leaves the stream up and is asked again shortly.
+    if (!error.status || error.status === 401) streamController?.abort();
+    else { clearTimeout(refreshAgain); refreshAgain = setTimeout(scheduleRefresh, 5000); }
     throw error;
   } finally {
     refreshing = false;
     if (pendingRefresh) { pendingRefresh = false; scheduleRefresh(); }
   }
 }
+let refreshAgain;
 function scheduleRefresh() {
   if (refreshTimer) return;
   refreshTimer = setTimeout(() => { refreshTimer = null; refresh().catch(error => notice(error.message)); }, 250);
@@ -82,10 +86,11 @@ const pause = ms => woken ? Promise.resolve(woken = false) : new Promise(resolve
 function reconnectNow() { if (wake) wake(); else woken = true; streamController?.abort(); }
 async function connect() {
   let retry = 1000;
-  for (;;) {
+  while (!app.passive) {
     try {
       if (!app.token) app.token = (await api('/local-session')).token;
-      await refresh();
+      // Only a failed connection holds the stream back; the Mac refusing one transcript is retried with the stream up.
+      await refresh().catch(error => { if (!error.status || error.status === 401 || !app.state) throw error; notice(error.message); });
       const controller = streamController = new AbortController();
       const opening = setTimeout(() => controller.abort(), 15000);
       const response = await fetch(`/api/events?after=${seq}`, {headers:{Authorization:`Bearer ${app.token}`}, signal:controller.signal, cache:'no-store'}).finally(() => clearTimeout(opening));
@@ -111,6 +116,7 @@ async function connect() {
       } finally { clearInterval(watchdog); reader.releaseLock(); }
       throw new Error('Connection ended');
     } catch {
+      if (app.passive) break;
       connection(false, 'Reconnecting to Mac…');
       if (!app.state) notice('PocketBridge could not connect. Open this page through the Mac launcher. It will retry automatically.');
       await pause(retry); retry = Math.min(retry * 2, 10000);
@@ -118,8 +124,20 @@ async function connect() {
   }
 }
 
-document.addEventListener('visibilitychange', () => { if (!document.hidden) { scheduleRefresh(); if (!app.online) reconnectNow(); } });
-window.addEventListener('online', reconnectNow);
+// One tab at a time: tabs share one saved draft per chat, so two could overwrite each other's unconfirmed delivery
+// IDs. The newest tab takes over; an older one stops, saves nothing more and offers to take over again by reloading.
+const tabs = 'BroadcastChannel' in window ? new BroadcastChannel('pocketbridge') : null;
+if (tabs) tabs.onmessage = event => {
+  if (event.data !== 'active' || app.passive) return;
+  app.passive = true; clearTimeout(refreshTimer); clearTimeout(refreshAgain); streamController?.abort(); wake?.();
+  connection(false, 'Open in another tab'); $('elsewhere').showModal();
+};
+tabs?.postMessage('active');
+$('use-here').onclick = () => location.reload();
+$('elsewhere').addEventListener('cancel', event => event.preventDefault());
+
+document.addEventListener('visibilitychange', () => { if (!document.hidden && !app.passive) { scheduleRefresh(); if (!app.online) reconnectNow(); } });
+window.addEventListener('online', () => { if (!app.passive) reconnectNow(); });
 $('prompt').value = drafts[app.selected]?.text ?? '';
 // Size once styles are applied; module scripts can run before the stylesheet settles.
 requestAnimationFrame(autosize); addEventListener('resize', autosize);

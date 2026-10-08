@@ -236,6 +236,10 @@ test('pairing is one-time, QR matches the issued code, phone token persists, and
   assert.equal((await exchange({ code: next.code, attempt: randomUUID() })).status, 401);
   assert.equal((await exchange({ code: next.code })).status, 401);
   assert.equal((await f.request('/api/state', undefined, { Authorization: `Bearer ${first.data.token}` })).status, 200);
+  // Another phone pairing with a newer code doesn't take the first attempt's lost answer away.
+  const other = (await f.request('/api/pairing')).data;
+  assert.equal((await exchange({ code: other.code, attempt: randomUUID() })).status, 200);
+  assert.deepEqual((await exchange({ code: next.code, attempt })).data, first.data);
   await f.restart(); assert.equal((await f.request('/api/state', undefined, { Authorization: `Bearer ${phoneToken}` })).status, 200);
 });
 

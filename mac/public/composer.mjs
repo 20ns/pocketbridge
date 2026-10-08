@@ -1,6 +1,6 @@
 // The composer: next-prompt options, images, "/" commands, the git line and delivery.
 import {withAttachments, slashMatches, editDraft, prepareDelivery, afterDelivery, promptPayload, blankLocalDraft, usableAgent, findModel, resolveOptions, supportedOptions, modeLabels, effortLabel, modeHelp, modelName, effortName, speedName, scheduleReset, scheduleTime} from './support.mjs';
-import {$, el, app, drafts, localChats, overrides, persist, persistDrafts, persistLocalChats, persistLastOptions, mergeDrafts, notice, api, readJson, imageUrl, rememberImage, currentChat, storedChat, agentFor, agentName, busy, isGeneral} from './core.mjs';
+import {$, el, app, drafts, localChats, overrides, persist, persistDrafts, persistLocalChats, persistLastOptions, notice, api, readJson, imageUrl, rememberImage, currentChat, storedChat, agentFor, agentName, busy, isGeneral} from './core.mjs';
 import {controls, refresh, renderState} from './app.mjs';
 import {renderChatList} from './sidebar.mjs';
 import {limitsOf, onUsage} from './usage.mjs';
@@ -278,7 +278,7 @@ async function submit(delivery, schedule = null) {
     const answer = await api(`/chats/${encodeURIComponent(chatId)}/prompts`, promptPayload(draft, projectId));
     delete overrides[chatId]; persist('pocketbridge.options', overrides);
     persistLastOptions(optionsOf(draft));
-    // A newer draft (another tab's) stays; the images that were just sent don't.
+    // Text typed since stays; the images that were just sent don't.
     const left = afterDelivery(drafts[chatId], draft);
     if (left) drafts[chatId] = left; else delete drafts[chatId];
     persistDrafts();
@@ -326,17 +326,4 @@ export async function reconcileDrafts(ids = Object.keys(drafts).filter(id => id 
   }
   return open;
 }
-// Another tab saved its drafts: keep both tabs' unconfirmed sends. One it dropped unsettled is checked, then saved again.
-addEventListener('storage', async event => {
-  if (event.key !== 'pocketbridge.drafts' || event.storageArea !== localStorage) return;
-  let stored; try { stored = JSON.parse(event.newValue) ?? {}; } catch { return; }
-  const before = drafts[app.selected];
-  const lost = mergeDrafts(stored);
-  if (drafts[app.selected] !== before) { $('prompt').value = drafts[app.selected]?.text ?? ''; autosize(); renderOptions(); renderAttachments(); }
-  renderChatList(); controls();
-  if (!lost.length) return;
-  const open = app.state?.capabilities?.promptStatus ? await reconcileDrafts(lost) : lost;
-  if (open.some(id => drafts[id]?.attempted)) persistDrafts();
-});
-
 $('stop').onclick = async () => { $('stop').disabled = true; try { await api(`/chats/${encodeURIComponent(app.selected)}/stop`, {}); await refresh(); } catch (error) { notice(error.message); controls(); } };

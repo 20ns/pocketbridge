@@ -8,11 +8,12 @@ export const el = (tag, className, text) => { const node = document.createElemen
 
 const saved = (key, fallback) => { try { return JSON.parse(localStorage.getItem(key)) ?? fallback; } catch { return fallback; } };
 // Storage may be disabled or full; the live session still works, and false tells a sender its delivery ID wasn't kept.
-export const persist = (key, value) => { try { localStorage.setItem(key, JSON.stringify(value)); return true; } catch { return false; } };
+// A tab another one took over writes nothing, so it can't overwrite that tab's delivery IDs.
+export const persist = (key, value) => { if (app.passive) return false; try { localStorage.setItem(key, JSON.stringify(value)); return true; } catch { return false; } };
 
 /** The live session: what the Mac last reported and what this page is doing now. */
 export const app = {
-  token: null, state: null, online: false, sending: false, agents: [],
+  token: null, state: null, online: false, sending: false, passive: false, agents: [],
   selected: saved('pocketbridge.chat', null),
   preferredProject: saved('pocketbridge.project', ''),
   lastAgent: saved('pocketbridge.lastAgent', 'claude'),
@@ -27,21 +28,6 @@ export const overrides = saved('pocketbridge.options', {});
 export const lastOptions = saved('pocketbridge.lastOptions', {});
 
 export const persistDrafts = () => persist('pocketbridge.drafts', Object.fromEntries(Object.entries(drafts).map(([id, draft]) => [id, storedDraft(draft)])));
-/**
- * Takes in drafts another tab saved, so neither tab's unconfirmed send loses its delivery ID. An attempt wins over
- * plain text, the other tab settling an attempt wins, and this tab keeps the open chat's own text.
- * Returns the chats whose attempt the other tab dropped without settling; the caller checks them with the Mac.
- */
-export function mergeDrafts(stored) {
-  const lost = [];
-  for (const id of new Set([...Object.keys(drafts), ...Object.keys(stored)])) {
-    const ours = drafts[id], theirs = stored[id];
-    if (theirs?.attempted) { if (!ours?.attempted) drafts[id] = theirs; }
-    else if (ours?.attempted) { if (theirs?.id === ours.id) drafts[id] = theirs; else lost.push(id); }
-    else if (id !== app.selected) { if (theirs) drafts[id] = theirs; else delete drafts[id]; }
-  }
-  return lost;
-}
 export function persistLocalChats() {
   const stored = {};
   for (const [id, chat] of Object.entries(localChats)) if (!blankLocalDraft(drafts[id])) stored[id] = chat;

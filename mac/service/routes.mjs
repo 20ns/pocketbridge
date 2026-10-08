@@ -19,8 +19,9 @@ export function createRoutes(ctx) {
   const uploadsDir = join(dataDir, 'uploads'); mkdirSync(uploadsDir, { recursive: true, mode: 0o700 });
   const uploadPath = row => join(uploadsDir, `${row.id}.${imageExtensions[row.type]}`);
   const pairAttempts = new Map(), loggedHosts = new Set();
-  // usedPair keeps the last exchange's token in memory, so the same attempt can fetch an answer it lost.
-  let latestPair, usedPair;
+  // usedPairs keeps each unexpired exchange's token in memory, so the same attempt can fetch an answer it lost even
+  // after another phone paired with a newer code.
+  let latestPair; const usedPairs = [];
   const schedules = ctx.schedules = createSchedules(ctx, uploadPath);
   const deliver = createPrompts(ctx, uploadPath);
   // Transcripts are mostly text; gzip keeps phone refreshes small over Tailscale.
@@ -85,10 +86,12 @@ export function createRoutes(ctx) {
         const input = await body(request), code = typeof input.code === 'string' ? input.code.toUpperCase() : undefined;
         if (input.attempt != null && !uuid(input.attempt)) throw fail(400, 'attempt must be a UUID for this pairing attempt');
         // The same attempt asking again gets its token again until the code would have expired; any other finds it used.
-        if (input.attempt && usedPair && usedPair.expiresAt >= Date.now() && equal(code, usedPair.code) && equal(input.attempt.toLowerCase(), usedPair.attempt) && get('SELECT token FROM tokens WHERE token=?', usedPair.token)) return json(response, 200, { token: usedPair.token });
+        while (usedPairs.length && usedPairs[0].expiresAt < Date.now()) usedPairs.shift();
+        const used = input.attempt && usedPairs.find(pair => equal(code, pair.code) && equal(input.attempt.toLowerCase(), pair.attempt));
+        if (used && get('SELECT token FROM tokens WHERE token=?', used.token)) return json(response, 200, { token: used.token });
         if (!latestPair || latestPair.expiresAt < Date.now() || !equal(code, latestPair.code)) throw fail(401, 'Pairing code is invalid or expired');
         const token = secret(); run('INSERT INTO tokens VALUES (?,?)', token, Date.now());
-        usedPair = input.attempt ? { code: latestPair.code, expiresAt: latestPair.expiresAt, attempt: input.attempt.toLowerCase(), token } : undefined;
+        if (input.attempt) usedPairs.push({ code: latestPair.code, expiresAt: latestPair.expiresAt, attempt: input.attempt.toLowerCase(), token });
         latestPair = undefined; return json(response, 200, { token });
       }
       if (route.startsWith('/api/')) {
