@@ -310,15 +310,24 @@ class BridgeModel(application: Application) : AndroidViewModel(application) {
         if (paired) { error = "Already paired. Disconnect in Settings before changing Macs."; return }
         pairUrl = uri.getQueryParameter("url").orEmpty(); pairCode = uri.getQueryParameter("code").orEmpty()
     }
+    private var pairAttempt: Pair<String, String>? = null
     fun pair() = action {
         require(!paired) { "Disconnect before changing Macs." }
         val base = normalizeServer(pairUrl)
         require(pairCode.isNotBlank()) { "Enter the pairing code shown on your Mac." }
         val code = pairCode.trim()
         val pairingSession = store.session()
+        // One attempt id per Mac and code: if the answer is lost, asking again (now, or by tapping Pair) gets the same
+        // token instead of finding the one-time code used.
+        val attempt = pairAttempt?.takeIf { it.first == "$base $code" }?.second ?: UUID.randomUUID().toString()
+        pairAttempt = "$base $code" to attempt
+        val request = JSONObject().put("code", code).put("attempt", attempt)
         val token = withContext(Dispatchers.IO) {
-            Api(base).request("/api/pair", JSONObject().put("code", code)).getString("token").also { store.savePair(base, it, pairingSession) }
+            val answer = try { Api(base).request("/api/pair", request) }
+            catch (lost: java.io.IOException) { if (lost is ApiError) throw lost; delay(1500); Api(base).request("/api/pair", request) }
+            answer.getString("token").also { store.savePair(base, it, pairingSession) }
         }
+        pairAttempt = null
         api = Api(base, token); paired = true; pairCode = ""; connectionIssue = ""; revoked = false
         projects = emptyList(); chats = emptyList(); messages = emptyList(); approvals = emptyList(); selected = ""; draft = ""; pastes = emptyList(); pending = null; localDraftIds = emptyList(); options = ChatOptions("bypassPermissions")
         forgetPairingData()
