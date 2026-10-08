@@ -1,7 +1,7 @@
 // PocketBridge in the Mac browser: connects to the local service, keeps state in step and renders it.
 // core.mjs holds shared state; sidebar, conversation, composer, usage and pairing own their parts of the page.
 import {EventDecoder, agentsFrom, blankLocalDraft} from './support.mjs';
-import {$, app, drafts, localChats, overrides, persist, persistDrafts, persistLocalChats, discardBlankLocal, notice, api, currentChat, busy} from './core.mjs';
+import {$, app, drafts, savedDrafts, localChats, overrides, persist, persistDrafts, persistLocalChats, discardBlankLocal, notice, api, currentChat, busy} from './core.mjs';
 import {renderProjects, renderChatList, renderCliStatus, renderAgentSwitches, loadSessions, sidebarControls, narrow, showDrawer, restoreSidebarScroll} from './sidebar.mjs';
 import {renderHeader, headerControls, renderEmpty, clearConversation, loadMessages, cancelRename} from './conversation.mjs';
 import {renderOptions, renderAttachments, composerControls, autosize, clearPrompt, hideSlash, loadGit, sameOptions, savedOptions, reconcileDrafts} from './composer.mjs';
@@ -39,6 +39,7 @@ export async function selectChat(id) {
 }
 
 export async function refresh() {
+  if (app.passive) return;
   if (refreshing) { pendingRefresh = true; return; }
   refreshing = true;
   try {
@@ -51,12 +52,13 @@ export async function refresh() {
     for (const [id, options] of Object.entries(overrides)) { const chat = state.chats.find(item => item.id === id); if (!chat || sameOptions(options, savedOptions(chat))) delete overrides[id]; }
     persist('pocketbridge.options', overrides);
     if (app.selected && !currentChat()) { app.selected = null; clearPrompt(); }
-    const stopped = previousBusy && !busy(currentChat()); previousBusy = busy(currentChat());
-    renderState(); await loadMessages();
+    // Settled only once the transcript loaded too, so a retry after a failed one still sees the turn end.
+    const stopped = previousBusy && !busy(currentChat()), nowBusy = busy(currentChat());
+    renderState(); await loadMessages(); previousBusy = nowBusy;
     // Sequences only grow, so a lower lastSeq means a replaced database. Committed once state and messages are in.
     seq = state.lastSeq;
     if (refreshError && $('notice').textContent === refreshError) notice();
-    refreshError = '';
+    refreshError = ''; retryAt = 0;
     // A turn that ended used some of the plan, and may have hit its limit.
     if (stopped) { loadGit(true); loadUsage(true); }
   } catch (error) {
@@ -64,17 +66,18 @@ export async function refresh() {
     // A lost connection or a rotated token: drop the stream so the connect loop fetches a token, refreshes and backs
     // off. Any other answer (one chat's transcript failing) leaves the stream up and is asked again shortly.
     if (!error.status || error.status === 401) streamController?.abort();
-    else { clearTimeout(refreshAgain); refreshAgain = setTimeout(scheduleRefresh, 5000); }
+    else { retryAt = Date.now() + 5000; queueMicrotask(scheduleRefresh); }
     throw error;
   } finally {
     refreshing = false;
     if (pendingRefresh) { pendingRefresh = false; scheduleRefresh(); }
   }
 }
-let refreshAgain;
+// After a refused refresh, change hints wait for retryAt instead of asking again every 250 ms.
+let retryAt = 0;
 function scheduleRefresh() {
-  if (refreshTimer) return;
-  refreshTimer = setTimeout(() => { refreshTimer = null; refresh().catch(error => notice(error.message)); }, 250);
+  if (refreshTimer || app.passive) return;
+  refreshTimer = setTimeout(() => { refreshTimer = null; refresh().catch(error => notice(error.message)); }, Math.max(250, retryAt - Date.now()));
 }
 
 // The backoff can be cut short: coming back online or to the page retries at once, even mid-attempt.
@@ -91,9 +94,11 @@ async function connect() {
       if (!app.token) app.token = (await api('/local-session')).token;
       // Only a failed connection holds the stream back; the Mac refusing one transcript is retried with the stream up.
       await refresh().catch(error => { if (!error.status || error.status === 401 || !app.state) throw error; notice(error.message); });
+      if (app.passive) break;
       const controller = streamController = new AbortController();
       const opening = setTimeout(() => controller.abort(), 15000);
       const response = await fetch(`/api/events?after=${seq}`, {headers:{Authorization:`Bearer ${app.token}`}, signal:controller.signal, cache:'no-store'}).finally(() => clearTimeout(opening));
+      if (app.passive) { controller.abort(); break; }
       if (response.status === 401) app.token = null;
       if (!response.ok || !response.body) throw new Error(`Event connection failed (${response.status})`);
       connection(true, 'Connected to Mac'); notice(); retry = 1000; woken = false;
@@ -125,14 +130,29 @@ async function connect() {
 }
 
 // One tab at a time: tabs share one saved draft per chat, so two could overwrite each other's unconfirmed delivery
-// IDs. The newest tab takes over; an older one stops, saves nothing more and offers to take over again by reloading.
+// IDs. The newest tab takes over; an older one stops, saves nothing more, says so, and can take over by reloading.
+// Its writes are all done when it answers "released", so the new tab then reads the drafts again.
 const tabs = 'BroadcastChannel' in window ? new BroadcastChannel('pocketbridge') : null;
-if (tabs) tabs.onmessage = event => {
-  if (event.data !== 'active' || app.passive) return;
-  app.passive = true; clearTimeout(refreshTimer); clearTimeout(refreshAgain); streamController?.abort(); wake?.();
+const born = [performance.timeOrigin, Math.random()];
+const newer = (a, b) => a[0] !== b[0] ? a[0] > b[0] : a[1] > b[1];
+if (tabs) tabs.onmessage = ({data}) => {
+  if (app.passive) return;
+  if (data?.type === 'released') { reloadDrafts(); return; }
+  if (data?.type !== 'active' || !Array.isArray(data.born)) return;
+  // An older tab announcing late is told again who is newest.
+  if (!newer(data.born, born)) { tabs.postMessage({type: 'active', born}); return; }
+  app.passive = true; clearTimeout(refreshTimer); streamController?.abort(); wake?.();
   connection(false, 'Open in another tab'); $('elsewhere').showModal();
+  tabs.postMessage({type: 'released'});
 };
-tabs?.postMessage('active');
+tabs?.postMessage({type: 'active', born});
+function reloadDrafts() {
+  for (const id of Object.keys(drafts)) delete drafts[id];
+  Object.assign(drafts, savedDrafts());
+  if (!app.sending) { $('prompt').value = drafts[app.selected]?.text ?? ''; autosize(); }
+  if (app.state) renderState();
+  renderAttachments();
+}
 $('use-here').onclick = () => location.reload();
 $('elsewhere').addEventListener('cancel', event => event.preventDefault());
 

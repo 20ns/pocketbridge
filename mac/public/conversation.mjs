@@ -186,7 +186,7 @@ export async function loadMessages() {
   transcriptChat = id; transcript = result;
   const pendingDraft = drafts[id];
   // A send whose answer was lost is confirmed once its message is in the transcript.
-  if (pendingDraft?.attempted && result.messages.some(message => message.role === 'user' && message.id === pendingDraft.id)) settleDraft(id);
+  if (pendingDraft?.attempted && result.messages.some(message => message.role === 'user' && message.id === pendingDraft.id)) settleDraft(id, pendingDraft.id);
   const chat = currentChat();
   const scroller = $('messages'), target = $('log');
   const previousScroll = scroller.scrollTop;

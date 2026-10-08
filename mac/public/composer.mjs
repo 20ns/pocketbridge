@@ -303,8 +303,12 @@ async function submit(delivery, schedule = null) {
 // A send whose answer was lost says so until the Mac confirms or refuses that delivery ID.
 const unconfirmedNote = 'Your message is saved. Retry will use the same delivery ID.';
 let unconfirmedFor = null;
-/** Drops a draft the Mac has recorded, as an answered send would, or one whose chat was deleted, as a 410 would. */
-export function settleDraft(chatId, gone = false) {
+/**
+ * Drops the draft holding delivery [draftId] once the Mac has recorded it, as an answered send would, or once its chat
+ * was deleted, as a 410 would. A newer draft in that chat stays.
+ */
+export function settleDraft(chatId, draftId, gone = false) {
+  if (drafts[chatId]?.id !== draftId) return;
   delete drafts[chatId]; persistDrafts();
   if (gone) { delete localChats[chatId]; persistLocalChats(); }
   if (unconfirmedFor === chatId) { unconfirmedFor = null; if ($('notice').textContent.endsWith(unconfirmedNote)) notice(); }
@@ -321,7 +325,7 @@ export async function reconcileDrafts(ids = Object.keys(drafts).filter(id => id 
     try {
       const status = await api(`/chats/${encodeURIComponent(id)}/prompts/${encodeURIComponent(draft.id)}`);
       if (drafts[id] !== draft) continue;
-      if (status.deleted || status.accepted) settleDraft(id, status.deleted); else open.push(id);
+      if (status.deleted || status.accepted) settleDraft(id, draft.id, status.deleted); else open.push(id);
     } catch { open.push(id); }
   }
   return open;

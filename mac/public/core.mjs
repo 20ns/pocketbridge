@@ -21,7 +21,8 @@ export const app = {
 
 // Images still uploading when the page closed are dropped; finished ones are kept by id.
 const storedDraft = draft => ({...draft, attachments: (draft.attachments ?? []).filter(item => item.id).map(({id, type}) => ({id, type}))});
-export const drafts = Object.fromEntries(Object.entries(saved('pocketbridge.drafts', {})).map(([id, draft]) => [id, storedDraft(draft)]));
+export const savedDrafts = () => Object.fromEntries(Object.entries(saved('pocketbridge.drafts', {})).map(([id, draft]) => [id, storedDraft(draft)]));
+export const drafts = savedDrafts();
 export const localChats = saved('pocketbridge.localChats', {});
 // Options for the next prompt of a saved chat, and the last choice per agent for new chats.
 export const overrides = saved('pocketbridge.options', {});

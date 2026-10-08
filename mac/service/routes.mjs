@@ -84,7 +84,7 @@ export function createRoutes(ctx) {
         if (attempt.until < Date.now()) { attempt.count = 0; attempt.until = Date.now() + 60_000; } attempt.count++; pairAttempts.set(key, attempt);
         if (attempt.count > 10) throw fail(429, 'Too many pairing attempts; wait a minute');
         const input = await body(request), code = typeof input.code === 'string' ? input.code.toUpperCase() : undefined;
-        if (input.attempt != null && !uuid(input.attempt)) throw fail(400, 'attempt must be a UUID for this pairing attempt');
+        if (input.attempt != null && (typeof input.attempt !== 'string' || !uuid(input.attempt))) throw fail(400, 'attempt must be a UUID for this pairing attempt');
         // The same attempt asking again gets its token again until the code would have expired; any other finds it used.
         while (usedPairs.length && usedPairs[0].expiresAt < Date.now()) usedPairs.shift();
         const used = input.attempt && usedPairs.find(pair => equal(code, pair.code) && equal(input.attempt.toLowerCase(), pair.attempt));
