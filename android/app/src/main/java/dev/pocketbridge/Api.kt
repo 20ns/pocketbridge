@@ -21,6 +21,13 @@ class ApiError(val status: Int, message: String) : IOException(message) {
     val definitiveRejection get() = status in 400..499 && status != 408
 }
 
+/** The error a non-2xx answer carries: the Mac's own words, or what a bare proxy status means. */
+internal fun rejection(status: Int, error: String?, fallback: String) = ApiError(status, error?.takeIf { it.isNotBlank() } ?: when (status) {
+    // Tailscale Serve answers for the Mac when the service behind it is down or restarting.
+    502, 503, 504 -> "Your Mac is reachable, but PocketBridge isn't answering on it. It restarts on its own; check the Mac if this lasts."
+    else -> fallback
+})
+
 fun normalizeServer(input: String, allowLocalHttp: Boolean = BuildConfig.DEBUG): String {
     val uri = URI(input.trim())
     val scheme = uri.scheme?.lowercase()
@@ -37,10 +44,14 @@ private fun isLoopbackIp(host: String): Boolean {
 }
 class Api(base: String, val token: String = "") {
     val base = normalizeServer(base)
-    private val readClient = OkHttpClient.Builder().followRedirects(false).followSslRedirects(false).retryOnConnectionFailure(true).callTimeout(30, TimeUnit.SECONDS).connectTimeout(10, TimeUnit.SECONDS).readTimeout(20, TimeUnit.SECONDS).build()
+    // HTTP/2 pings (Tailscale Serve speaks it) find a dead pooled connection before a request waits out its timeout.
+    private val readClient = OkHttpClient.Builder().followRedirects(false).followSslRedirects(false).retryOnConnectionFailure(true).callTimeout(30, TimeUnit.SECONDS).connectTimeout(10, TimeUnit.SECONDS).readTimeout(20, TimeUnit.SECONDS).pingInterval(15, TimeUnit.SECONDS).build()
     // Mutations use fresh connections so expired server keepalives cannot lose an action.
     private val client = readClient.newBuilder().retryOnConnectionFailure(false).connectionPool(ConnectionPool(0, 5, TimeUnit.MINUTES)).build()
-    private val streamClient = readClient.newBuilder().callTimeout(0, TimeUnit.SECONDS).readTimeout(45, TimeUnit.SECONDS).build()
+    // The Mac sends a keepalive every 15 seconds: two missed ones mean the stream is dead (a network handover, a sleeping Mac).
+    private val streamClient = readClient.newBuilder().callTimeout(0, TimeUnit.SECONDS).readTimeout(35, TimeUnit.SECONDS).build()
+    /** Drops pooled connections after a network change: they belong to the old network and would only time out. */
+    fun evictConnections() { readClient.connectionPool.evictAll() }
     suspend fun request(path: String, body: JSONObject? = null): JSONObject {
         val request = Request.Builder().url(base + path).header("Authorization", "Bearer $token")
         if (body != null) {
@@ -57,7 +68,7 @@ class Api(base: String, val token: String = "") {
         return (if (body == null) readClient else client).newCall(request.build()).consume { response ->
             val text = response.body?.string().orEmpty()
             val result = runCatching { JSONObject(text) }.getOrNull()
-            if (!response.isSuccessful) throw ApiError(response.code, result?.optString("error")?.takeIf { it.isNotBlank() } ?: "The Mac rejected the request (${response.code}).")
+            if (!response.isSuccessful) throw rejection(response.code, result?.optString("error"), "The Mac rejected the request (${response.code}).")
             result ?: throw IOException("The Mac returned an unreadable response.")
         }
     }
@@ -66,7 +77,7 @@ class Api(base: String, val token: String = "") {
         val request = Request.Builder().url("$base/api/uploads").header("Authorization", "Bearer $token").post(bytes.toRequestBody(type.toMediaType())).build()
         return client.newCall(request).consume { response ->
             val result = runCatching { JSONObject(response.body?.string().orEmpty()) }.getOrNull()
-            if (!response.isSuccessful) throw ApiError(response.code, result?.optString("error")?.takeIf { it.isNotBlank() } ?: "The Mac rejected the image (${response.code}).")
+            if (!response.isSuccessful) throw rejection(response.code, result?.optString("error"), "The Mac rejected the image (${response.code}).")
             result?.takeIf { it.optString("id").isNotBlank() } ?: throw IOException("The Mac returned an unreadable response.")
         }
     }
@@ -79,9 +90,11 @@ class Api(base: String, val token: String = "") {
         if (source.request(limit + 1)) throw IOException("The image is too large.")
         source.buffer.readByteArray()
     }
-    suspend fun watch(after: Long, scope: String = "", onLine: (String) -> Unit) = events(after, scope).consume { response ->
-        if (!response.isSuccessful) throw ApiError(response.code, "Cannot stream changes (${response.code}).")
+    /** Streams change hints until the stream ends. [onOpen] runs once the Mac has accepted the stream. */
+    suspend fun watch(after: Long, scope: String = "", onOpen: () -> Unit = {}, onLine: (String) -> Unit) = events(after, scope).consume { response ->
+        if (!response.isSuccessful) throw rejection(response.code, null, "Cannot stream changes (${response.code}).")
         val source = response.body?.source() ?: throw IOException("The Mac returned an empty stream.")
+        onOpen()
         while (!source.exhausted()) onLine(source.readUtf8Line() ?: break)
     }
     /** [scope] "status" leaves streaming text out, for the background alerts connection. */
