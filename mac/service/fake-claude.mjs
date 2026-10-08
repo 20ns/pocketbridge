@@ -168,7 +168,10 @@ for await (const line of createInterface({ input: process.stdin })) {
     const limits = () => existsSync('fake-usage.json') ? { subscription_type: 'max', rate_limits: { limits: JSON.parse(readFileSync('fake-usage.json', 'utf8')) } } : usage;
     const response = kind === 'initialize' ? { models, commands, account: { email: 'private@example.com' } } : kind === 'get_usage' ? limits() : {};
     if (kind === 'interrupt' && turn) turn.interrupted = true;
-    emit({ type: 'control_response', response: { subtype: 'success', request_id: message.request_id, response } });
+    // fake-usage-delay holds milliseconds to wait before answering a usage request.
+    const delay = kind === 'get_usage' && existsSync('fake-usage-delay') ? Number(readFileSync('fake-usage-delay', 'utf8')) : 0;
+    const answer = () => emit({ type: 'control_response', response: { subtype: 'success', request_id: message.request_id, response } });
+    if (delay) setTimeout(answer, delay); else answer();
     continue;
   }
   if (message.type !== 'user') continue;

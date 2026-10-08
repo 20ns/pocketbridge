@@ -1,7 +1,7 @@
 // Scheduled prompts: recorded like any prompt, then run once when their time comes, usually a plan limit reset.
 // The Mac owns the schedule, so it runs with the phone off. A prompt marked started is never run again.
 import { existsSync, statSync } from 'node:fs';
-import { agentNames } from './agents.mjs';
+import { agentNames, modelEntry } from './agents.mjs';
 import { fail, oneLine } from './util.mjs';
 
 /** Runs a little after the reset the CLI reported, so the plan has really reset by then. */
@@ -47,8 +47,10 @@ export function createSchedules(ctx, uploadPath) {
 
   /** When a prompt for [agent] can run after its plan limit resets, from the CLI's own usage report. */
   const resolveReset = async (agent, model) => {
-    const usage = await agents.refreshUsage(agent);
-    const found = resetFor(usage?.limits, Date.now(), agents.modelDisplay(agent, model ?? 'default'));
+    const [usage, catalog] = await Promise.all([agents.refreshUsage(agent), agents.catalogFor(agent)]);
+    // A chat on "default" runs the catalog's default model, so that model's own limits apply to it.
+    const entry = modelEntry(catalog, model ?? 'default');
+    const found = resetFor(usage?.limits, Date.now(), entry?.name ?? model ?? '');
     if (!found) throw fail(409, `${agentNames[agent]} hasn't reported when its limit resets. Choose a time instead.`);
     return found.at;
   };

@@ -1,5 +1,11 @@
 package dev.pocketbridge
 
+import java.io.IOException
+import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.yield
 import org.json.JSONArray
 import org.json.JSONObject
 import org.junit.Assert.*
@@ -14,6 +20,14 @@ class LiveUpdateTest {
         // The chip shows the timer: no short text competes with it.
         assertNull(notice.chip)
         assertEquals("General", chatStatuses(JSONObject("""{"projects":[{"id":"g","name":"General","general":true}],"chats":[{"id":"c","projectId":"g","status":"running"}]}""")).single().project)
+    }
+
+    @Test fun `a failed step lookup is skipped, but a cancelled one ends before it can post again`() = runBlocking {
+        assertNull(orNull<String> { throw IOException("offline") })
+        var posted = false
+        val look = launch { orNull { delay(10_000) }; posted = true }
+        yield(); look.cancelAndJoin()
+        assertFalse(posted)
     }
 
     @Test fun `the step line prefers the agent's own summary, then the tool running now`() {

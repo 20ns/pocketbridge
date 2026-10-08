@@ -261,7 +261,8 @@ private fun deliveryLabel(kind: String) = when (kind) { STEER -> PocketIcons.Arr
                 }
             }
         }
-        if (folds) Row(verticalAlignment = Alignment.CenterVertically) {
+        // Expanded after a rotation, the text hasn't measured as folding yet, but it still folds back.
+        if (folds || expanded) Row(verticalAlignment = Alignment.CenterVertically) {
             TextButton(onClick = { expanded = !expanded }, contentPadding = PaddingValues(horizontal = Spacing.md)) {
                 Text(if (expanded) "Show less" else "Show more", style = MaterialTheme.typography.labelMedium)
             }

@@ -241,3 +241,27 @@ test('a reset can only be scheduled when the CLI reports one', async t => {
   assert.equal((await f.prompt(chat.id, { id: randomUUID(), text: 'bad', schedule: 'tomorrow' })).status, 400);
   assert.deepEqual((await f.transcript(chat.id)).messages, []);
 });
+
+test('a reset waits for the limits of the model the prompt runs with, even when the chat changes meanwhile', async t => {
+  const f = await fixture(t), hour = 3_600_000, sessionReset = Date.now() + hour, opusReset = Date.now() + 72 * hour;
+  writeFileSync(join(f.dir, 'data', 'fake-usage.json'), JSON.stringify([
+    { kind: 'session', percent: 100, severity: 'critical', resets_at: new Date(sessionReset).toISOString(), scope: null },
+    { kind: 'weekly_scoped', percent: 100, severity: 'critical', resets_at: new Date(opusReset).toISOString(), scope: { model: { id: null, display_name: 'Opus' } } },
+  ]));
+  // "default" is the catalog's default model, Opus Test, so its used-up weekly limit decides.
+  const plain = await f.createChat(), first = randomUUID();
+  assert.equal((await f.prompt(plain.id, { id: first, text: 'default model', schedule: 'reset' })).data.schedule.notBefore, opusReset + resetMarginMs);
+  assert.equal((await f.prompt(plain.id, { id: randomUUID(), text: 'sonnet', model: 'sonnet', schedule: 'reset' })).status, 409);
+  await f.request(`/api/chats/${plain.id}/prompts/${first}/cancel`, {});
+  assert.equal((await f.prompt(plain.id, { id: randomUUID(), text: 'on sonnet', model: 'sonnet', schedule: 'reset' })).data.schedule.notBefore, sessionReset + resetMarginMs);
+  // A chat on Sonnet switches to Opus while the usage report is awaited: the recorded time is Opus's.
+  const chat = await f.createChat();
+  await f.prompt(chat.id, { id: randomUUID(), text: 'pick sonnet', model: 'sonnet' }); await f.idle(chat.id);
+  writeFileSync(join(f.dir, 'data', 'fake-usage-delay'), '600');
+  const scheduled = f.prompt(chat.id, { id: randomUUID(), text: 'at reset', schedule: 'reset' });
+  await pause(200);
+  assert.equal((await f.prompt(chat.id, { id: randomUUID(), text: 'switch to opus', model: 'opus' })).status, 202);
+  const queued = await scheduled;
+  assert.equal(queued.status, 202); assert.equal(queued.data.schedule.notBefore, opusReset + resetMarginMs);
+  assert.equal((await f.chatOf(chat.id)).model, 'opus');
+});

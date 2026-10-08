@@ -13,6 +13,7 @@ import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.Bundle
 import android.os.IBinder
+import androidx.annotation.RequiresApi
 import java.io.IOException
 import java.net.URLEncoder
 import java.util.concurrent.ConcurrentHashMap
@@ -82,6 +83,10 @@ fun endedLabel(status: String) = when (status) { "error" -> "Failed"; "interrupt
 data class DeliveryWatch(val promptId: String, val until: Long)
 const val DELIVERY_WATCH_MILLIS = 120_000L
 fun awaitingDelivery(watch: DeliveryWatch, inFlight: Boolean, now: Long) = inFlight || now < watch.until
+
+/** A background read that fails to null, except when its coroutine is cancelled: that still ends the caller. */
+internal suspend fun <T> orNull(read: suspend () -> T): T? =
+    try { read() } catch (cancelled: CancellationException) { throw cancelled } catch (_: Exception) { null }
 
 /** New Macs answer from the ledger; old Macs need one transcript lookup. This read never resends a prompt. */
 internal suspend fun deliveryStatus(api: Api, chatId: String, promptId: String, supportsStatus: Boolean): JSONObject {
@@ -226,7 +231,8 @@ object Alerts {
             .apply {
                 if (notice.folder.isNotEmpty()) setSubText(notice.folder)
                 if (notice.since != null) { setWhen(notice.since); setUsesChronometer(true); setShowWhen(true) } else setShowWhen(false)
-                if (notice.stoppable && notice.chatId != null) addAction(stopAction(context, notice.chatId, notice.title))
+                // Before Android 12 an action can't ask for an unlocked phone, so Stop stays in the app there.
+                if (notice.stoppable && notice.chatId != null && Build.VERSION.SDK_INT >= 31) addAction(stopAction(context, notice.chatId, notice.title))
                 if (Build.VERSION.SDK_INT >= 36 && notice.promoted) {
                     // API 36 has no builder method for this yet; Android 16 reads the extra.
                     addExtras(Bundle().apply { putBoolean(EXTRA_PROMOTED, true) })
@@ -237,10 +243,10 @@ object Alerts {
     }
 
     /** Stop asks for an unlocked phone, so a pocket or a passer-by can't end the owner's work from the lock screen. */
+    @RequiresApi(31)
     private fun stopAction(context: Context, chatId: String, title: String): Notification.Action {
         val intent = Intent(context, AlertActionReceiver::class.java).setAction(ACTION_STOP).putExtra(EXTRA_CHAT, chatId).putExtra(EXTRA_TITLE, title)
-        return Notification.Action.Builder(null, "Stop", broadcast(context, intent, (chatId + ACTION_STOP).hashCode()))
-            .apply { if (Build.VERSION.SDK_INT >= 31) setAuthenticationRequired(true) }.build()
+        return Notification.Action.Builder(null, "Stop", broadcast(context, intent, (chatId + ACTION_STOP).hashCode())).setAuthenticationRequired(true).build()
     }
 
     private fun broadcast(context: Context, intent: Intent, code: Int) =
@@ -417,6 +423,8 @@ class AlertService : Service() {
 
     /** Shows what works now on the ongoing notification, unless nothing changed or the owner swiped it away. */
     private fun post() {
+        // A look that outlived the service must not bring back the notification it removed.
+        if (!scope.isActive) return
         val notice = liveNotice(active, started, steps)
         if (notice == shown || Alerts.liveDismissed) return
         shown = notice
@@ -436,10 +444,10 @@ class AlertService : Service() {
             if (id !in running) continue
             val tail = tails[id]
             val since = tail?.optString("cursor")?.takeIf { it.isNotEmpty() }?.let { "?since=" + URLEncoder.encode(it, "UTF-8") }.orEmpty()
-            val response = runCatching { withContext(Dispatchers.IO) { api.request("/api/chats/$id/messages$since") } }.getOrNull() ?: continue
+            val response = orNull { withContext(Dispatchers.IO) { api.request("/api/chats/$id/messages$since") } } ?: continue
             if (id in running) follow(id, tail.takeIf { since.isNotEmpty() }, response)
         }
-        post()
+        if (running.isNotEmpty()) post()
     }
 
     private fun follow(chatId: String, tail: JSONObject?, response: JSONObject) {
@@ -448,7 +456,7 @@ class AlertService : Service() {
         runningStep(next)?.let { steps[chatId] = it } ?: steps.remove(chatId)
     }
 
-    private suspend fun messages(api: Api, chatId: String) = runCatching { withContext(Dispatchers.IO) { api.request("/api/chats/$chatId/messages") } }.getOrNull()
+    private suspend fun messages(api: Api, chatId: String) = orNull { withContext(Dispatchers.IO) { api.request("/api/chats/$chatId/messages") } }
     /**
      * Posts the chat's pending request with its permission actions, once per request. A failed fetch posts a [fresh]
      * one plainly and tries again. A request answered meanwhile takes its notification with it.

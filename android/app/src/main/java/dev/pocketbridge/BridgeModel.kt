@@ -693,14 +693,14 @@ class BridgeModel(application: Application) : AndroidViewModel(application) {
     }
     /**
      * Cancels a prompt still waiting for its time. Its text comes back to an empty composer, so editing one is cancel,
-     * change, send. Safe to repeat: the Mac answers a cancelled prompt the same way.
+     * change, send; long text comes back as a pasted block. Safe to repeat: the Mac answers a cancelled prompt the same way.
      */
     fun cancelScheduled(promptId: String, text: String) = action {
         val currentApi = api ?: return@action
         val id = selected
         withContext(Dispatchers.IO) { currentApi.request("/api/chats/$id/prompts/$promptId/cancel", JSONObject()) }
         if (api !== currentApi) return@action
-        if (selected == id) draftAfterCancel(draft, pending != null, text)?.let(::editDraft)
+        if (selected == id) draftAfterCancel(draft, pastes, attachments.isNotEmpty(), pending != null, text)?.let { if (isLargePaste(it)) addPaste(it) else editDraft(it) }
         sync()
     }
     /** Sends a scheduled prompt now, or right after the turn running in its chat. */

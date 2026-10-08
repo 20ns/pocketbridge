@@ -62,9 +62,12 @@ fun scheduleOffer(canSchedule: Boolean, limits: List<UsageLimit>, now: Long, mod
     return ScheduleOffer(reset.at, reset.reached || (status == "error" && limitError(error)))
 }
 
-/** What the composer holds after cancelling a scheduled prompt: its text when the box is free, so cancel is also edit. */
-fun draftAfterCancel(current: String, pending: Boolean, cancelled: String): String? =
-    cancelled.takeIf { !pending && current.isBlank() && it.isNotBlank() }
+/**
+ * What the composer holds after cancelling a scheduled prompt: its text when the box is free, so cancel is also edit.
+ * Free means no typed text, pasted blocks or images, so the text never joins an unrelated draft.
+ */
+fun draftAfterCancel(current: String, pastes: List<Paste>, attached: Boolean, pending: Boolean, cancelled: String): String? =
+    cancelled.takeIf { !pending && current.isBlank() && pastes.isEmpty() && !attached && it.isNotBlank() }
 
 /** Unconfirmed prompts background alerts should wait for: a scheduled one starts no turn now, so it has nothing to report. */
 fun watchedDeliveries(pending: Map<String, PendingPrompt>) = pending.filterValues { it.schedule == null }

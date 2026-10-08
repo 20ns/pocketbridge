@@ -69,11 +69,14 @@ class ScheduleTest {
     }
 
     @Test fun `cancel puts the text back only into an empty, unlocked composer`() {
-        assertEquals("finish the refactor", draftAfterCancel("", false, "finish the refactor"))
-        assertEquals("finish the refactor", draftAfterCancel("  ", false, "finish the refactor"))
-        assertNull(draftAfterCancel("something new", false, "finish the refactor"))
-        assertNull(draftAfterCancel("", true, "finish the refactor"))
-        assertNull(draftAfterCancel("", false, ""))
+        assertEquals("finish the refactor", draftAfterCancel("", emptyList(), false, false, "finish the refactor"))
+        assertEquals("finish the refactor", draftAfterCancel("  ", emptyList(), false, false, "finish the refactor"))
+        assertNull(draftAfterCancel("something new", emptyList(), false, false, "finish the refactor"))
+        assertNull(draftAfterCancel("", emptyList(), false, true, "finish the refactor"))
+        assertNull(draftAfterCancel("", emptyList(), false, false, ""))
+        // A pasted block or an image is a draft too: the cancelled text would be sent along with it.
+        assertNull(draftAfterCancel("", listOf(Paste("k", "a log")), false, false, "finish the refactor"))
+        assertNull(draftAfterCancel("", emptyList(), true, false, "finish the refactor"))
     }
 
     @Test fun `background alerts never wait on a scheduled prompt`() {

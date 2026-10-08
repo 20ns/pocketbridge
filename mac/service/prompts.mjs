@@ -40,16 +40,15 @@ export function createPrompts(ctx, uploadPath) {
     const agent = stored?.agent || (input.agent === undefined ? 'claude' : listed(input.agent, agentIds, 'agent'));
     if (stored && input.agent !== undefined && input.agent !== agent) throw fail(409, 'Chat already uses another agent');
     let notBefore = schedule === null || schedule === 'reset' ? null : Number(schedule);
-    if (schedule === 'reset') {
-      if (!enabled[agent]) throw fail(409, `${agentNames[agent]} is turned off. Turn it on in Settings.`);
-      notBefore = await schedules.resolveReset(agent, input.model ?? stored?.model);
-    }
+    if (schedule === 'reset' && !enabled[agent]) throw fail(409, `${agentNames[agent]} is turned off. Turn it on in Settings.`);
     // Validation may wait for a model catalog, and another prompt can change the chat meanwhile. The options are
     // checked again against the chat as it is now, so a merged model, effort and speed is always a valid one.
     const optionsOf = row => row && JSON.stringify([row.model, row.effort, row.speed]);
     let requested;
     for (let attempt = 0; ; attempt++) {
       requested = await agents.chatOptions(agent, input, stored);
+      // A reset depends on the model the prompt will run with, so it is resolved against the same options.
+      if (schedule === 'reset') notBefore = await schedules.resolveReset(agent, requested.model ?? stored?.model);
       // Shutdown or a concurrent retry could have begun meanwhile.
       if (ctx.closed) throw fail(503, 'Mac service is shutting down');
       if (recorded()) return duplicate(recorded());
