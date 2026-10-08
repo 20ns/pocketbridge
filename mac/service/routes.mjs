@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { gzipSync } from 'node:zlib';
 import QRCode from 'qrcode';
 import { agentIds, agentNames } from './agents.mjs';
-import { createPrompts } from './prompts.mjs';
+import { createPrompts, MAX_PROMPT } from './prompts.mjs';
 import { secret, loopback, equal, fail, text, listed, plainText, oneLine, uuid, openUrl, imageType, imageExtensions } from './util.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -26,9 +26,10 @@ export function createRoutes(ctx) {
     response.writeHead(code, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store', ...(compress ? { 'Content-Encoding': 'gzip', Vary: 'Accept-Encoding' } : {}) });
     response.end(compress ? gzipSync(payload, { level: 4 }) : payload);
   };
-  const body = async request => {
+  // Prompts may carry long pastes, up to MAX_PROMPT characters of UTF-8 and JSON escapes; other bodies stay small.
+  const body = async (request, max = 200_000) => {
     // Chunks are joined as bytes first: a character split across two network chunks must not be corrupted.
-    const chunks = []; let size = 0; for await (const chunk of request) { size += chunk.length; if (size > 200_000) throw fail(413, 'Request too large'); chunks.push(chunk); }
+    const chunks = []; let size = 0; for await (const chunk of request) { size += chunk.length; if (size > max) throw fail(413, 'Request too large'); chunks.push(chunk); }
     if (ctx.closed) throw fail(503, 'Mac service is shutting down');
     try { const result = JSON.parse(Buffer.concat(chunks).toString('utf8')); if (!result || typeof result !== 'object' || Array.isArray(result)) throw new Error(); return result; } catch { throw fail(400, 'Invalid JSON body'); }
   };
@@ -217,7 +218,7 @@ export function createRoutes(ctx) {
             });
             return json(response, 200, { ok: true });
           }
-          if (action === 'prompts' && request.method === 'POST') { const [code, value] = await deliver(id, await body(request)); return json(response, code, value); }
+          if (action === 'prompts' && request.method === 'POST') { const [code, value] = await deliver(id, await body(request, 4 * MAX_PROMPT)); return json(response, code, value); }
           const row = { ...chat(id), ...get('SELECT activity,thinking FROM chats WHERE id=?', id) };
           if (action === 'messages' && request.method === 'GET') {
             const clock = get('SELECT generation,revision FROM message_clock WHERE id=1');

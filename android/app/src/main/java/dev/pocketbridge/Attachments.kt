@@ -57,9 +57,9 @@ fun decodeAttachments(value: String): List<Attachment> = if (value.isBlank()) em
     }
 }.getOrDefault(emptyList())
 
-/** Send needs text or an image, and every image already on the Mac: nothing is dropped silently. */
-fun canSendDraft(text: String, attachments: List<Attachment>) =
-    attachments.all { it.state == UploadState.Ready } && (text.isNotBlank() || attachments.isNotEmpty())
+/** Send needs text, a paste or an image, and every image already on the Mac: nothing is dropped silently. */
+fun canSendDraft(text: String, attachments: List<Attachment>, pastes: List<Paste> = emptyList()) =
+    attachments.all { it.state == UploadState.Ready } && (text.isNotBlank() || pastes.any { it.text.isNotBlank() } || attachments.isNotEmpty())
 
 /** Where shared images can go: chats working now, recent chats, then a new chat in a recently used project. */
 data class ShareTargets(val active: List<JSONObject>, val recent: List<JSONObject>, val projects: List<JSONObject>)

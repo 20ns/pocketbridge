@@ -117,7 +117,9 @@ import kotlin.coroutines.cancellation.CancellationException
     // While a prompt awaits confirmation it shows in the conversation, so the box stays empty and locked.
     val shownDraft = if (pending == null) model.draft else ""
     val shownImages = if (pending == null) model.attachments else emptyList()
-    val ready = pending == null && !off && !model.busy && model.online && model.selected.isNotEmpty() && canSendDraft(model.draft, model.attachments)
+    val shownPastes = if (pending == null) model.pastes else emptyList()
+    val ready = pending == null && !off && !model.busy && model.online && model.selected.isNotEmpty() && canSendDraft(model.draft, model.attachments, model.pastes)
+    val openEditor = LocalTextEditor.current
     val pick = rememberLauncherForActivityResult(ActivityResultContracts.PickMultipleVisualMedia(MAX_ATTACHMENTS)) { model.attach(it) }
     val canAttach = pending == null && !model.busy && !off && model.selected.isNotEmpty() && model.attachments.size < MAX_ATTACHMENTS
     // "/" commands: shown while the draft is a bare "/word"; Back or Escape hides them until the text changes.
@@ -144,8 +146,10 @@ import kotlin.coroutines.cancellation.CancellationException
                 Surface(Modifier.onSizeChanged { boxWidth = it.width }, shape = RoundedCornerShape(Corners.composer), color = pocket.composer, border = BorderStroke(1.dp, pocket.composerBorder)) {
                     Column(Modifier.animateContentSize(Motion.fastSpatial(IntSize.VisibilityThreshold))) {
                         if (shownImages.isNotEmpty()) AttachmentStrip(model, shownImages)
+                        if (shownPastes.isNotEmpty()) PasteStrip(shownPastes, enabled = !model.busy, onRemove = model::removePaste)
                         MessageField(
                             value = shownDraft, onValue = { if (pending == null) model.editDraft(it) },
+                            onPaste = model::addPaste, onExpand = { openEditor(DRAFT_EDITOR) },
                             enabled = pending == null && !model.busy,
                             placeholder = when { pending != null -> "Waiting for your Mac to confirm"; status == "waiting" -> "Answer above to continue"; working -> "Steer or add a message"; else -> "Message ${agent?.name ?: "Claude"}" },
                             onEscape = { if (slashOpen) { slashHidden = shownDraft; true } else false },
@@ -196,14 +200,32 @@ private fun Modifier.fadeEnd(scroll: ScrollState) = graphicsLayer { compositingS
     }
 }
 
-/** Keeps the cursor where the person put it, and at the end when the text is replaced from outside (a picked command). */
-@Composable private fun MessageField(value: String, onValue: (String) -> Unit, enabled: Boolean, placeholder: String, onEscape: () -> Boolean, onSubmit: () -> Unit, focus: FocusRequester) {
+/**
+ * Keeps the cursor where the person put it, and at the end when the text is replaced from outside (a picked command).
+ * Grows to a few lines, fewer with the keyboard up, then scrolls inside; past that an expand button opens the text
+ * full screen. A large paste leaves the box and becomes a block above it.
+ */
+@Composable private fun MessageField(
+    value: String, onValue: (String) -> Unit, onPaste: (String) -> Unit, onExpand: () -> Unit,
+    enabled: Boolean, placeholder: String, onEscape: () -> Boolean, onSubmit: () -> Unit, focus: FocusRequester,
+) {
     val colors = MaterialTheme.colorScheme
     val style = MaterialTheme.typography.bodyLarge
     var field by remember { mutableStateOf(TextFieldValue(value, TextRange(value.length))) }
     val shown = if (field.text == value) field else TextFieldValue(value, TextRange(value.length))
+    val density = LocalDensity.current
+    val screen = with(density) { LocalConfiguration.current.screenHeightDp.dp.toPx() }
+    val lineHeight = with(density) { style.lineHeight.takeIf { it.isSp }?.toPx() ?: (style.fontSize.toPx() * 1.5f) }
+    val ime = WindowInsets.ime
+    // Only a change in whole lines recomposes, not every frame of the keyboard sliding in.
+    val lines by remember(screen, lineHeight) { derivedStateOf { composerLines(screen - ime.getBottom(density), lineHeight) } }
+    var overflows by remember { mutableStateOf(false) }
     BasicTextField(
-        shown, { next -> field = next; if (next.text != value) onValue(next.text) },
+        shown, { next ->
+            val paste = largeInsertion(shown.text, shown.selection.min, shown.selection.max, next.text, next.selection.end)
+            if (paste != null) { field = TextFieldValue(paste.kept, TextRange(paste.cursor)); onPaste(paste.pasted); if (paste.kept != value) onValue(paste.kept) }
+            else { field = next; if (next.text != value) onValue(next.text) }
+        },
         Modifier.fillMaxWidth().focusRequester(focus).semantics { contentDescription = placeholder }.onPreviewKeyEvent {
             when {
                 it.key == Key.Escape && it.type == KeyEventType.KeyUp -> onEscape()
@@ -211,12 +233,19 @@ private fun Modifier.fadeEnd(scroll: ScrollState) = graphicsLayer { compositingS
                 else -> false
             }
         },
-        enabled = enabled, textStyle = style.copy(color = colors.onSurface), cursorBrush = SolidColor(colors.primary), maxLines = 8,
+        enabled = enabled, textStyle = style.copy(color = colors.onSurface), cursorBrush = SolidColor(colors.primary), maxLines = lines,
         keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Sentences),
+        // The layout holds every line; the box shows [lines] of them.
+        onTextLayout = { overflows = it.lineCount > lines },
         decorationBox = { inner ->
-            Box(Modifier.padding(start = Spacing.lg + Spacing.xxs, end = Spacing.lg, top = Spacing.md + Spacing.xxs, bottom = Spacing.sm)) {
-                if (value.isEmpty()) Text(placeholder, style = style, color = colors.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                inner()
+            Box {
+                Box(Modifier.padding(start = Spacing.lg + Spacing.xxs, end = if (overflows) Sizes.touch else Spacing.lg, top = Spacing.md + Spacing.xxs, bottom = Spacing.sm)) {
+                    if (value.isEmpty()) Text(placeholder, style = style, color = colors.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    inner()
+                }
+                if (overflows) IconButton(onClick = onExpand, Modifier.align(Alignment.TopEnd), enabled = enabled) {
+                    Icon(PocketIcons.OpenInFull, "Expand message", Modifier.size(Sizes.smallIcon), tint = colors.onSurfaceVariant)
+                }
             }
         },
     )

@@ -229,6 +229,8 @@ object PocketIcons {
     val Branch = outline("Branch", "M8.25 5.5a2.25 2.25 0 1 1-4.5 0a2.25 2.25 0 1 1 4.5 0zM8.25 18.5a2.25 2.25 0 1 1-4.5 0a2.25 2.25 0 1 1 4.5 0zM20.25 5.5a2.25 2.25 0 1 1-4.5 0a2.25 2.25 0 1 1 4.5 0zM6 7.75v8.5M18 7.75v1c0 2.5-2 4-4.5 4h-3c-2.6 0-4.5 1.4-4.5 3.5")
     val Chat = icon("Chat", "M20 2H4c-1.1 0-2 .9-2 2v18l4-4h14c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zm0 14H6l-2 2V4h16v12z")
     val Bolt = icon("Bolt", "M11 21h-1l1-7H7.5c-.58 0-.57-.32-.38-.66.19-.34.05-.08.07-.12C8.48 10.94 10.42 7.54 13 3h1l-1 7h3.5c.49 0 .56.33.47.51l-.07.15C12.96 17.55 11 21 11 21z")
+    val OpenInFull = icon("OpenInFull", "M21 11V3h-8l3.29 3.29-10 10L3 13v8h8l-3.29-3.29 10-10z")
+    val Article = icon("Article", "M19 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm-5 14H7v-2h7v2zm3-4H7v-2h10v2zm0-4H7V7h10v2z")
     val Reset = icon("Reset", "M13 3c-4.97 0-9 4.03-9 9H1l3.89 3.89.07.14L9 12H6c0-3.87 3.13-7 7-7s7 3.13 7 7-3.13 7-7 7c-1.93 0-3.68-.79-4.94-2.06l-1.42 1.42C8.27 19.99 10.51 21 13 21c4.97 0 9-4.03 9-9s-4.03-9-9-9z")
     /** Claude's mark in lists: a plain spark, not the brand logo. Codex uses [Terminal]. */
     val Spark = outline("Spark", "M12 3.5v17M3.5 12h17M6 6l12 12M18 6L6 18")
