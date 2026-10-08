@@ -47,9 +47,6 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
-import androidx.lifecycle.Lifecycle
-import androidx.lifecycle.LifecycleEventObserver
-import androidx.lifecycle.compose.LocalLifecycleOwner
 import kotlinx.coroutines.launch
 
 /** The launcher shortcut's action (res/xml/shortcuts.xml). */
@@ -67,9 +64,9 @@ class MainActivity : ComponentActivity() {
     override fun onNewIntent(intent: Intent) { super.onNewIntent(intent); setIntent(intent); handle(intent) }
     override fun onResume() { super.onResume(); model.updates.resume() }
     // On screen, the app's own connection shows everything; closed with work running, the alerts service takes over.
-    override fun onStart() { super.onStart(); Alerts.stop(this) }
-    // A rotation is not leaving: an open Undo window survives it; really leaving ends it now.
-    override fun onStop() { super.onStop(); if (!isChangingConfigurations) { model.leaving(); model.startAlerts() } }
+    override fun onStart() { super.onStart(); Alerts.stop(this); model.foreground(true) }
+    // A rotation is not leaving: the connection and an open Undo window survive it; really leaving ends both now.
+    override fun onStop() { super.onStop(); if (!isChangingConfigurations) { model.foreground(false); model.leaving(); model.startAlerts() } }
 
     /** A pairing link, images shared from another app, or a tapped notification. */
     private fun handle(intent: Intent) = when (intent.action) {
@@ -98,13 +95,6 @@ private enum class Screen(val depth: Int) { Pair(0), Projects(0), Chats(1), Sett
 private data class Destination(val screen: Screen, val project: String)
 
 @Composable private fun BridgeApp(model: BridgeModel) {
-    val owner = LocalLifecycleOwner.current
-    DisposableEffect(owner) {
-        val observer = LifecycleEventObserver { _, event -> when (event) { Lifecycle.Event.ON_START -> model.foreground(true); Lifecycle.Event.ON_STOP -> model.foreground(false); else -> Unit } }
-        owner.lifecycle.addObserver(observer)
-        model.foreground(owner.lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED))
-        onDispose { owner.lifecycle.removeObserver(observer); model.foreground(false) }
-    }
     var settings by rememberSaveable { mutableStateOf(false) }
     var usage by rememberSaveable { mutableStateOf(false) }
     var models by rememberSaveable { mutableStateOf(false) }

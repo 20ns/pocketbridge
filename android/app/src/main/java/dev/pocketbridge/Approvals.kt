@@ -77,7 +77,8 @@ private val AnswersSaver = Saver<Answers, String>(save = { encodeAnswers(it) }, 
     val tool = approval.optString("tool")
     val input = approval.optJSONObject("input") ?: JSONObject()
     val questions = input.optJSONArray("questions")?.objects().orEmpty()
-    val enabled = !model.busy && model.online
+    // Answers don't wait behind a send or another action; only one goes at a time.
+    val enabled = !model.answering && model.online
     val agent = model.agent(model.chat?.optString("agent"))?.name ?: "Claude"
     Surface(modifier.fillMaxWidth(), color = Pocket.colors.row, border = BorderStroke(1.5.dp, MaterialTheme.colorScheme.tertiary), shape = RoundedCornerShape(Corners.card)) {
         Column(Modifier.padding(Spacing.lg), verticalArrangement = Arrangement.spacedBy(Spacing.md)) {

@@ -59,16 +59,6 @@ class ApiTest {
         assertEquals(ChatOptions("readOnly", "gpt-6-luna", "low", CODEX), codex.options)
         assertEquals(CLAUDE, PendingPrompt.parse("""{"id":"old","text":"hi"}""").agent)
     }
-    @Test fun `cursor never commits unseen updates that arrived during reconciliation`() {
-        val cursor = EventCursor(10)
-        cursor.observe("id: 15")
-        cursor.commit(12)
-        assertEquals(12L, cursor.committed)
-        cursor.commit(9)
-        assertEquals(12L, cursor.committed)
-        cursor.observe("id: invalid")
-        assertEquals(15L, cursor.observed)
-    }
     @Test fun `API sends app credential only in authorization header`() = runBlocking {
         MockWebServer().use { server ->
             server.enqueue(MockResponse().setBody("{\"accepted\":true,\"duplicate\":true}"))

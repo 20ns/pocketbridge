@@ -93,6 +93,32 @@ fun failureReason(failure: Throwable) = when (failure) {
     else -> failure.message?.takeIf { it.isNotBlank() } ?: "Something went wrong. Try again."
 }
 
+const val NO_NETWORK = "This phone has no internet connection."
+const val REVOKED = "This phone's pairing was removed on the Mac. Disconnect, then pair again."
+
+/**
+ * What the connection banner says after [failures] failed attempts in a row over [failingFor] ms; blank keeps it to a
+ * quiet Reconnecting. A drop is usually a blip (a network handover, the Mac service restarting in a second or two), so
+ * only a repeat that has lasted a few seconds names a cause.
+ */
+fun connectionIssue(failure: Throwable, failures: Int, failingFor: Long, network: Boolean) = when {
+    failure is ApiError && failure.status == 401 -> REVOKED
+    !network -> NO_NETWORK
+    failures < 2 || failingFor < QUIET_MILLIS -> ""
+    else -> failureReason(failure)
+}
+const val QUIET_MILLIS = 3000L
+
+const val RESEND_WINDOW_MILLIS = 10 * 60_000L
+
+/**
+ * Whether a saved prompt the Mac never recorded goes again by itself after a reconnect, under its same id (the Mac
+ * runs an id at most once). [watchUntil] is its saved delivery watch, two minutes past the save. An interrupt would cut
+ * into whatever runs by then, and an older prompt may no longer be wanted: those wait for Retry.
+ */
+fun resendable(prompt: PendingPrompt, watchUntil: Long?, now: Long) =
+    prompt.delivery != INTERRUPT && watchUntil != null && now - (watchUntil - DELIVERY_WATCH_MILLIS) in 0..RESEND_WINDOW_MILLIS
+
 /**
  * Chats deleted on this phone whose deletion hasn't reached the Mac yet, id to title. Saved before a chat is hidden,
  * so a chat said to be deleted never comes back after a restart: leftovers are sent at the next connection.

@@ -177,8 +177,9 @@ import kotlin.coroutines.cancellation.CancellationException
                             }
                             Spacer(Modifier.width(Spacing.sm))
                             SendControls(
-                                working = working, sending = model.busy && pending != null, ready = ready && status != "stopping",
-                                stopEnabled = !model.busy && model.online && status != "stopping",
+                                working = working, sending = model.isSending, ready = ready && status != "stopping",
+                                // Stop never waits on a send or on the stream reconnecting: a failed try says why.
+                                stopEnabled = !model.answering && status != "stopping",
                                 onSend = { delivery -> haptics.perform(Haptic.Confirm); model.send(delivery) },
                                 onStop = { haptics.perform(Haptic.Confirm); model.stop() },
                                 schedule = model.scheduleOffer, onSchedule = { haptics.perform(Haptic.Confirm); model.send(schedule = SCHEDULE_RESET) },

@@ -30,6 +30,9 @@ fun networkChanges(context: Context): Flow<Unit> = callbackFlow {
     awaitClose { runCatching { manager.unregisterNetworkCallback(callback) } }
 }
 
+/** The network Android sends traffic over now, to tell a real change from a callback about the same one. */
+fun activeNetwork(context: Context): Network? = runCatching { context.getSystemService(ConnectivityManager::class.java).activeNetwork }.getOrNull()
+
 /** Whether Android has any network to try. Without one, reconnect loops wait for [networkChanges] instead of counting failures. */
 fun hasNetwork(context: Context) = runCatching {
     val manager = context.getSystemService(ConnectivityManager::class.java)
