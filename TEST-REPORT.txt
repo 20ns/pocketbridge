@@ -1,3 +1,38 @@
+PocketBridge connection robustness pass (unreleased, branch connection-robustness), 8 October 2026
+
+- Mac: pnpm test passed, 117 tests. New checks: a question or approval left
+  unanswered past 5 minutes still reaches Claude (the hook bridge no longer uses
+  fetch, whose 300 s header timeout denied it), shutdown wording, a tool process
+  holding the CLI's pipes, a cursor ahead of the Mac getting the reset hint, stalled
+  event streams closing, repeated approvals, pairing retries with an attempt id
+  (also after another phone pairs), and deleting an unknown chat id leaving a
+  tombstone so a late first prompt gets 410.
+- Android: assembleDebug, testDebugUnitTest and lintDebug passed. 192 JVM tests,
+  no failures.
+- Reviews: four audits (phone foreground, phone background, Mac service, browser)
+  plus a Codex audit, then four review passes over the fixes (three Codex, one
+  Claude). They caught a deleted unconfirmed draft that could still be resent, stale
+  resends racing Retry, backoff reset before a stream proved itself, catch-up job
+  races with disconnect and the app returning, a multi-tab draft merge that could
+  lose a delivery id (replaced by one active browser tab), and a draft deleted
+  while its first prompt was still waiting on the Mac. All fixed.
+- API 36 emulator against the isolated demo service: a service restart shows only
+  "Reconnecting" for short blips and a banner after about 3 to 6 s; reconnects
+  2 to 9 s after the service returns. Airplane mode shows "No internet
+  connection" at once and reconnects within about 4 s of turning it off. Lost
+  answers (recorded but unanswered, never received, sent offline) each ended with
+  exactly one copy on the Mac. The background notification switched to
+  "Reconnecting to your Mac" and recovered; questions and permission requests
+  alerted while backgrounded and Allow from the shade worked. Rotation kept the
+  stream. No crashes in logcat.
+- Browser (built-in browser, isolated service): a second tab takes over and the
+  first shows "Open in another tab" with its stream closed; Use here swaps back.
+  A rotated token, an online event, prompt-status reconciliation and blocked
+  storage were checked by the browser agent.
+- Not checked: any physical phone, Doze over hours, reboot and app-update restarts
+  of the alerts service, the catch-up job firing on a real device, Tailscale
+  handover on a real network, and caffeinate keeping a battery Mac awake.
+
 PocketBridge 0.9.0 verification, 8 October 2026
 
 - Mac: pnpm test passed, 111 tests. New checks cover scheduled prompts (duplicate
