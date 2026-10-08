@@ -1,5 +1,5 @@
 // The sidebar: projects, recent chats, sessions to continue and the agent switches.
-import {relativeTime, blankLocalDraft, usableAgent, newChatAgent, resolveOptions, modelName, projectNameProblem, newProjectAttempt, settleProjectAttempt, projectChoices} from './support.mjs';
+import {relativeTime, blankLocalDraft, usableAgent, newChatAgent, resolveOptions, modelName, projectNameProblem, newProjectAttempt, settleProjectAttempt, projectChoices, scheduleTime} from './support.mjs';
 import {$, el, app, drafts, localChats, lastOptions, persist, notice, api, projectFor, projectName, agentFor, statusBadge, projectAvatar, isGeneral} from './core.mjs';
 import {controls, refresh, selectChat} from './app.mjs';
 import {loadUsage} from './usage.mjs';
@@ -50,7 +50,8 @@ export function renderChatList() {
     const when = el('time', '', relativeTime(chat.updatedAt)); when.dateTime = new Date(chat.updatedAt).toISOString(); when.title = new Date(chat.updatedAt).toLocaleString();
     const where = el('span', 'chat-item-where');
     where.append(projectAvatar(projectFor(chat), 'tiny'), `${projectName(chat)} · `, when);
-    meta.append(where, chat.status && chat.status !== 'idle' ? statusBadge(chat.status) : el('span', 'chat-item-model', modelName(agentFor(chat.agent) ?? {name: chat.agent === 'codex' ? 'Codex' : 'Claude', models: []}, chat.model || 'default')));
+    // A chat waiting to send itself says when, in place of the model.
+    meta.append(where, chat.status && chat.status !== 'idle' ? statusBadge(chat.status) : chat.scheduled ? el('span', 'chat-item-model chat-item-scheduled', `Scheduled ${scheduleTime(chat.scheduled.notBefore)}`) : el('span', 'chat-item-model', modelName(agentFor(chat.agent) ?? {name: chat.agent === 'codex' ? 'Codex' : 'Claude', models: []}, chat.model || 'default')));
     const preview = chat.preview ?? (localChats[chat.id] ? drafts[chat.id]?.text : '');
     button.append(el('span', 'chat-item-title', chat.title));
     if (preview) button.append(el('span', 'chat-item-preview', preview));

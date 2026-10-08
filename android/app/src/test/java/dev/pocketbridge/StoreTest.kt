@@ -85,6 +85,20 @@ class StoreTest {
         assertEquals("240000", Store(prefs).get("watch:chat"))
     }
 
+    @Test fun `a scheduled prompt is saved with its schedule before sending and survives a restart for Retry`() {
+        val prefs = Preferences().value
+        val store = Store(prefs)
+        val prompt = PendingPrompt("delivery", "finish the refactor", "bypassPermissions", "opus", "high", "project", CLAUDE, listOf("u1"), null, null, SCHEDULE_RESET)
+        store.put("draft:chat", "finish the refactor")
+        store.savePrompt("chat", prompt, 120000, store.session())
+        val restored = Store(prefs).pendingPrompts()["chat"]
+        assertEquals(prompt, restored)
+        assertEquals("reset", restored!!.json().getString("schedule"))
+        assertTrue(store.completePrompt("chat", prompt, store.session(), accepted = true))
+        assertTrue(store.pendingPrompts().isEmpty())
+        assertEquals("", store.get("draft:chat"))
+    }
+
     @Test fun `a late reset answer clears only its own attempt in its own pairing`() {
         val store = Store(Preferences().value)
         val first = ResetAttempt("key-1", "c1")

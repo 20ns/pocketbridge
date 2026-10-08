@@ -181,6 +181,7 @@ import kotlin.coroutines.cancellation.CancellationException
                                 stopEnabled = !model.busy && model.online && status != "stopping",
                                 onSend = { delivery -> haptics.perform(Haptic.Confirm); model.send(delivery) },
                                 onStop = { haptics.perform(Haptic.Confirm); model.stop() },
+                                schedule = model.scheduleOffer, onSchedule = { haptics.perform(Haptic.Confirm); model.send(schedule = SCHEDULE_RESET) },
                             )
                         }
                     }

@@ -118,9 +118,22 @@ export function createRuns(ctx) {
       else if (codex && (entry.parseError || !entry.result.ok)) status(id, 'error', entry.parseError ?? entry.failure ?? entry.codex?.state.failure ?? (entry.stderr.trim().split('\n').slice(-12).join('\n') || `Codex exited ${code ?? signal} without a completed turn.`));
       else if (!codex && (entry.parseError || code !== 0 || entry.result?.is_error || !entry.result)) status(id, 'error', entry.parseError ?? (entry.result?.errors?.join('\n') || entry.result?.result || entry.stderr.trim() || `Claude exited ${code ?? signal} without a completed result.`));
       else status(id, 'idle');
+      // A scheduled prompt that came due while this run worked goes next.
+      ctx.schedules?.wake();
     };
   }
 
+  /** Starts a run for a prompt that is already recorded. A failure to start says why on the chat; the prompt is never retried. */
+  function launch(id, delivery) {
+    try { start(id, delivery); }
+    catch (error) {
+      console.error(`Chat ${id} start: ${error.stack ?? error.message}`);
+      const failed = active.get(id); active.delete(id);
+      if (failed?.child?.pid) terminateGroup(failed.child.pid, 1000).catch(() => {});
+      status(id, 'error', `Could not start ${agentNames[get('SELECT agent FROM chats WHERE id=?', id)?.agent || 'claude']}: ${error.message}`);
+    }
+  }
+
   Object.assign(ctx, { message, subagent, activityFor, thinkingFor, cancelApprovals });
-  return { start, stop, message };
+  return { start, launch, stop, message };
 }

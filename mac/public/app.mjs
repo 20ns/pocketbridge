@@ -53,7 +53,8 @@ export async function refresh() {
     if (app.selected && !currentChat()) { app.selected = null; clearPrompt(); }
     const stopped = previousBusy && !busy(currentChat()); previousBusy = busy(currentChat());
     renderState(); await loadMessages();
-    if (stopped) loadGit(true);
+    // A turn that ended used some of the plan, and may have hit its limit.
+    if (stopped) { loadGit(true); loadUsage(true); }
   } finally {
     refreshing = false;
     if (pendingRefresh) { pendingRefresh = false; scheduleRefresh(); }

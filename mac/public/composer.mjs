@@ -1,8 +1,9 @@
 // The composer: next-prompt options, images, "/" commands, the git line and delivery.
-import {withAttachments, slashMatches, editDraft, prepareDelivery, afterDelivery, promptPayload, blankLocalDraft, usableAgent, findModel, resolveOptions, supportedOptions, modeLabels, effortLabel, modeHelp, modelName, effortName, speedName} from './support.mjs';
+import {withAttachments, slashMatches, editDraft, prepareDelivery, afterDelivery, promptPayload, blankLocalDraft, usableAgent, findModel, resolveOptions, supportedOptions, modeLabels, effortLabel, modeHelp, modelName, effortName, speedName, scheduleReset, scheduleTime} from './support.mjs';
 import {$, el, app, drafts, localChats, overrides, persist, persistDrafts, persistLocalChats, persistLastOptions, notice, api, imageUrl, rememberImage, currentChat, storedChat, agentFor, agentName, busy, isGeneral} from './core.mjs';
 import {controls, refresh, renderState} from './app.mjs';
 import {renderChatList} from './sidebar.mjs';
+import {limitsOf, onUsage} from './usage.mjs';
 
 const optionKeys = ['agent', 'mode', 'model', 'effort', 'speed'];
 export const sameOptions = (a, b) => optionKeys.every(key => (a?.[key] ?? '') === (b?.[key] ?? ''));
@@ -80,6 +81,17 @@ export function autosize() {
   prompt.style.height = `${prompt.scrollHeight + 2}px`;
 }
 
+// The CLI's own words when a turn stopped on a plan limit.
+const limitError = text => /usage limit|rate limit|limit reached|hit your [\w\s-]*limit|limit will reset/i.test(text ?? '');
+/** Send at reset, offered once the chat's agent is at a plan limit and the Mac has said when it resets. */
+function resetOffer(chat) {
+  if (!chat || !app.state?.capabilities?.scheduledPrompts || chat.scheduled) return null;
+  const options = chatOptions(chat), agent = agentFor(options?.agent);
+  const reset = scheduleReset(limitsOf(options?.agent ?? 'claude'), Date.now(), agent ? modelName(agent, options.model) : '');
+  return reset && (reset.reached || (chat.status === 'error' && limitError(chat.error))) ? reset : null;
+}
+onUsage(() => composerControls());
+
 export function composerControls() {
   const chat = currentChat(), selected = app.selected, online = app.online;
   $('prompt').disabled = !chat;
@@ -96,6 +108,10 @@ export function composerControls() {
   $('send').classList.toggle('steer', working);
   $('send-now').hidden = !working || !hasContent;
   $('send-now').disabled = $('send').disabled;
+  const offer = resetOffer(chat);
+  $('send-later').hidden = !offer || !hasContent || Boolean(drafts[selected]?.attempted);
+  $('send-later').disabled = !online || !chat || app.sending || off || uploading;
+  if (offer) $('send-later').textContent = `Send at ${scheduleTime(offer.at)}`;
   $('attach').disabled = !chat || !online || images.length >= 8 || Boolean(drafts[selected]?.attempted);
   $('stop').hidden = !busy(chat);
   $('send').hidden = busy(chat) && !working;
@@ -103,7 +119,7 @@ export function composerControls() {
   $('stop').lastChild.textContent = chat?.status === 'stopping' ? 'Stopping…' : 'Stop';
   // Options apply to the next prompt, so they stay available while work runs.
   for (const id of ['model', 'effort', 'mode', 'speed', 'speed-select']) $(id).disabled = !chat || app.sending || Boolean(drafts[selected]?.attempted);
-  $('composer-hint').textContent = !online ? 'Mac is disconnected. Your draft is saved on this device.' : off ? `${agentName(chat)} is off. Turn it on in the sidebar to continue this chat.` : chat?.status === 'waiting' ? 'Answer above, or stop this turn.' : busy(chat) ? 'Enter steers the running turn · Send now stops the current step first' : uploading ? 'Uploading images…' : drafts[selected]?.attempted ? 'Not confirmed by your Mac. Retry uses the same delivery ID.' : chat ? 'Enter to send · Shift+Enter for a new line' : 'Chats started here also appear on your phone.';
+  $('composer-hint').textContent = !online ? 'Mac is disconnected. Your draft is saved on this device.' : off ? `${agentName(chat)} is off. Turn it on in the sidebar to continue this chat.` : offer && !busy(chat) ? 'Plan limit reached. The Mac can send it when the limit resets, even with this page closed.' : chat?.status === 'waiting' ? 'Answer above, or stop this turn.' : busy(chat) ? 'Enter steers the running turn · Send now stops the current step first' : uploading ? 'Uploading images…' : drafts[selected]?.attempted ? 'Not confirmed by your Mac. Retry uses the same delivery ID.' : chat ? 'Enter to send · Shift+Enter for a new line' : 'Chats started here also appear on your phone.';
 }
 
 // Images: picked, pasted or dropped, shrunk to 2048 px JPEG when large, uploaded at once, sent by id.
@@ -239,18 +255,20 @@ $('prompt').onkeydown = event => {
 };
 $('prompt').addEventListener('blur', () => setTimeout(hideSlash, 150));
 $('send-now').onclick = () => submit('interrupt');
+$('send-later').onclick = () => submit(null, 'reset');
 // Always ask to steer: the Mac runs it as a normal turn when idle, so a stale busy state can't make it 409.
 // A retry keeps the delivery it was sent with, and so its id; Send now on a retry is a new delivery.
-$('composer').onsubmit = event => { event.preventDefault(); submit(drafts[app.selected]?.attempted ? drafts[app.selected].delivery ?? null : 'steer'); };
-async function submit(delivery) {
-  if ($('send').disabled) return;
+$('composer').onsubmit = event => { event.preventDefault(); const attempt = drafts[app.selected]?.attempted ? drafts[app.selected] : null; submit(attempt ? attempt.delivery ?? null : 'steer', attempt?.schedule ?? null); };
+// schedule: 'reset' sends once the plan limit resets; the Mac keeps it, so this page can close.
+async function submit(delivery, schedule = null) {
+  if (schedule === null || drafts[app.selected]?.attempted ? $('send').disabled : $('send-later').disabled) return;
   const chatId = app.selected;
-  const draft = prepareDelivery(drafts[chatId], $('prompt').value, chatOptions(), delivery);
+  const draft = prepareDelivery(drafts[chatId], $('prompt').value, chatOptions(), delivery, schedule);
   if (localChats[chatId]?.projectId) draft.projectId ??= localChats[chatId].projectId;
   drafts[chatId] = draft; persistDrafts(); if (localChats[chatId]) persistLocalChats(); app.sending = true; controls();
   const projectId = storedChat(chatId) ? undefined : (localChats[chatId]?.projectId ?? draft.projectId);
   try {
-    await api(`/chats/${encodeURIComponent(chatId)}/prompts`, promptPayload(draft, projectId));
+    const answer = await api(`/chats/${encodeURIComponent(chatId)}/prompts`, promptPayload(draft, projectId));
     delete overrides[chatId]; persist('pocketbridge.options', overrides);
     persistLastOptions(optionsOf(draft));
     // Text typed while sending stays; the images that were just sent don't.
@@ -258,7 +276,7 @@ async function submit(delivery) {
     if (left) drafts[chatId] = left; else delete drafts[chatId];
     persistDrafts();
     if (app.selected === chatId) { if (!left) clearPrompt(); renderAttachments(); }
-    notice(); await refresh();
+    notice(answer.schedule?.state === 'scheduled' ? `Scheduled for ${scheduleTime(answer.schedule.notBefore)}.` : ''); await refresh();
   } catch (error) {
     if (error.status === 410) {
       delete drafts[chatId]; delete localChats[chatId];

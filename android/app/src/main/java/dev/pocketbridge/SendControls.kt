@@ -89,9 +89,10 @@ import kotlin.coroutines.cancellation.CancellationException
 
 /**
  * Send when idle. While work runs: Stop, and once something is typed a split Steer button beside it. Steer is one
- * tap; its arrow (or a long press) opens Steer and, below it, Send now.
+ * tap; its arrow (or a long press) opens Steer and, below it, Send now. With a known limit reset ([schedule]), a long
+ * press on Send and the Steer menu also offer Send at that time; once the limit is used up, Send itself becomes it.
  */
-@Composable fun SendControls(working: Boolean, sending: Boolean, ready: Boolean, stopEnabled: Boolean, onSend: (String?) -> Unit, onStop: () -> Unit) {
+@Composable fun SendControls(working: Boolean, sending: Boolean, ready: Boolean, stopEnabled: Boolean, onSend: (String?) -> Unit, onStop: () -> Unit, schedule: ScheduleOffer? = null, onSchedule: () -> Unit = {}) {
     val colors = MaterialTheme.colorScheme
     AnimatedContent(
         working,
@@ -104,22 +105,60 @@ import kotlin.coroutines.cancellation.CancellationException
                 colors = IconButtonDefaults.filledIconButtonColors(containerColor = colors.errorContainer, contentColor = colors.onErrorContainer),
             ) { Icon(PocketIcons.Stop, "Stop") }
             AnimatedVisibility(ready, enter = expandHorizontally(Motion.fastSpatial(IntSize.VisibilityThreshold), Alignment.Start) + fadeIn(Motion.fastEffects()), exit = shrinkHorizontally(Motion.fastSpatial(IntSize.VisibilityThreshold), Alignment.Start) + fadeOut(Motion.fastEffects())) {
-                SteerButton(Modifier.padding(start = Spacing.sm), onSend)
+                SteerButton(Modifier.padding(start = Spacing.sm), onSend, schedule, onSchedule)
             }
         }
-        else FilledIconButton(
-            onClick = { onSend(null) }, enabled = ready, modifier = Modifier.size(Sizes.sendButton),
-            colors = IconButtonDefaults.filledIconButtonColors(disabledContainerColor = Pocket.colors.pill, disabledContentColor = colors.onSurfaceVariant.copy(alpha = 0.55f)),
+        else IdleSend(sending, ready, schedule, { onSend(null) }, onSchedule)
+    }
+}
+
+private const val LATER_DETAIL = "Sends itself when the limit resets, even with your phone off"
+
+/**
+ * Round Send, or "Send at 2:02 AM" when the agent's limit is used up. A long press offers the other way whenever a
+ * reset time is known. While sending, the spinner shows in place of either.
+ */
+@OptIn(ExperimentalFoundationApi::class)
+@Composable private fun IdleSend(sending: Boolean, ready: Boolean, schedule: ScheduleOffer?, onSend: () -> Unit, onSchedule: () -> Unit) {
+    val colors = MaterialTheme.colorScheme
+    val haptics = rememberHaptics()
+    var menu by remember { mutableStateOf(false) }
+    val later = schedule?.let { "Send at " + scheduleLabel(it.at, System.currentTimeMillis()) }
+    val prominent = schedule?.prominent == true && !sending
+    val container = if (ready) colors.primary else Pocket.colors.pill
+    val content = if (ready) colors.onPrimary else colors.onSurfaceVariant.copy(alpha = 0.55f)
+    Box {
+        Row(
+            Modifier.height(Sizes.sendButton).then(if (prominent) Modifier else Modifier.width(Sizes.sendButton)).clip(CircleShape).background(container)
+                .combinedClickable(
+                    enabled = ready, role = Role.Button, onClickLabel = if (prominent) later else "Send",
+                    onLongClickLabel = if (later != null) "More ways to send" else null,
+                    onLongClick = if (later != null) ({ haptics.perform(Haptic.LongPress); menu = true }) else null,
+                ) { if (prominent) onSchedule() else onSend() }
+                .padding(horizontal = if (prominent) Spacing.md else 0.dp),
+            horizontalArrangement = Arrangement.Center, verticalAlignment = Alignment.CenterVertically,
         ) {
-            if (sending) CircularProgressIndicator(Modifier.size(Sizes.smallIcon).semantics { contentDescription = "Sending" }, strokeWidth = 2.dp, color = colors.onSurfaceVariant)
-            else Icon(PocketIcons.ArrowUp, "Send", Modifier.size(22.dp))
+            when {
+                sending -> CircularProgressIndicator(Modifier.size(Sizes.smallIcon).semantics { contentDescription = "Sending" }, strokeWidth = 2.dp, color = colors.onSurfaceVariant)
+                prominent -> {
+                    Icon(PocketIcons.Schedule, null, Modifier.size(Sizes.smallIcon), tint = content)
+                    Spacer(Modifier.width(Spacing.xs + Spacing.xxs))
+                    Text(later.orEmpty(), style = MaterialTheme.typography.labelLarge, color = content, maxLines = 1)
+                }
+                else -> Icon(PocketIcons.ArrowUp, "Send", Modifier.size(22.dp), tint = content)
+            }
+        }
+        if (later != null) DropdownMenu(menu, { menu = false }, Modifier.widthIn(min = 220.dp, max = 300.dp), shape = RoundedCornerShape(Corners.groupOuter), containerColor = Pocket.colors.panel, shadowElevation = 8.dp) {
+            Text("Send", Modifier.padding(start = Spacing.lg, end = Spacing.lg, top = Spacing.xs, bottom = Spacing.xs).semantics { heading() }, style = MaterialTheme.typography.labelMedium, color = colors.onSurfaceVariant)
+            SendChoice(PocketIcons.ArrowUp, "Send now", if (prominent) "Runs it now, limit or not" else "Runs it now") { menu = false; onSend() }
+            SendChoice(PocketIcons.Schedule, later, LATER_DETAIL) { menu = false; onSchedule() }
         }
     }
 }
 
 /** M3 split button: "Steer" leads; the arrow segment opens the two ways to send while a turn runs. */
 @OptIn(ExperimentalFoundationApi::class)
-@Composable private fun SteerButton(modifier: Modifier, onSend: (String?) -> Unit) {
+@Composable private fun SteerButton(modifier: Modifier, onSend: (String?) -> Unit, schedule: ScheduleOffer?, onSchedule: () -> Unit) {
     val colors = MaterialTheme.colorScheme
     val haptics = rememberHaptics()
     var menu by remember { mutableStateOf(false) }
@@ -146,6 +185,7 @@ import kotlin.coroutines.cancellation.CancellationException
                 Text("Send", Modifier.padding(start = Spacing.lg, end = Spacing.lg, top = Spacing.xs, bottom = Spacing.xs).semantics { heading() }, style = MaterialTheme.typography.labelMedium, color = colors.onSurfaceVariant)
                 SendChoice(PocketIcons.ArrowUp, "Steer", "Joins the turn at its next step") { menu = false; onSend(STEER) }
                 SendChoice(PocketIcons.SkipNext, "Send now", "Interrupts and runs this next") { menu = false; onSend(INTERRUPT) }
+                schedule?.let { SendChoice(PocketIcons.Schedule, "Send at " + scheduleLabel(it.at, System.currentTimeMillis()), LATER_DETAIL) { menu = false; onSchedule() } }
             }
         }
     }

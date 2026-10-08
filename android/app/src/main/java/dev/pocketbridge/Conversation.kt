@@ -169,7 +169,13 @@ private val Mine = RoundedCornerShape(Corners.bubble, Corners.bubble, Corners.ta
     Column(modifier.fillMaxWidth(), horizontalAlignment = Alignment.End, verticalArrangement = Arrangement.spacedBy(Spacing.xs)) {
         if (said.attachments.isNotEmpty()) PromptImages(model, said.attachments) { onImage(said.attachments, it) }
         // An image sent alone carries the Mac's stand-in text; the image already says it.
-        if (said.text.isNotBlank() && !(said.attachments.isNotEmpty() && said.text in imageOnlyText)) UserBubble(said.id, said.text, quiet = said.kind == "imported")
+        val imageOnly = said.attachments.isNotEmpty() && said.text in imageOnlyText
+        // A prompt waiting for its time is faded until the Mac sends it.
+        if (said.text.isNotBlank() && !imageOnly) UserBubble(said.id, said.text, if (said.kind == SCHEDULED) Modifier.alpha(0.7f) else Modifier, quiet = said.kind == "imported")
+        if (said.kind == SCHEDULED) ScheduledFooter(
+            model.scheduled[said.id] ?: chatScheduled(model.chat)?.takeIf { it.first == said.id }?.second, enabled = model.online && !model.busy,
+            onSendNow = { model.sendScheduledNow(said.id) }, onCancel = { model.cancelScheduled(said.id, if (imageOnly) "" else said.text) },
+        )
         deliveryLabel(said.kind)?.let { (icon, label) ->
             Row(Modifier.padding(end = Spacing.sm), verticalAlignment = Alignment.CenterVertically) {
                 Icon(icon, null, Modifier.size(Sizes.tinyIcon), tint = MaterialTheme.colorScheme.onSurfaceVariant)

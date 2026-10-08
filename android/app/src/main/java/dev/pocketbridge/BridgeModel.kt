@@ -76,6 +76,10 @@ class BridgeModel(application: Application) : AndroidViewModel(application) {
     var subagents by mutableStateOf<List<Subagent>>(emptyList()); private set
     var activity by mutableStateOf(""); private set
     var thinking by mutableStateOf(""); private set
+    /** The open chat's prompts waiting for their time: prompt id to when each sends. */
+    var scheduled by mutableStateOf<Map<String, Long>>(emptyMap()); private set
+    /** The Mac can keep a prompt and send it at a plan limit reset. */
+    var canSchedule by mutableStateOf(false); private set
     /** The chat whose messages are on screen, from the cache or the Mac; until then an empty transcript means nothing yet. */
     private var loadedChat by mutableStateOf("")
     val transcriptReady get() = loadedChat == selected || chats.none { it.optString("id") == selected }
@@ -160,6 +164,9 @@ class BridgeModel(application: Application) : AndroidViewModel(application) {
         details.projectsChanged(projects.mapNotNull { project -> project.textOrNull("icon")?.let { project.optString("id") to it } }.toMap())
         agents = parseAgents(state.optJSONObject("capabilities")).map { agent -> agentSwitching[agent.id]?.let { agent.copy(enabled = it) } ?: agent }
         claudeAvailable = state.optJSONObject("server")?.optBoolean("claudeAvailable", true) ?: true
+        canSchedule = state.optJSONObject("capabilities")?.optBoolean("scheduledPrompts") == true
+        // The open chat stopped on an error, maybe its plan limit: usage says when that resets.
+        if (chats.any { it.optString("id") == selected && it.optString("id") in wasWorking && it.optString("status") == "error" }) usage.refresh()
         experiments = state.optJSONObject("server")?.textOrNull("experiments").orEmpty()
         mac = parseMacScreen(state)
         val pendingId = pending?.id
@@ -195,7 +202,7 @@ class BridgeModel(application: Application) : AndroidViewModel(application) {
     private fun loadMessages(id: String) {
         cachedMessagesJob?.cancel()
         transcript = null
-        messages = emptyList(); messageEntries = emptyList(); approvals = emptyList(); turns = emptyList(); subagents = emptyList(); activity = ""; thinking = ""; loadedChat = ""
+        messages = emptyList(); messageEntries = emptyList(); approvals = emptyList(); turns = emptyList(); subagents = emptyList(); activity = ""; thinking = ""; scheduled = emptyMap(); loadedChat = ""
         if (id.isEmpty()) return
         val cacheSession = store.session()
         val latest = transcriptWrites[id]?.takeIf { api === it.first }?.second
@@ -222,6 +229,7 @@ class BridgeModel(application: Application) : AndroidViewModel(application) {
         turns = parseTurns(result); subagents = parseSubagents(result)
         activity = if (result.isNull("activity")) "" else result.optString("activity")
         thinking = if (result.isNull("thinking")) "" else result.optString("thinking")
+        scheduled = scheduledPrompts(result)
     }
     /** A saved cursor always travels with its full transcript. Streaming snapshots coalesce; final replies flush now. */
     private fun cacheTranscript(id: String, result: JSONObject, flush: Boolean = false) {
@@ -253,7 +261,7 @@ class BridgeModel(application: Application) : AndroidViewModel(application) {
         selected = id; store.put("selected", id); Alerts.viewing = id
         if (attachmentLists[id].orEmpty().none { it.preparing || it.state == UploadState.Uploading }) attachmentLists.remove(id)
         loadDraft(id); pending = loadPending(id); applyOptionsFromSelection(); loadMessages(id); attachments = attachmentsOf(id)
-        if (id.isNotEmpty()) Alerts.dismiss(getApplication(), id)
+        if (id.isNotEmpty()) { Alerts.dismiss(getApplication(), id); usage.refresh() }
         refresh()
     }
     private fun loadDraft(id: String) { draft = store.get("draft:$id"); pastes = store.pastes(id) }
@@ -320,7 +328,7 @@ class BridgeModel(application: Application) : AndroidViewModel(application) {
         transcript = null; loadedChat = ""
         cancelShare()
         Alerts.deliveries.clear(); Alerts.inFlight.clear()
-        turns = emptyList(); subagents = emptyList(); activity = ""; thinking = ""; attachments = emptyList(); attachmentLists.clear(); shared = emptyList()
+        turns = emptyList(); subagents = emptyList(); activity = ""; thinking = ""; scheduled = emptyMap(); canSchedule = false; attachments = emptyList(); attachmentLists.clear(); shared = emptyList()
         details.clear(); acceptedAt.clear(); alertsOn = true
         deleting = null; deletions = emptyMap(); agentSwitching = emptyMap(); experiments = ""; mac = MacScreen(); projectError = ""; newChatRequested = false; showChat = false
         viewModelScope.launch(Dispatchers.IO) { outbox.deleteRecursively(); images.clear() }
@@ -491,11 +499,20 @@ class BridgeModel(application: Application) : AndroidViewModel(application) {
         else if (server != null) { if (next == optionsFrom(server)) store.remove("options:$selected") else store.put("options:$selected", next.store()) }
         rememberOptions(next)
     }
+    /** "Send at <time>" for the open chat's next prompt, when its agent's limit reset is known. */
+    val scheduleOffer: ScheduleOffer? get() {
+        val chat = chat
+        return scheduleOffer(
+            canSchedule, usage.agents.find { it.id == options.agent }?.limits.orEmpty(), System.currentTimeMillis(), modelName(agent(options.agent), options.model),
+            chat?.optString("status"), chat?.textOrNull("error"), chatScheduled(chat) != null,
+        )
+    }
     /**
      * Sends the draft and its images, or retries the unconfirmed prompt exactly as saved. While a turn runs, [delivery]
-     * steers it (the default) or interrupts it; the choice is saved with the delivery id.
+     * steers it (the default) or interrupts it. [schedule] ("reset") has the Mac send it later instead. Both are saved
+     * with the delivery id.
      */
-    fun send(delivery: String? = null) = action {
+    fun send(delivery: String? = null, schedule: String? = null) = action {
         val currentApi = api ?: return@action
         val id = selected
         require(id.isNotEmpty()) { "Open a chat first." }
@@ -511,13 +528,14 @@ class BridgeModel(application: Application) : AndroidViewModel(application) {
         // A chosen delivery goes as chosen: the Mac runs it as a normal turn if the chat turns out idle.
         val prompt = pending ?: PendingPrompt(
             UUID.randomUUID().toString(), promptText(draft, pastes), chosen.mode, chosen.model, chosen.effort, local?.projectId.orEmpty(), chosen.agent,
-            images.map { it.upload }, delivery ?: if (working) STEER else null, chosen.speed,
+            images.map { it.upload }, if (schedule != null) null else delivery ?: if (working) STEER else null, chosen.speed, schedule,
         )
         require(prompt.text.isNotEmpty() || prompt.attachments.isNotEmpty()) { "Write a prompt first." }
         askForAlerts()
         acceptedAt.remove(id)
         val watch = DeliveryWatch(prompt.id, System.currentTimeMillis() + DELIVERY_WATCH_MILLIS)
-        Alerts.deliveries[id] = watch
+        // A scheduled prompt starts no turn now, so background alerts have nothing to wait for.
+        if (prompt.schedule == null) Alerts.deliveries[id] = watch
         Alerts.inFlight.add(prompt.id)
         if (selected == id) pending = prompt
         try {
@@ -672,6 +690,24 @@ class BridgeModel(application: Application) : AndroidViewModel(application) {
     private fun saveDeletions(next: Map<String, String>) {
         deletions = next
         if (next.isEmpty()) store.remove(DELETIONS) else store.put(DELETIONS, encodeDeletions(next))
+    }
+    /**
+     * Cancels a prompt still waiting for its time. Its text comes back to an empty composer, so editing one is cancel,
+     * change, send. Safe to repeat: the Mac answers a cancelled prompt the same way.
+     */
+    fun cancelScheduled(promptId: String, text: String) = action {
+        val currentApi = api ?: return@action
+        val id = selected
+        withContext(Dispatchers.IO) { currentApi.request("/api/chats/$id/prompts/$promptId/cancel", JSONObject()) }
+        if (api !== currentApi) return@action
+        if (selected == id) draftAfterCancel(draft, pending != null, text)?.let(::editDraft)
+        sync()
+    }
+    /** Sends a scheduled prompt now, or right after the turn running in its chat. */
+    fun sendScheduledNow(promptId: String) = action {
+        val currentApi = api ?: return@action
+        withContext(Dispatchers.IO) { currentApi.request("/api/chats/$selected/prompts/$promptId/send-now", JSONObject()) }
+        sync()
     }
     fun stop() = action {
         val currentApi = api ?: return@action
@@ -893,7 +929,7 @@ class BridgeModel(application: Application) : AndroidViewModel(application) {
             id to chat.optString("status").let { if (it == "waiting" && id != selected) "running" else it }
         }.toMutableMap()
         // A prompt still on its way will start a turn the Mac hasn't reported yet.
-        store.pendingPrompts().forEach { (id, prompt) -> Alerts.deliveries.putIfAbsent(id, DeliveryWatch(prompt.id, store.get("watch:$id").toLongOrNull() ?: 0)) }
+        watchedDeliveries(store.pendingPrompts()).forEach { (id, prompt) -> Alerts.deliveries.putIfAbsent(id, DeliveryWatch(prompt.id, store.get("watch:$id").toLongOrNull() ?: 0)) }
         Alerts.deliveries.keys.forEach { baseline.putIfAbsent(it, "sending") }
         if (baseline.isNotEmpty()) Alerts.start(getApplication(), baseline)
     }

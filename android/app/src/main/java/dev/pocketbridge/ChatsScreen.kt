@@ -166,8 +166,10 @@ import org.json.JSONObject
             onLongClick = if (unconfirmed) null else ({ haptics.perform(Haptic.LongPress); menu = true }), onLongClickLabel = "Chat actions",
             // Quiet chats show their last words; anything that needs a look shows its state instead.
             supporting = {
+                val scheduled = chatScheduled(chat)
                 when {
                     status !in listOf("idle", "") -> StatusLine(status)
+                    scheduled != null -> ScheduledLine(scheduled.second, now)
                     preview.isNotBlank() -> Text(preview, maxLines = 2, overflow = TextOverflow.Ellipsis)
                 }
             },

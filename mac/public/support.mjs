@@ -385,11 +385,12 @@ export function blankLocalDraft(draft) {
 
 // A retry keeps its id only for the same text and delivery: the Mac rejects a recorded id sent with other content.
 // The options, speed included, are fixed with the id, so a retry repeats exactly what was first sent.
-export function prepareDelivery(draft, text, options = {}, delivery = null) {
-  if (draft?.attempted && draft.text === text && (draft.delivery ?? null) === delivery) return draft;
+// A scheduled send ('reset' or an epoch ms) is part of that identity too.
+export function prepareDelivery(draft, text, options = {}, delivery = null, schedule = null) {
+  if (draft?.attempted && draft.text === text && (draft.delivery ?? null) === delivery && (draft.schedule ?? null) === schedule) return draft;
   const id = draft && !draft.attempted ? draft.id : crypto.randomUUID();
   const attachments = (draft?.attachments ?? []).filter(item => item.id).map(({id: uploadId, type}) => ({id: uploadId, type}));
-  return {...(draft?.projectId ? {projectId: draft.projectId} : {}), text, id, agent: options.agent ?? 'claude', mode: options.mode ?? 'bypassPermissions', model: options.model || 'default', effort: options.effort || 'default', speed: options.speed ?? null, attachments, ...(delivery ? {delivery} : {}), attempted: true};
+  return {...(draft?.projectId ? {projectId: draft.projectId} : {}), text, id, agent: options.agent ?? 'claude', mode: options.mode ?? 'bypassPermissions', model: options.model || 'default', effort: options.effort || 'default', speed: options.speed ?? null, attachments, ...(delivery ? {delivery} : {}), ...(schedule !== null ? {schedule} : {}), attempted: true};
 }
 
 export function promptPayload(draft, projectId) {
@@ -398,8 +399,30 @@ export function promptPayload(draft, projectId) {
   if (draft.speed !== undefined) body.speed = draft.speed;
   if (draft.attachments?.length) body.attachments = draft.attachments.map(item => item.id);
   if (draft.delivery) body.delivery = draft.delivery;
+  if (draft.schedule !== undefined && draft.schedule !== null) body.schedule = draft.schedule;
   if (projectId) body.projectId = projectId;
   return body;
+}
+
+/**
+ * The reset a scheduled prompt would wait for, by the Mac's rule: the latest reset among used-up limits, else the
+ * fullest limit's, plus two minutes. Model-scoped limits count only for that model. The Mac's answer is final.
+ */
+export function scheduleReset(limits, now = Date.now(), modelName = '') {
+  const applies = limit => { const scope = String(limit.id ?? '').split(':').slice(1).join(':').trim().toLowerCase(); return !scope || modelName.toLowerCase().includes(scope); };
+  const known = (limits ?? []).filter(limit => applies(limit) && limit.resetsAt > now);
+  const used = known.filter(limit => limit.percent >= 100);
+  const pick = used.length ? used.reduce((a, b) => b.resetsAt > a.resetsAt ? b : a)
+    : known.reduce((a, b) => !a || b.percent > a.percent || (b.percent === a.percent && b.resetsAt < a.resetsAt) ? b : a, null);
+  return pick ? {at: pick.resetsAt + 120000, reached: used.length > 0} : null;
+}
+
+/** "2:02 AM" today, "Thu 2:02 AM" this week, else the date. */
+export function scheduleTime(at, now = Date.now(), locale = undefined) {
+  const date = new Date(at), time = date.toLocaleTimeString(locale, {hour: 'numeric', minute: '2-digit'});
+  if (date.toDateString() === new Date(now).toDateString()) return time;
+  if (at - now < 6 * 86400000) return `${date.toLocaleDateString(locale, {weekday: 'short'})} ${time}`;
+  return `${date.toLocaleDateString(locale, {month: 'short', day: 'numeric'})} ${time}`;
 }
 
 /** "/" commands that start with what's typed after the slash; name matches come before description matches. */

@@ -1,5 +1,5 @@
 // The open conversation: its header, transcript, tool activity, sub-agents and pending answers.
-import {markdown, turnPlacement, groupMessages, copyableReplies, activitySummary, effortLabel, liveStep, elapsedLabel, mergeTranscript} from './support.mjs';
+import {markdown, turnPlacement, groupMessages, copyableReplies, activitySummary, effortLabel, liveStep, elapsedLabel, mergeTranscript, scheduleTime} from './support.mjs';
 import {$, el, app, drafts, localChats, overrides, persist, persistDrafts, persistLocalChats, notice, api, imageUrl, currentChat, storedChat, projectFor, projectName, agentName, busy, statusBadge, projectAvatar} from './core.mjs';
 import {refresh, controls} from './app.mjs';
 import {renderOptions, clearPrompt} from './composer.mjs';
@@ -66,14 +66,17 @@ $('viewer').onclick = () => $('viewer').close();
 const unfolded = new Set();
 const longPrompt = text => text.length > 1200 || text.split('\n', 13).length > 12;
 
-function renderMessage(message, author, copyable, worked) {
-  const article = el('article', `message ${message.role}${message.kind === 'imported' ? ' imported' : ''}`);
+// notBefore: when a scheduled prompt will send itself; it offers Send now and Cancel until then.
+function renderMessage(message, author, copyable, worked, notBefore) {
+  const scheduled = message.kind === 'scheduled';
+  const article = el('article', `message ${message.role}${message.kind === 'imported' ? ' imported' : ''}${scheduled ? ' scheduled' : ''}`);
   const body = el('div', 'message-body');
   if (message.role === 'user') body.textContent = message.text; else body.append(markdown(message.text));
   const long = message.role === 'user' && longPrompt(message.text);
   if (long) body.classList.toggle('folded', !unfolded.has(message.id));
   const label = el('div', 'message-label', message.role === 'user' ? 'You' : author);
   if (message.kind === 'steer' || message.kind === 'interrupt') label.append(el('span', 'message-kind', message.kind === 'steer' ? 'Steered' : 'Sent now'));
+  if (scheduled) label.append(el('span', 'message-kind', notBefore ? `Scheduled · ${scheduleTime(notBefore)}` : 'Scheduled'));
   article.append(label);
   if (message.attachments?.length) {
     const strip = el('div', 'message-images');
@@ -81,6 +84,15 @@ function renderMessage(message, author, copyable, worked) {
     article.append(strip);
   }
   article.append(body);
+  if (scheduled) {
+    const footer = el('div', 'message-footer');
+    for (const [action, text] of [['send-now', 'Send now'], ['cancel', 'Cancel']]) {
+      const button = el('button', 'quiet small schedule-action', text); button.type = 'button';
+      Object.assign(button.dataset, {action, prompt: message.id, text: message.text});
+      footer.append(button);
+    }
+    article.append(footer);
+  }
   if (copyable || worked || long) {
     const footer = el('div', 'message-footer');
     if (long) { const more = el('button', 'quiet small show-more', unfolded.has(message.id) ? 'Show less' : 'Show more'); more.type = 'button'; more.dataset.id = message.id; footer.append(more); }
@@ -189,6 +201,7 @@ export async function loadMessages() {
   const turnIds = new Set(result.turns?.map(turn => turn.id));
   const indexOf = new Map(result.messages.map((message, index) => [message.id, index]));
   const lastIndexOf = item => item.type === 'message' ? indexOf.get(item.message.id) : Math.max(...item.steps.flatMap(step => [indexOf.get(step.id), step.result ? indexOf.get(step.result.id) ?? -1 : -1]));
+  const waitingUntil = new Map((result.scheduled ?? []).map(item => [item.id, item.notBefore]));
   let shownImported = false, turnPrompt = null;
   items.forEach((item, index) => {
     if (item.type === 'message' && item.message.kind === 'imported' && !shownImported) { shownImported = true; target.append(el('p', 'imported-divider', `Continued from ${chat.agent === 'codex' ? 'Codex' : 'Claude Code'}`)); }
@@ -197,7 +210,7 @@ export async function loadMessages() {
     if (item.type !== 'message') target.append(renderActivity(item, open));
     else {
       const finished = end?.endedAt && !(live && end === result.turns?.at(-1));
-      target.append(renderMessage(item.message, agentName(chat), copyable.has(item.message.id), finished ? end.endedAt - end.startedAt : null));
+      target.append(renderMessage(item.message, agentName(chat), copyable.has(item.message.id), finished ? end.endedAt - end.startedAt : null, waitingUntil.get(item.message.id)));
     }
     if (end && subagentsByTurn.get(end.id)?.length) target.append(renderSubagents(subagentsByTurn.get(end.id)));
     else if (index === items.length - 1 && turnPrompt && subagentsByTurn.get(turnPrompt)?.length && !end) target.append(renderSubagents(subagentsByTurn.get(turnPrompt)));
@@ -328,11 +341,23 @@ $('messages').addEventListener('click', async event => {
     more.textContent = open ? 'Show less' : 'Show more';
     return;
   }
+  const action = event.target.closest('.schedule-action');
+  if (action) { await scheduleAction(action); return; }
   const button = event.target.closest('.copy-code, .copy-reply'); if (!button) return;
   const text = button.classList.contains('copy-reply') ? button.dataset.text : button.closest('.code-block').querySelector('code').textContent;
   try { await navigator.clipboard.writeText(text); button.textContent = 'Copied'; setTimeout(() => { button.textContent = 'Copy'; }, 1500); }
   catch { notice('Clipboard is unavailable. Select the text to copy it.'); }
 });
+/** Send now or Cancel on a scheduled prompt. A cancelled prompt's text comes back to an empty message box. */
+async function scheduleAction(button) {
+  const chatId = app.selected, {action, prompt, text} = button.dataset;
+  button.disabled = true;
+  try {
+    await api(`/chats/${encodeURIComponent(chatId)}/prompts/${encodeURIComponent(prompt)}/${action}`, {});
+    if (action === 'cancel' && app.selected === chatId && !$('prompt').value.trim() && !drafts[chatId]?.attempted) { $('prompt').value = text; $('prompt').dispatchEvent(new Event('input')); }
+    notice(); await refresh();
+  } catch (error) { notice(error.message); button.disabled = false; }
+}
 setInterval(() => {
   for (const time of document.querySelectorAll('.working-time')) time.textContent = `· ${elapsedLabel(Date.now() - Number(time.dataset.since))}`;
   for (const time of document.querySelectorAll('.subagent-time.ticking')) time.textContent = `${time.dataset.lead}${elapsedLabel(Date.now() - Number(time.dataset.since))}`;

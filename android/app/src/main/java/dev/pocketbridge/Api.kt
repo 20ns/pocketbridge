@@ -113,12 +113,15 @@ data class PendingPrompt(
     val delivery: String? = null,
     /** A speed id from the model's catalog, or null for standard. Always sent, so a retry can't pick up the chat's later choice. */
     val speed: String? = null,
+    /** "reset" or an epoch time in ms: the Mac keeps it and sends it then. Part of the delivery, so Retry keeps it. */
+    val schedule: String? = null,
 ) {
     val options get() = ChatOptions(mode, model, effort, agent, speed)
     fun json() = JSONObject().put("id", id).put("text", text).put("agent", agent).put("mode", mode).put("model", model).put("effort", effort).put("speed", speed ?: JSONObject.NULL).apply {
         if (projectId.isNotBlank()) put("projectId", projectId)
         if (attachments.isNotEmpty()) put("attachments", JSONArray(attachments))
         if (delivery != null) put("delivery", delivery)
+        if (schedule != null) put("schedule", schedule.toLongOrNull() ?: schedule)
     }
     companion object {
         fun parse(value: String) = JSONObject(value).let {
@@ -133,6 +136,7 @@ data class PendingPrompt(
                 it.optJSONArray("attachments").strings(),
                 it.optString("delivery").takeIf { delivery -> delivery == STEER || delivery == INTERRUPT },
                 it.textOrNull("speed"),
+                when (val schedule = it.opt("schedule")) { SCHEDULE_RESET -> SCHEDULE_RESET; is Number -> schedule.toLong().toString(); else -> null },
             )
         }
     }
