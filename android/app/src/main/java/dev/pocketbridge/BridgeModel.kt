@@ -360,6 +360,7 @@ class BridgeModel(application: Application) : AndroidViewModel(application) {
     fun foreground(active: Boolean) {
         if (!active) { writeTranscripts(flush = true); flushDraft() }
         foreground = active; Alerts.foreground = active
+        if (active) freshState = false
         if (active && paired) start() else if (!active) stopConnection()
     }
     private fun stopConnection() { session?.cancel(); session = null; attempt = null; online = false; wasOnline = false }
@@ -454,6 +455,7 @@ class BridgeModel(application: Application) : AndroidViewModel(application) {
             val previous = chat
             val followOptions = pending == null && draftChat(id) == null && optionOverride(id) == null && (previous == null || options == optionsFrom(previous)?.let { supportedOptions(agent(it.agent), it) })
             applyState(state); settleAlertDeliveries(generation); store.put("state", stateCache)
+            freshState = true
             // Transcripts of chats deleted from another client go too, checked every ten minutes at most.
             if (System.currentTimeMillis() - transcriptsPrunedAt > 10 * 60_000) {
                 transcriptsPrunedAt = System.currentTimeMillis()
@@ -1101,17 +1103,22 @@ class BridgeModel(application: Application) : AndroidViewModel(application) {
         if (!on) { Alerts.stop(getApplication()); Alerts.clear(getApplication()) }
     }
     val alertsActive get() = alertsOn && notificationsAllowed()
+    /** The chat list came from the Mac since the app last came back, not only from the cache. */
+    private var freshState = false
     /** Leaving the app with work running hands the watch to the alerts service, with what each chat was doing. */
     fun startAlerts() {
         if (!paired || !alertsActive) return
         // A question the owner wasn't looking at when leaving still gets its notification; the one on screen was seen.
+        // A cached list may be out of date, so its work may be over already: that can't be announced as finished.
         val baseline = chats.filter { isWorking(it.optString("status")) }.associate { chat ->
             val id = chat.optString("id")
-            id to chat.optString("status").let { if (it == "waiting" && id != selected) "running" else it }
+            id to chat.optString("status").let { if (!freshState) UNKNOWN else if (it == "waiting" && id != selected) "running" else it }
         }.toMutableMap()
         // A prompt still on its way will start a turn the Mac hasn't reported yet.
         watchedDeliveries(store.pendingPrompts()).forEach { (id, prompt) -> Alerts.deliveries.putIfAbsent(id, DeliveryWatch(prompt.id, store.get("watch:$id").toLongOrNull() ?: 0)) }
         Alerts.deliveries.keys.forEach { baseline.putIfAbsent(it, "sending") }
+        // A prompt the Mac holds for the reset gets a look soon after it goes, so its turn still alerts.
+        Alerts.watchScheduled(getApplication(), chats.mapNotNull { chat -> chatScheduled(chat)?.let { (prompt, at) -> chat.optString("id") to ScheduledPrompt(prompt, at) } }.toMap())
         if (baseline.isNotEmpty()) Alerts.start(getApplication(), baseline)
     }
 

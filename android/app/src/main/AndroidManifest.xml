@@ -5,6 +5,8 @@
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+    <!-- Watching resumes after a restart, and the catch-up job survives one. -->
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
     <!-- Android 16: lets the Working notification be shown as a Live Update. -->
     <uses-permission android:name="android.permission.POST_PROMOTED_NOTIFICATIONS" />
     <application android:theme="@style/AppTheme" android:label="PocketBridge" android:allowBackup="false" android:fullBackupContent="false" android:dataExtractionRules="@xml/data_extraction_rules" android:usesCleartextTraffic="false" android:icon="@mipmap/ic_launcher" android:enableOnBackInvokedCallback="true" tools:targetApi="33">
@@ -23,5 +25,10 @@
             <property android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE" android:value="Keeps one connection to the user's own Mac while a coding task runs there, to notify when it finishes or needs an answer." />
         </service>
         <receiver android:name=".AlertActionReceiver" android:exported="false" />
+        <!-- One look at the Mac once there's a network: after the service gave up, or soon after a scheduled prompt goes. -->
+        <service android:name=".AlertJob" android:permission="android.permission.BIND_JOB_SERVICE" android:exported="false" />
+        <receiver android:name=".AlertBootReceiver" android:exported="false">
+            <intent-filter><action android:name="android.intent.action.BOOT_COMPLETED" /><action android:name="android.intent.action.MY_PACKAGE_REPLACED" /></intent-filter>
+        </receiver>
     </application>
 </manifest>

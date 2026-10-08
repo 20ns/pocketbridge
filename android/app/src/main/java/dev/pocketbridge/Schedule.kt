@@ -69,7 +69,10 @@ fun scheduleOffer(canSchedule: Boolean, limits: List<UsageLimit>, now: Long, mod
 fun draftAfterCancel(current: String, pastes: List<Paste>, attached: Boolean, pending: Boolean, cancelled: String): String? =
     cancelled.takeIf { !pending && current.isBlank() && pastes.isEmpty() && !attached && it.isNotBlank() }
 
-/** Unconfirmed prompts background alerts should wait for: a scheduled one starts no turn now, so it has nothing to report. */
+/**
+ * Unconfirmed prompts background alerts should wait for: a scheduled one starts no turn now. Once the Mac holds it,
+ * the chat row names it and [AlertJob] looks soon after it goes.
+ */
 fun watchedDeliveries(pending: Map<String, PendingPrompt>) = pending.filterValues { it.schedule == null }
 
 /** The prompt a chat is waiting to send, from the Mac's chat row: its id to when it goes. */
