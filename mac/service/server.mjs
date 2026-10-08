@@ -75,10 +75,13 @@ export async function createService(options = {}) {
     if (!row.activity) delete row.activity;
     if (!row.error) delete row.error;
     if (row.preview === null) delete row.preview; else if (typeof row.preview === 'string') row.preview = plainText(row.preview).slice(0, 160);
+    if (row.scheduled) row.scheduled = JSON.parse(row.scheduled); else delete row.scheduled;
     return row;
   };
+  // The chat's next scheduled prompt, if one waits.
+  const scheduledColumn = `(SELECT json_object('id',p.id,'notBefore',p.scheduledAt) FROM prompts p WHERE p.chatId=chats.id AND p.scheduleState='scheduled' ORDER BY p.scheduledAt LIMIT 1) AS scheduled`;
   ctx.chat = id => {
-    const row = get('SELECT id,projectId,agent,title,mode,model,effort,speed,status,updatedAt,error FROM chats WHERE id=?', id);
+    const row = get(`SELECT id,projectId,agent,title,mode,model,effort,speed,status,updatedAt,error,${scheduledColumn} FROM chats WHERE id=?`, id);
     if (!row) throw fail(404, 'Chat not found');
     return chatRow(row);
   };
@@ -87,10 +90,10 @@ export async function createService(options = {}) {
     return {
       projects: ctx.projects.list(),
       // The newest reply or prompt previews each chat; tool activity is left out.
-      chats: all(`SELECT id,projectId,agent,title,mode,model,effort,speed,status,updatedAt,error,contextTokens,contextWindow,activity,
+      chats: all(`SELECT id,projectId,agent,title,mode,model,effort,speed,status,updatedAt,error,contextTokens,contextWindow,activity,${scheduledColumn},
         (SELECT substr(text,1,400) FROM messages m WHERE m.chatId=chats.id AND m.role!='activity' ORDER BY m.rowid DESC LIMIT 1) AS preview
         FROM chats ORDER BY updatedAt DESC`).map(chatRow),
-      lastSeq: lastSeq(), capabilities: { modes: agentModes.claude, models: legacyModels, efforts: legacyEfforts, agents: agentIds.map(agents.agentCatalog), promptStatus: true },
+      lastSeq: lastSeq(), capabilities: { modes: agentModes.claude, models: legacyModels, efforts: legacyEfforts, agents: agentIds.map(agents.agentCatalog), promptStatus: true, scheduledPrompts: true },
       server: { claudeAvailable: agents.available.claude, codexAvailable: agents.available.codex, publicUrl: ctx.publicUrl, experiments: experimentsDir ? experimentsDir.replace(homedir(), '~') : null },
     };
   };
@@ -147,9 +150,11 @@ export async function createService(options = {}) {
   } catch (error) { ctx.closed = true; ctx.probes.abort(); projects.close(); clearTimeout(eventTimer); releaseOwner(); db.close(); throw error; }
   ctx.localUrl = `http://127.0.0.1:${server.address().port}`; ctx.publicUrl ??= ctx.localUrl;
   projects.refreshIcons();
+  // Prompts that came due while the service was down never started, so running them now is not a repeat.
+  ctx.schedules.wake();
   let closePromise;
   const close = () => closePromise ??= (async () => {
-    ctx.closed = true; ctx.probes.abort(); for (const id of ctx.active.keys()) ctx.runs.stop(id);
+    ctx.closed = true; ctx.probes.abort(); ctx.schedules.close(); for (const id of ctx.active.keys()) ctx.runs.stop(id);
     while (ctx.active.size) await pause(20);
     await projects.close(); clearTimeout(eventTimer);
     for (const client of ctx.clients) client.response.end();

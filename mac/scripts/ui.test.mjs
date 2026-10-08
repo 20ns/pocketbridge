@@ -4,7 +4,7 @@ import {readdirSync} from 'node:fs';
 import {spawnSync} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
 import {copyableReplies} from '../public/support.mjs';
-import {EventDecoder, mergeTranscript, safeLink, markdown, parseActivity, summariseInput, groupMessages, activitySummary, statusLabel, relativeTime, editDraft, prepareDelivery, afterDelivery, promptPayload, blankLocalDraft, withAttachments, slashMatches, turnPlacement, agentsFrom, usableAgent, newChatAgent, resolveOptions, supportedOptions, highlight, diffLines, resetLabel, modelName, effortName, modeHelp, liveStep, elapsedLabel, modelSpeeds, speedName, effortLabel, weeklyLimit, headlineLimit, usageRings, nextCredit, resetAttempt, settleReset, resetPrompt, resetOutcomes, hashIndex, projectTone, projectTones, avatarLetter, projectNameProblem, newProjectAttempt, unknownResult, settleProjectAttempt, projectChoices} from '../public/support.mjs';
+import {EventDecoder, mergeTranscript, safeLink, markdown, parseActivity, summariseInput, groupMessages, activitySummary, statusLabel, relativeTime, editDraft, prepareDelivery, afterDelivery, promptPayload, blankLocalDraft, withAttachments, slashMatches, turnPlacement, agentsFrom, usableAgent, newChatAgent, resolveOptions, supportedOptions, highlight, diffLines, resetLabel, modelName, effortName, modeHelp, liveStep, elapsedLabel, modelSpeeds, speedName, effortLabel, weeklyLimit, headlineLimit, usageRings, nextCredit, resetAttempt, settleReset, resetPrompt, resetOutcomes, hashIndex, projectTone, projectTones, avatarLetter, projectNameProblem, newProjectAttempt, unknownResult, settleProjectAttempt, projectChoices, scheduleReset, scheduleTime} from '../public/support.mjs';
 
 // A tiny DOM records writes. No browser or dependency is needed to assert the trust boundary.
 const fakeDoc = () => ({
@@ -125,6 +125,27 @@ test('draft delivery keeps an attempted id and its options, and sends the projec
   assert.equal(blankLocalDraft({text:'  ', attempted:false}), true);
   assert.equal(blankLocalDraft({text:'hello', attempted:false}), false);
   assert.equal(blankLocalDraft({text:'', attempted:true}), false);
+});
+
+test('a scheduled send is fixed with its delivery id, and Send at reset follows the Mac rule', () => {
+  const draft = editDraft(undefined, 'finish the refactor');
+  const scheduled = prepareDelivery(draft, 'finish the refactor', {agent: 'claude', mode: 'bypassPermissions'}, null, 'reset');
+  assert.equal(scheduled.id, draft.id); assert.equal(scheduled.schedule, 'reset');
+  assert.equal(promptPayload(scheduled).schedule, 'reset');
+  assert.equal(prepareDelivery(scheduled, 'finish the refactor', {}, null, 'reset'), scheduled);
+  // Sending the same text now instead is a different delivery, with its own id.
+  const now = prepareDelivery(scheduled, 'finish the refactor', {}, null);
+  assert.notEqual(now.id, scheduled.id); assert.equal('schedule' in now, false); assert.equal('schedule' in promptPayload(now), false);
+  const at = Date.UTC(2026, 9, 9, 2, 0), hour = 3600000;
+  const session = {id: 'session', percent: 100, resetsAt: at}, weekly = {id: 'weekly_all', percent: 40, resetsAt: at + 72 * hour};
+  assert.deepEqual(scheduleReset([session, weekly], at - hour), {at: at + 120000, reached: true});
+  assert.deepEqual(scheduleReset([{...session, percent: 80}, weekly], at - hour), {at: at + 120000, reached: false});
+  assert.equal(scheduleReset([session, {...weekly, percent: 100}], at - hour).at, weekly.resetsAt + 120000);
+  assert.equal(scheduleReset([{id: 'weekly_scoped:Fable', percent: 100, resetsAt: at + 5 * hour}, {...session, percent: 10}], at - hour, 'Opus').reached, false);
+  assert.equal(scheduleReset([{...session, resetsAt: at - 2 * hour}], at - hour), null);
+  assert.equal(scheduleReset(undefined), null);
+  assert.match(scheduleTime(at, at - hour, 'en-US'), /^\d{1,2}:00\s[AP]M$/);
+  assert.match(scheduleTime(at + 48 * hour, at, 'en-US'), /^[A-Z][a-z]{2} \d{1,2}:00\s[AP]M$/);
 });
 
 test('model catalogs resolve to concrete choices with real names', () => {

@@ -7,6 +7,7 @@ import { gzipSync } from 'node:zlib';
 import QRCode from 'qrcode';
 import { agentIds, agentNames } from './agents.mjs';
 import { createPrompts } from './prompts.mjs';
+import { createSchedules } from './schedules.mjs';
 import { secret, loopback, equal, fail, text, listed, plainText, oneLine, uuid, openUrl, imageType, imageExtensions } from './util.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -19,6 +20,7 @@ export function createRoutes(ctx) {
   const uploadPath = row => join(uploadsDir, `${row.id}.${imageExtensions[row.type]}`);
   const pairAttempts = new Map();
   let latestPair;
+  const schedules = ctx.schedules = createSchedules(ctx, uploadPath);
   const deliver = createPrompts(ctx, uploadPath);
   // Transcripts are mostly text; gzip keeps phone refreshes small over Tailscale.
   const json = (response, code, value) => {
@@ -193,9 +195,15 @@ export function createRoutes(ctx) {
         const promptRoute = route.match(/^\/api\/chats\/([^/]+)\/prompts\/([^/]+)$/);
         if (promptRoute && request.method === 'GET') {
           const [, id, promptId] = promptRoute; text(id, 'chat id', 128); text(promptId, 'prompt id', 128);
-          const prompt = get('SELECT startedAt,endedAt,delivery FROM prompts WHERE chatId=? AND id=?', id, promptId);
+          const prompt = get('SELECT startedAt,endedAt,delivery,scheduledAt,scheduleState FROM prompts WHERE chatId=? AND id=?', id, promptId);
           return json(response, 200, { accepted: Boolean(prompt), deleted: Boolean(get('SELECT id FROM deleted_chats WHERE id=?', id)),
-            status: get('SELECT status FROM chats WHERE id=?', id)?.status ?? null, startedAt: prompt?.startedAt ?? null, endedAt: prompt?.endedAt ?? null, delivery: prompt?.delivery ?? null });
+            status: get('SELECT status FROM chats WHERE id=?', id)?.status ?? null, startedAt: prompt?.startedAt ?? null, endedAt: prompt?.endedAt ?? null, delivery: prompt?.delivery ?? null, schedule: schedules.view(prompt) });
+        }
+        // A scheduled prompt can be cancelled or sent now until it starts. Both are safe to repeat.
+        const scheduleRoute = route.match(/^\/api\/chats\/([^/]+)\/prompts\/([^/]+)\/(cancel|send-now)$/);
+        if (scheduleRoute && request.method === 'POST') {
+          const [, id, promptId, action] = scheduleRoute; text(id, 'chat id', 128); text(promptId, 'prompt id', 128); await body(request);
+          return json(response, 200, action === 'cancel' ? schedules.cancel(id, promptId) : schedules.sendNow(id, promptId));
         }
         const chatRoute = route.match(/^\/api\/chats\/([^/]+)\/(messages|prompts|stop|delete|rename|desktop)$/);
         if (chatRoute) {
@@ -208,6 +216,8 @@ export function createRoutes(ctx) {
             transaction(() => {
               run('DELETE FROM messages WHERE chatId=?', id); run('DELETE FROM approvals WHERE chatId=?', id); run('DELETE FROM raw_events WHERE chatId=?', id); run('DELETE FROM runtimes WHERE chatId=?', id);
               run('DELETE FROM subagents WHERE chatId=?', id);
+              // A deleted chat's scheduled prompt never runs; its ledger row stays so a retry is still known.
+              run("UPDATE prompts SET scheduleState='cancelled' WHERE chatId=? AND scheduleState='scheduled'", id);
               for (const upload of all('SELECT * FROM uploads WHERE chatId=?', id)) rmSync(uploadPath(upload), { force: true });
               run('DELETE FROM uploads WHERE chatId=?', id);
               // A deleted Codex chat's thread stays out of "On this Mac" too.
@@ -234,7 +244,9 @@ export function createRoutes(ctx) {
             const subagents = all('SELECT id,promptId,agent,title,kind,model,effort,status,activity,startedAt,endedAt,toolUses,tokens FROM subagents WHERE chatId=? ORDER BY startedAt', id)
               .map(item => ({ ...item, model: item.model ? agents.modelDisplay(item.agent, item.model) : null }));
             const cursor = Buffer.from(JSON.stringify([clock.generation, id, clock.revision])).toString('base64url');
-            return json(response, 200, { messages, approvals: all('SELECT * FROM approvals WHERE chatId=? ORDER BY rowid', id).map(item => ({ ...item, input: JSON.parse(item.input) })), turns, subagents, activity: row.activity ?? null, thinking: ['running', 'waiting'].includes(row.status) ? row.thinking ?? null : null, cursor, full });
+            // Prompts waiting for their time; their messages have kind scheduled until they start.
+            const scheduled = all("SELECT id,scheduledAt AS notBefore FROM prompts WHERE chatId=? AND scheduleState='scheduled' ORDER BY scheduledAt", id);
+            return json(response, 200, { messages, approvals: all('SELECT * FROM approvals WHERE chatId=? ORDER BY rowid', id).map(item => ({ ...item, input: JSON.parse(item.input) })), turns, subagents, scheduled, activity: row.activity ?? null, thinking: ['running', 'waiting'].includes(row.status) ? row.thinking ?? null : null, cursor, full });
           }
           if (action === 'stop' && request.method === 'POST') { stop(id); return json(response, 200, { ok: true }); }
           // Claude Desktop lists only sessions handed to it; this is the same claude://resume link the CLI's /desktop opens.

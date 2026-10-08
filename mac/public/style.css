@@ -542,6 +542,10 @@ select:disabled, textarea:disabled { opacity: 0.6; }
 .message-footer .copy-reply.copy-reply { margin-top: 0; }
 .worked { color: var(--muted); font-size: var(--text-xs); font-variant-numeric: tabular-nums; }
 .message.imported { opacity: 0.72; }
+/* A prompt waiting for its time: dashed, so it reads as not sent yet. */
+.message.user.scheduled .message-body { background: transparent; border: 1.5px dashed var(--line); }
+.schedule-action.schedule-action { min-height: 28px; padding: 2px 10px; font-size: var(--text-xs); }
+.chat-item-scheduled { color: var(--accent); font-weight: 600; }
 .thinking .message-body { color: var(--muted); white-space: pre-wrap; }
 .imported-divider { display: flex; align-items: center; gap: var(--space-3); margin: 0 auto var(--space-4); color: var(--muted); font-size: var(--text-xs); font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; }
 .imported-divider::before, .imported-divider::after { content: ""; flex: 1; border-top: 1px solid var(--line); }

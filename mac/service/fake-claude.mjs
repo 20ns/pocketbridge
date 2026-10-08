@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Test double for the official Claude CLI in stream-json mode: catalog, usage and command handshakes, and turns
 // that replay user messages, honour interrupts, take steers, run background sub-agents and read images.
-import { writeFileSync, appendFileSync } from 'node:fs';
+import { writeFileSync, appendFileSync, existsSync, readFileSync } from 'node:fs';
 import { spawn } from 'node:child_process';
 import { createInterface } from 'node:readline';
 const args = process.argv.slice(2);
@@ -164,7 +164,9 @@ for await (const line of createInterface({ input: process.stdin })) {
   const message = JSON.parse(line);
   if (message.type === 'control_request') {
     const kind = message.request?.subtype;
-    const response = kind === 'initialize' ? { models, commands, account: { email: 'private@example.com' } } : kind === 'get_usage' ? usage : {};
+    // A test can set the limits with fake-usage.json in the folder usage is asked from (the data folder).
+    const limits = () => existsSync('fake-usage.json') ? { subscription_type: 'max', rate_limits: { limits: JSON.parse(readFileSync('fake-usage.json', 'utf8')) } } : usage;
+    const response = kind === 'initialize' ? { models, commands, account: { email: 'private@example.com' } } : kind === 'get_usage' ? limits() : {};
     if (kind === 'interrupt' && turn) turn.interrupted = true;
     emit({ type: 'control_response', response: { subtype: 'success', request_id: message.request_id, response } });
     continue;

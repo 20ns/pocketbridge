@@ -15,6 +15,8 @@ Personal remote control for the user's official Claude Code and Codex installati
   progress anywhere is listed first. Chat rows show the last reply and the model. Chats can be
   renamed or deleted. Empty conversations are not saved before the first prompt.
   Typed drafts and unconfirmed first prompts remain reachable in Recent chats.
+- Send at reset: at a plan limit, a prompt can wait on the Mac and send itself once when that
+  limit resets, with the phone off. It can be cancelled or sent now until it starts.
 - Persistent pairing, private networking, Mac service starts at user login.
 - Recent chats, prompts, formatted replies, streamed tool activity, Stop, questions when needed.
 - Bypass permissions is the preferred mode; Auto is also offered. Never silently change modes.

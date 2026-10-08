@@ -64,7 +64,7 @@ test('prompt acceptance lookup is read-only, chat-scoped and survives completion
   const f = await fixture(t), chatId = randomUUID(), promptId = randomUUID();
   const lookup = async (chat = chatId, prompt = promptId) => f.request(`/api/chats/${chat}/prompts/${prompt}`);
   assert.equal((await f.request('/api/state')).data.capabilities.promptStatus, true);
-  assert.deepEqual((await lookup()).data, { accepted: false, deleted: false, status: null, startedAt: null, endedAt: null, delivery: null });
+  assert.deepEqual((await lookup()).data, { accepted: false, deleted: false, status: null, startedAt: null, endedAt: null, delivery: null, schedule: null });
   assert.ok(!(await f.request('/api/state')).data.chats.some(chat => chat.id === chatId));
   const project = (await f.request('/api/state')).data.projects[0];
   const payload = { id: promptId, text: 'hang', projectId: project.id };
@@ -76,7 +76,7 @@ test('prompt acceptance lookup is read-only, chat-scoped and survives completion
   const unauthorized = await fetch(f.service.url + `/api/chats/${chatId}/prompts/${promptId}`); assert.equal(unauthorized.status, 401);
   await f.request(`/api/chats/${chatId}/stop`, {}); await f.finished({ id: chatId });
   const completed = (await lookup()).data; assert.equal(completed.status, 'interrupted'); assert.ok(completed.endedAt);
-  assert.deepEqual(Object.keys(completed).sort(), ['accepted', 'deleted', 'delivery', 'endedAt', 'startedAt', 'status']);
+  assert.deepEqual(Object.keys(completed).sort(), ['accepted', 'deleted', 'delivery', 'endedAt', 'schedule', 'startedAt', 'status']);
   await f.restart(); assert.deepEqual((await lookup()).data, completed);
   assert.equal((await f.request(`/api/chats/${chatId}/prompts`, payload)).data.duplicate, true);
   await f.request(`/api/chats/${chatId}/delete`, {});

@@ -10,8 +10,12 @@ let pendingReset = (() => { try { return JSON.parse(localStorage.getItem('pocket
 export async function loadUsage(force = false) {
   if (!app.token || (!force && Date.now() - usageAt < 60000)) return;
   usageAt = Date.now();
-  try { latest = (await api('/usage')).agents ?? []; renderUsage(); } catch { /* An older Mac service has no usage; keep the header quiet. */ }
+  try { latest = (await api('/usage')).agents ?? []; renderUsage(); usageListeners.forEach(listener => listener()); } catch { /* An older Mac service has no usage; keep the header quiet. */ }
 }
+/** The last plan limits the Mac reported for an agent, for "Send at reset". */
+export const limitsOf = agentId => latest.find(agent => agent.id === agentId)?.limits ?? [];
+const usageListeners = new Set();
+export const onUsage = listener => usageListeners.add(listener);
 
 function ring(agentId, percent) {
   const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');

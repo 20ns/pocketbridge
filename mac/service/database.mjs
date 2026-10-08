@@ -34,11 +34,15 @@ export function openDatabase(dataDir) {
     ['projects', 'general', 'INTEGER NOT NULL DEFAULT 0'],
     ['chats', 'thinking', 'TEXT'],
     ['messages', 'revision', 'INTEGER NOT NULL DEFAULT 0'],
+    // 0.9: prompts that wait for a time, usually a plan limit reset. schedule is the request ('reset' or an epoch ms),
+    // scheduledAt the resolved time, scheduleState scheduled, started or cancelled.
+    ['prompts', 'schedule', 'TEXT'], ['prompts', 'scheduledAt', 'INTEGER'], ['prompts', 'scheduleState', 'TEXT'],
   ]) if (!columns(table).includes(column)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${type}`);
   db.exec(`CREATE TABLE IF NOT EXISTS deleted_chats (id TEXT PRIMARY KEY, deletedAt INTEGER NOT NULL);
     CREATE INDEX IF NOT EXISTS messages_chat ON messages(chatId);
     CREATE INDEX IF NOT EXISTS messages_chat_revision ON messages(chatId,revision);
     CREATE INDEX IF NOT EXISTS prompts_chat_started ON prompts(chatId,startedAt);
+    CREATE INDEX IF NOT EXISTS prompts_scheduled ON prompts(scheduledAt,chatId) WHERE scheduleState='scheduled';
     CREATE INDEX IF NOT EXISTS approvals_chat ON approvals(chatId);
     CREATE INDEX IF NOT EXISTS raw_events_chat ON raw_events(chatId);
     CREATE TABLE IF NOT EXISTS hidden_sessions (id TEXT PRIMARY KEY);
