@@ -96,6 +96,8 @@ class BridgeModel(application: Application) : AndroidViewModel(application) {
     var claudeAvailable by mutableStateOf(true); private set
     /** Where New project creates folders on the Mac, as the owner sees it ("~/Desktop/experiments"); blank when it can't. */
     var experiments by mutableStateOf(""); private set
+    /** Whether this Mac offers Lock, and whether its screen is locked. */
+    var mac by mutableStateOf(MacScreen()); private set
     var creatingProject by mutableStateOf(false); private set
     /** Why the last New project attempt failed, shown under its name field. */
     var projectError by mutableStateOf(""); private set
@@ -156,6 +158,7 @@ class BridgeModel(application: Application) : AndroidViewModel(application) {
         agents = parseAgents(state.optJSONObject("capabilities")).map { agent -> agentSwitching[agent.id]?.let { agent.copy(enabled = it) } ?: agent }
         claudeAvailable = state.optJSONObject("server")?.optBoolean("claudeAvailable", true) ?: true
         experiments = state.optJSONObject("server")?.textOrNull("experiments").orEmpty()
+        mac = parseMacScreen(state)
         val pendingId = pending?.id
         if (pendingId != null && pendingId !in Alerts.inFlight && store.get("pending:$selected").isEmpty()) {
             attachmentLists.remove(selected)
@@ -299,7 +302,7 @@ class BridgeModel(application: Application) : AndroidViewModel(application) {
         Alerts.deliveries.clear(); Alerts.inFlight.clear()
         turns = emptyList(); subagents = emptyList(); activity = ""; thinking = ""; attachments = emptyList(); attachmentLists.clear(); shared = emptyList()
         details.clear(); acceptedAt.clear(); alertsOn = true
-        deleting = null; deletions = emptyMap(); agentSwitching = emptyMap(); experiments = ""; projectError = ""; newChatRequested = false; showChat = false
+        deleting = null; deletions = emptyMap(); agentSwitching = emptyMap(); experiments = ""; mac = MacScreen(); projectError = ""; newChatRequested = false; showChat = false
         viewModelScope.launch(Dispatchers.IO) { outbox.deleteRecursively(); images.clear() }
     }
     fun foreground(active: Boolean) {
@@ -661,6 +664,13 @@ class BridgeModel(application: Application) : AndroidViewModel(application) {
         val currentApi = api ?: return@action
         withContext(Dispatchers.IO) { currentApi.request("/api/chats/$id/desktop", JSONObject()) }
         notice = "Opened in Claude Desktop on your Mac"
+    }
+    /** Locks the Mac's screen at once, for when it was left unlocked. Work on the Mac keeps running. */
+    fun lockMac() = action {
+        val currentApi = api ?: return@action
+        val locked = withContext(Dispatchers.IO) { currentApi.request("/api/mac/lock", JSONObject()) }.lockedOrNull()
+        mac = mac.copy(locked = locked)
+        notice = if (locked == true) "Mac locked" else "Lock sent to your Mac"
     }
     fun rename(id: String, title: String) = action {
         val currentApi = api ?: return@action

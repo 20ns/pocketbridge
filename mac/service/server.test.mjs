@@ -1422,3 +1422,41 @@ test('General chats run in their own folder, outside any project, without git, s
   const again = (await (await fetch(service.url + '/api/state', { headers: { Authorization: `Bearer ${(await (await fetch(service.url + '/api/local-session')).json()).token}` } })).json()).projects.filter(project => project.general);
   assert.deepEqual(again.map(project => project.id), [general[0].id]);
 });
+
+test('a paired phone locks the Mac through the screen interface; state reports the lock and its capability', async t => {
+  const calls = [];
+  const screen = { isLocked: false, failLock: false, ignoreLock: false,
+    async locked() { calls.push('check'); return this.isLocked; },
+    async lock() { calls.push('lock'); if (this.failLock) throw new Error('osascript: internal detail'); if (!this.ignoreLock) this.isLocked = true; } };
+  const f = await fixture(t, { screen, screenSettleMs: 300 });
+  const pair = (await f.request('/api/pairing')).data, phone = { Authorization: `Bearer ${(await f.request('/api/pair', { code: pair.code }, { Authorization: '' })).data.token}` };
+  const state = (await f.request('/api/state', undefined, phone)).data;
+  assert.deepEqual(state.capabilities.mac, { lock: true, unlock: false });
+  assert.equal(state.server.locked, false);
+  assert.equal((await fetch(f.service.url + '/api/mac/lock', { method: 'POST', body: '{}' })).status, 401);
+  assert.deepEqual(await f.request('/api/mac/lock', {}, phone), { status: 200, data: { locked: true } });
+  assert.equal(calls.filter(call => call === 'lock').length, 1);
+  // Already locked: nothing is sent to macOS again.
+  assert.deepEqual((await f.request('/api/mac/lock', {}, phone)).data, { locked: true });
+  assert.equal(calls.filter(call => call === 'lock').length, 1);
+  await wait(async () => (await f.request('/api/state', undefined, phone)).data.server.locked === true);
+  // A change seen by the background check tells clients to fetch state.
+  const before = (await f.request('/api/state')).data.lastSeq;
+  screen.isLocked = false;
+  await wait(async () => { const now = (await f.request('/api/state')).data; return now.server.locked === false && now.lastSeq > before; });
+  // A refusal or a lock that doesn't take is an error, without macOS's own message.
+  screen.failLock = true;
+  assert.deepEqual(await f.request('/api/mac/lock', {}), { status: 502, data: { error: 'macOS refused to lock the screen' } });
+  screen.failLock = false; screen.ignoreLock = true;
+  assert.deepEqual(await f.request('/api/mac/lock', {}), { status: 502, data: { error: 'The Mac did not lock' } });
+});
+
+test('without a screen interface (tests, other platforms) locking is not offered, and tests cannot use the real one', async t => {
+  const f = await fixture(t);
+  const state = (await f.request('/api/state')).data;
+  assert.deepEqual(state.capabilities.mac, { lock: false, unlock: false });
+  assert.equal(state.server.locked, null);
+  assert.equal((await f.request('/api/mac/lock', {})).status, 404);
+  const { macScreen } = await import('./screen.mjs');
+  await assert.rejects(createService({ screen: macScreen, port: 0, dataDir: join(f.dir, 'other'), claudeProjectsDir: f.claudeProjectsDir }), /must not lock the real screen/);
+});

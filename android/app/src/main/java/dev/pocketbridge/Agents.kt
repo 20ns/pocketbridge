@@ -49,6 +49,14 @@ fun JSONArray?.strings(): List<String> = if (this == null) emptyList() else (0 u
 /** A string field that may be missing, blank or JSON null; [JSONObject.optString] would turn null into "null". */
 fun JSONObject.textOrNull(key: String): String? = if (isNull(key)) null else optString(key).ifBlank { null }
 
+/** The Mac's screen lock from /api/state: whether it offers Lock, and whether it is locked now (null when unknown or an older Mac). */
+data class MacScreen(val canLock: Boolean = false, val locked: Boolean? = null)
+fun parseMacScreen(state: JSONObject) = MacScreen(
+    state.optJSONObject("capabilities")?.optJSONObject("mac")?.optBoolean("lock") == true,
+    state.optJSONObject("server")?.lockedOrNull(),
+)
+fun JSONObject.lockedOrNull(): Boolean? = if (has("locked") && !isNull("locked")) optBoolean("locked") else null
+
 /** Agents from /api/state. A Mac service before 0.5 only lists Claude's legacy aliases. */
 fun parseAgents(capabilities: JSONObject?): List<AgentInfo> {
     val listed = capabilities?.optJSONArray("agents")?.objects().orEmpty().mapNotNull { agent ->

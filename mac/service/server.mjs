@@ -12,6 +12,7 @@ import { createAgents, legacyModels, legacyEfforts } from './catalogs.mjs';
 import { createProjects } from './projects.mjs';
 import { createRuns } from './runs.mjs';
 import { createRoutes } from './routes.mjs';
+import { createScreen, macScreen } from './screen.mjs';
 import { secret, fail, plainText, pause, processStamp, terminateGroup } from './util.mjs';
 
 export async function createService(options = {}) {
@@ -20,6 +21,7 @@ export async function createService(options = {}) {
   const claudeProjectsDir = options.claudeProjectsDir ?? process.env.POCKETBRIDGE_CLAUDE_PROJECTS_DIR ?? defaultProjects;
   if (process.env.NODE_TEST_CONTEXT && resolve(claudeProjectsDir) === resolve(defaultProjects)) throw new Error('Tests must pass claudeProjectsDir and must not read Claude history');
   const testing = Boolean(process.env.NODE_TEST_CONTEXT);
+  if (testing && options.screen === macScreen) throw new Error('Tests must not lock the real screen');
   const codexSessionsDir = options.codexSessionsDir ?? process.env.POCKETBRIDGE_CODEX_SESSIONS_DIR ?? (testing ? null : join(homedir(), '.codex', 'sessions'));
   // General chats run here: the home folder, so they can work across the Mac without belonging to a project.
   const generalDir = options.generalDir ?? process.env.POCKETBRIDGE_GENERAL_DIR ?? (testing ? null : homedir());
@@ -90,8 +92,8 @@ export async function createService(options = {}) {
       chats: all(`SELECT id,projectId,agent,title,mode,model,effort,speed,status,updatedAt,error,contextTokens,contextWindow,activity,
         (SELECT substr(text,1,400) FROM messages m WHERE m.chatId=chats.id AND m.role!='activity' ORDER BY m.rowid DESC LIMIT 1) AS preview
         FROM chats ORDER BY updatedAt DESC`).map(chatRow),
-      lastSeq: lastSeq(), capabilities: { modes: agentModes.claude, models: legacyModels, efforts: legacyEfforts, agents: agentIds.map(agents.agentCatalog), promptStatus: true },
-      server: { claudeAvailable: agents.available.claude, codexAvailable: agents.available.codex, publicUrl: ctx.publicUrl, experiments: experimentsDir ? experimentsDir.replace(homedir(), '~') : null },
+      lastSeq: lastSeq(), capabilities: { modes: agentModes.claude, models: legacyModels, efforts: legacyEfforts, agents: agentIds.map(agents.agentCatalog), promptStatus: true, mac: { lock: ctx.screen.available, unlock: false } },
+      server: { claudeAvailable: agents.available.claude, codexAvailable: agents.available.codex, publicUrl: ctx.publicUrl, experiments: experimentsDir ? experimentsDir.replace(homedir(), '~') : null, locked: ctx.screen.locked },
     };
   };
   const status = ctx.status = (id, value, error = null) => { run('UPDATE chats SET status=?,error=?,updatedAt=? WHERE id=?', value, error, Date.now(), id); change('state', id); };
@@ -140,18 +142,20 @@ export async function createService(options = {}) {
   projects.refreshDiscovery(true);
   const catalogsReady = agents.load();
   ctx.runs = createRuns(ctx);
+  // Tests never reach the real screen: they lock a fake or nothing.
+  const screen = ctx.screen = createScreen(ctx, options.screen !== undefined ? options.screen : testing || process.platform !== 'darwin' ? null : macScreen, { settleMs: options.screenSettleMs });
   const server = ctx.server = http.createServer(createRoutes(ctx));
   server.requestTimeout = 30_000; server.headersTimeout = 20_000;
   try {
     await new Promise((resolveListening, reject) => { server.once('error', reject); server.listen(options.port ?? Number(process.env.POCKETBRIDGE_PORT ?? 8787), options.host ?? '127.0.0.1', resolveListening); });
-  } catch (error) { ctx.closed = true; ctx.probes.abort(); projects.close(); clearTimeout(eventTimer); releaseOwner(); db.close(); throw error; }
+  } catch (error) { ctx.closed = true; ctx.probes.abort(); screen.close(); projects.close(); clearTimeout(eventTimer); releaseOwner(); db.close(); throw error; }
   ctx.localUrl = `http://127.0.0.1:${server.address().port}`; ctx.publicUrl ??= ctx.localUrl;
   projects.refreshIcons();
   let closePromise;
   const close = () => closePromise ??= (async () => {
     ctx.closed = true; ctx.probes.abort(); for (const id of ctx.active.keys()) ctx.runs.stop(id);
     while (ctx.active.size) await pause(20);
-    await projects.close(); clearTimeout(eventTimer);
+    screen.close(); await projects.close(); clearTimeout(eventTimer);
     for (const client of ctx.clients) client.response.end();
     await new Promise(resolveClosed => {
       const deadline = setTimeout(() => server.closeAllConnections(), options.shutdownTimeoutMs ?? 1000);

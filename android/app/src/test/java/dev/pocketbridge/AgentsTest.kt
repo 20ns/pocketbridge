@@ -218,4 +218,15 @@ class AgentsTest {
         assertNull(PendingPrompt.parse(standard.json().toString()).speed)
         assertNull(PendingPrompt.parse("""{"id":"old","text":"hi"}""").speed)
     }
+
+    @Test fun `Lock shows only when the Mac offers it, and lock state may be unknown`() {
+        assertEquals(MacScreen(true, true), parseMacScreen(JSONObject("""{"capabilities":{"mac":{"lock":true,"unlock":false}},"server":{"locked":true}}""")))
+        assertEquals(MacScreen(true, false), parseMacScreen(JSONObject("""{"capabilities":{"mac":{"lock":true}},"server":{"locked":false}}""")))
+        assertEquals(MacScreen(true, null), parseMacScreen(JSONObject("""{"capabilities":{"mac":{"lock":true}},"server":{"locked":null}}""")))
+        assertEquals(MacScreen(false, null), parseMacScreen(JSONObject("""{"capabilities":{"mac":{"lock":false}},"server":{}}""")))
+        // A Mac before this feature says nothing about it.
+        assertEquals(MacScreen(), parseMacScreen(JSONObject("""{"capabilities":{},"server":{"publicUrl":"https://mac"}}""")))
+        assertNull(JSONObject("""{"locked":null}""").lockedOrNull())
+        assertEquals(true, JSONObject("""{"locked":true}""").lockedOrNull())
+    }
 }

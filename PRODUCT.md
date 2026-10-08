@@ -24,6 +24,7 @@ Personal remote control for the user's official Claude Code and Codex installati
 - Public GitHub source and signed APK releases. Settings checks for updates and hands
   installation to Android. Keep the same package and signing certificate for saved pairing.
 - Mac stays awake, plugged in, lid open. Phone disconnection must not stop work.
+- Lock the Mac's screen from the phone, with its current lock state. No remote unlock.
 - Official unmodified Claude and Codex CLIs own their subscription logins. No reading/extracting OAuth credentials, no API reimplementation.
 - Mac owns sessions; save delivery/recovery state locally. No cloud database or historical import.
 - User delegated implementation, technology and aesthetic choices. Build directly and test with available emulator; physical phone validation remains distinct.

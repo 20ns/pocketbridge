@@ -92,6 +92,7 @@ export function createRoutes(ctx) {
           if (answer.error) throw fail(502, answer.error);
           return json(response, 200, { outcome: answer.outcome });
         }
+        if (route === '/api/mac/lock' && request.method === 'POST') { await body(request); const locked = await ctx.screen.lock(); return json(response, 200, { locked }); }
         const agentRoute = route.match(/^\/api\/agents\/([^/]+)$/);
         if (agentRoute && request.method === 'POST') {
           const agent = listed(agentRoute[1], agentIds, 'agent'), input = await body(request);

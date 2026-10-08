@@ -32,6 +32,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ExitToApp
 import androidx.compose.material.icons.filled.Clear
 import androidx.compose.material.icons.filled.Info
+import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Warning
@@ -69,8 +70,9 @@ import org.json.JSONObject
         // Agents first: the owner switches subscriptions often, so on and off is one tap from the Projects bar.
         AgentsGroup(model)
         GroupLabel("Mac")
+        val rows = if (model.mac.canLock) 4 else 3
         GroupRow(
-            0, 3, onClick = { address = model.pairUrl; changeAddress = true }.takeIf { !model.busy }, onClickLabel = "Change HTTPS address",
+            0, rows, onClick = { address = model.pairUrl; changeAddress = true }.takeIf { !model.busy }, onClickLabel = "Change HTTPS address",
             leading = { Tile(colors.secondaryContainer) { Icon(PocketIcons.Laptop, null, Modifier.size(20.dp), tint = colors.onSecondaryContainer) } },
             supporting = {
                 when {
@@ -81,13 +83,14 @@ import org.json.JSONObject
                 Text("Change HTTPS address", style = MaterialTheme.typography.bodySmall)
             },
         ) { SelectionContainer { Text(model.pairUrl, maxLines = 1, overflow = TextOverflow.Ellipsis) } }
+        if (model.mac.canLock) LockRow(model, rows)
         GroupRow(
-            1, 3, onClick = model::retry.takeIf { !model.refreshing },
+            rows - 2, rows, onClick = model::retry.takeIf { !model.refreshing },
             leading = { Tile(Color.Transparent) { Icon(Icons.Default.Refresh, null, tint = colors.onSurfaceVariant) } },
             trailing = { if (model.refreshing) CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp) },
         ) { Text("Reconnect") }
         GroupRow(
-            2, 3, onClick = { confirm = true }.takeIf { !model.busy },
+            rows - 1, rows, onClick = { confirm = true }.takeIf { !model.busy },
             leading = { Tile(Color.Transparent) { Icon(Icons.AutoMirrored.Filled.ExitToApp, null, tint = colors.error) } },
         ) { Text("Disconnect", color = colors.error) }
 
@@ -158,6 +161,17 @@ import org.json.JSONObject
             },
         ) { Text(if (agent.id == CLAUDE) "Claude Code" else agent.name) }
     }
+}
+
+/** Locks the Mac's screen, for when it was left unlocked. Shown only when the Mac offers it. */
+@Composable private fun LockRow(model: BridgeModel, rows: Int) {
+    val colors = MaterialTheme.colorScheme
+    val locked = model.mac.locked == true
+    GroupRow(
+        1, rows, onClick = model::lockMac.takeIf { model.online && !model.busy && !locked }, onClickLabel = "Lock the Mac",
+        leading = { Tile(Color.Transparent) { Icon(Icons.Default.Lock, null, tint = colors.onSurfaceVariant) } },
+        supporting = { model.mac.locked?.let { Text(if (it) "Locked" else "Unlocked") } },
+    ) { Text(if (locked) "Screen locked" else "Lock screen") }
 }
 
 /** One switch for background alerts. Turning it on asks Android for notifications, or opens their settings once refused. */

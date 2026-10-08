@@ -37,6 +37,14 @@ If you already configured private Serve, you can save its address with `mac/scri
 
 The app stores its connection until you clear its data or revoke its token. The short-lived pairing code is used once. Claude login is independent and may need renewal. Tailscale device key expiry can be disabled for your own two devices if you want to avoid scheduled reconnection. Keep the Mac connected to power, online, awake and logged in with its lid open.
 
+## Lock from the phone
+
+Settings on the phone shows **Lock screen** under Mac, with Locked or Unlocked beneath it. Tapping it locks the Mac at once, for when you walked away without locking. Tasks keep running. The service calls loginwindow's own lock (`SACLockScreenImmediate`, the call behind the Apple menu's Lock Screen and Ctrl-Cmd-Q) through `/usr/bin/osascript`. That locks straight away, whatever "Require password after screen saver begins" is set to. It needs no Accessibility or other privacy permission, and nothing is compiled. The lock state comes from `ioreg` (`CGSSessionScreenIsLocked` for your console session), read every 15 seconds and when a client asks. Each lock request writes one line to `service.log`. Lock is offered only on macOS; if a future macOS drops the call, the phone shows "macOS refused to lock the screen" instead of a silent failure.
+
+Unlocking from the phone is not offered. To use the Mac's screen while you're away, use macOS Screen Sharing over Tailscale.
+
+To check it yourself: leave the Mac unlocked, tap **Lock screen** on the phone, and the Mac should lock within a second, with the row changing to Screen locked. Unlock the Mac with your password or Touch ID; within about 15 seconds the row shows Unlocked again.
+
 ## Start at login
 
 Double-click `launcher/Install startup.command`. It installs a user LaunchAgent at `~/Library/LaunchAgents/com.pocketbridge.mac.plist`, starts PocketBridge and restarts it if it exits. This runs after macOS login, not before unlocking FileVault. Moving the project requires running the installer again.
