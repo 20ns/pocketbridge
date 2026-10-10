@@ -33,7 +33,7 @@ const tool = (id, name, input, output, parent = null) => {
   emit({ type: 'assistant', parent_tool_use_id: parent, message: { model: parent ? 'claude-sonnet-test' : 'claude-opus-test', content: [{ type: 'tool_use', id, name, input }] } });
   emit({ type: 'user', parent_tool_use_id: parent, message: { content: [{ type: 'tool_result', tool_use_id: id, content: output }] } });
 };
-let calls = 0, turn = null;
+let calls = 0, turn = null, inputClosed = false;
 const inbox = [];
 const nextMessage = timeout => new Promise(resolveMessage => {
   if (inbox.length) return resolveMessage(inbox.shift());
@@ -76,6 +76,23 @@ async function run(message) {
     }
     return result('Final answer');
   }
+  if (prompt === 'multi-block') {
+    emit({ type: 'stream_event', event: { type: 'message_start', message: { id: 'multi-block-message' } } });
+    for (const [index, text] of ['First thought', 'Second thought'].entries()) {
+      emit({ type: 'stream_event', event: { type: 'content_block_start', index, content_block: { type: 'thinking', thinking: '' } } });
+      emit({ type: 'stream_event', event: { type: 'content_block_delta', index, delta: { type: 'thinking_delta', thinking: text.slice(0, 4) } } });
+      emit({ type: 'assistant', message: { id: 'multi-block-message', content: [{ type: 'thinking', thinking: text }] } });
+    }
+    emit({ type: 'stream_event', event: { type: 'content_block_delta', index: 0, delta: { type: 'thinking_delta', thinking: 'late duplicate' } } });
+    for (const [index, text] of ['First reply.', 'Second reply.'].entries()) {
+      emit({ type: 'stream_event', event: { type: 'content_block_start', index: index + 2, content_block: { type: 'text', text: '' } } });
+      emit({ type: 'stream_event', event: { type: 'content_block_delta', index: index + 2, delta: { type: 'text_delta', text: text.slice(0, 4) } } });
+      emit({ type: 'assistant', message: { id: 'multi-block-message', content: [{ type: 'text', text }] } });
+    }
+    const steer = await nextMessage(3000);
+    if (steer) replay(steer);
+    return result('First reply. Second reply.');
+  }
   if (prompt === 'hang' || prompt === 'orphan' || prompt === 'slow') {
     const child = spawn(process.execPath, ['-e', 'setInterval(()=>{},1000)'], { stdio: 'ignore' });
     writeFileSync('child.pid', String(child.pid));
@@ -97,6 +114,39 @@ async function run(message) {
   }
   if (prompt === 'null' || prompt === 'bad-content') { emit(prompt === 'null' ? null : { type: 'assistant', message: { content: {} } }); return result('Bad'); }
   if (prompt === 'malformed') { process.stdout.write('{garbage}\n'); return result('Bad'); }
+  if (prompt === 'malformed-hang') { process.stdout.write('{garbage}\n'); return new Promise(() => {}); }
+  if (prompt === 'api-retry' || prompt === 'api-retry-idle') {
+    if (prompt === 'api-retry') emit({ type: 'system', subtype: 'task_summary', detail: 'Reading files' });
+    emit({ type: 'system', subtype: 'api_retry', attempt: 1, max_retries: 3, retry_delay_ms: 1500 });
+    emit({ type: 'system', subtype: 'api_retry', attempt: 2, max_retries: 3, retry_delay_ms: 2500 });
+    emit({ type: 'system', subtype: 'api_retry', attempt: 'bad', max_retries: -1, retry_delay_ms: -1 });
+    const resume = await nextMessage(3000);
+    if (resume) replay(resume);
+    emit({ type: 'stream_event', event: { type: 'message_start' } });
+    emit({ type: 'assistant', message: { content: [{ type: 'text', text: 'Recovered answer' }] } });
+    const finish = await nextMessage(3000);
+    if (finish) replay(finish);
+    return result('Recovered answer');
+  }
+  if (prompt === 'background-error') {
+    emit({ type: 'system', subtype: 'background_tasks_changed', tasks: [{ task_id: 'failed-worker', task_type: 'local_agent' }] });
+    return emit({ type: 'result', subtype: 'error_during_execution', errors: ['Claude could not finish the task.'], is_error: true });
+  }
+  if (prompt === 'late-followup') {
+    emit({ type: 'system', subtype: 'background_tasks_changed', tasks: [{ task_id: 'worker', task_type: 'local_agent' }] });
+    emit({ type: 'system', subtype: 'background_tasks_changed', tasks: [] });
+    result('The worker finished.');
+    while (!existsSync('start-followup')) await sleep(20);
+    if (inputClosed) return;
+    // An init event is not required before a background task's follow-up turn.
+    emit({ type: 'stream_event', event: { type: 'message_start' } });
+    emit({ type: 'stream_event', event: { type: 'content_block_delta', delta: { type: 'text_delta', text: 'Follow-up answer' } } });
+    emit({ type: 'assistant', message: { content: [{ type: 'text', text: 'Follow-up answer' }] } });
+    emit({ type: 'assistant', message: { content: [{ type: 'tool_use', id: 'followup-agent', name: 'Agent', input: { description: 'Check follow-up' } }] } });
+    while (!existsSync('finish-followup')) await sleep(20);
+    emit({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'followup-agent', content: 'Checked' }] } });
+    return result('Follow-up answer');
+  }
   if (prompt === 'error' || prompt === 'empty-error') {
     process.stderr.write('Claude subscription unavailable');
     if (prompt === 'empty-error') emit({ type: 'result', result: '', errors: [], is_error: true });
@@ -110,26 +160,43 @@ async function run(message) {
     return result('Steered');
   }
   if (prompt === 'subagent') {
-    emit({ type: 'assistant', message: { model: 'claude-opus-test', content: [{ type: 'tool_use', id: 'toolu_agent', name: 'Agent', input: { description: 'Count files here', subagent_type: 'general-purpose', model: 'haiku', prompt: 'Run ls' } }] } });
+    const agentId = `toolu_agent_${message.uuid}`;
+    emit({ type: 'assistant', message: { model: 'claude-opus-test', content: [{ type: 'tool_use', id: agentId, name: 'Agent', input: { description: 'Count files here', subagent_type: 'general-purpose', model: 'haiku', prompt: 'Run ls' } }] } });
     emit({ type: 'system', subtype: 'background_tasks_changed', tasks: [{ task_id: 't1', task_type: 'local_agent', description: 'Count files here' }] });
-    emit({ type: 'system', subtype: 'task_started', task_id: 't1', tool_use_id: 'toolu_agent', description: 'Count files here', subagent_type: 'general-purpose', is_backgrounded: true, task_type: 'local_agent' });
-    emit({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'toolu_agent', content: [{ type: 'text', text: 'Async agent launched successfully.' }] }] } });
+    emit({ type: 'system', subtype: 'task_started', task_id: 't1', tool_use_id: agentId, description: 'Count files here', subagent_type: 'general-purpose', is_backgrounded: true, task_type: 'local_agent' });
+    emit({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: agentId, content: [{ type: 'text', text: 'Async agent launched successfully.' }] }] } });
     emit({ type: 'system', subtype: 'task_summary', detail: 'Counting files here' });
     emit({ type: 'assistant', message: { content: [{ type: 'text', text: 'The agent is running.' }] } });
     result('The agent is running.');
     await sleep(50);
-    tool('toolu_sub_ls', 'Bash', { command: 'ls | wc -l', description: 'Count the files' }, '2', 'toolu_agent');
-    emit({ type: 'assistant', parent_tool_use_id: 'toolu_agent', message: { model: 'claude-sonnet-test', content: [{ type: 'text', text: 'There are 2 files.' }] } });
-    emit({ type: 'system', subtype: 'task_progress', task_id: 't1', tool_use_id: 'toolu_agent', description: 'Running Count the files', usage: { total_tokens: 2000, tool_uses: 1 } });
+    tool('toolu_sub_ls', 'Bash', { command: 'ls | wc -l', description: 'Count the files' }, '2', agentId);
+    emit({ type: 'assistant', parent_tool_use_id: agentId, message: { model: 'claude-sonnet-test', content: [{ type: 'text', text: 'There are 2 files.' }] } });
+    emit({ type: 'system', subtype: 'task_progress', task_id: 't1', tool_use_id: agentId, description: 'Running Count the files', usage: { total_tokens: 2000, tool_uses: 1 } });
     emit({ type: 'system', subtype: 'background_tasks_changed', tasks: [] });
-    emit({ type: 'system', subtype: 'task_notification', task_id: 't1', tool_use_id: 'toolu_agent', status: 'completed', summary: 'Found 2 files' });
+    emit({ type: 'system', subtype: 'task_notification', task_id: 't1', tool_use_id: agentId, status: 'completed', summary: 'Found 2 files' });
     emit({ type: 'system', subtype: 'init' });
+    emit({ type: 'user', message: { role: 'user', content: '<task-notification>\n<task-id>t1</task-id>\n<status>completed</status>\n</task-notification>' } });
     emit({ type: 'assistant', message: { content: [{ type: 'text', text: 'There are 2 files.' }] } });
     return result('There are 2 files.');
   }
   if (prompt === 'bg-shell') {
     emit({ type: 'system', subtype: 'background_tasks_changed', tasks: [{ task_id: 'b1', task_type: 'local_bash', description: 'dev server' }, { task_id: 'm1', task_type: 'local_agent', ambient: true }] });
     return result('Started the dev server in the background.');
+  }
+  if (prompt === 'subagent-backgrounded' || prompt === 'subagent-mixed-ids') {
+    const mixedIds = prompt === 'subagent-mixed-ids';
+    if (!mixedIds) emit({ type: 'assistant', message: { content: [{ type: 'tool_use', id: 'moving-agent', name: 'Agent', input: { description: 'Review files', subagent_type: 'general-purpose' } }] } });
+    emit({ type: 'system', subtype: 'task_started', task_id: 'moving-task', tool_use_id: mixedIds ? undefined : 'moving-agent', task_type: 'local_agent', description: 'Review files' });
+    // A foreground agent moved to the background. Later task events omit the optional tool_use_id.
+    emit({ type: 'system', subtype: 'task_updated', task_id: 'moving-task', patch: { is_backgrounded: true } });
+    emit({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'moving-agent', content: 'Agent is running in the background.' }] } });
+    emit({ type: 'system', subtype: 'background_tasks_changed', tasks: [{ task_id: 'moving-task', task_type: 'local_agent', description: 'Review files' }] });
+    emit({ type: 'system', subtype: 'task_progress', task_id: 'moving-task', tool_use_id: mixedIds ? 'moving-agent' : undefined, description: 'Reading files', summary: 'Checking error paths', usage: { total_tokens: 500, tool_uses: 2 } });
+    const steer = await nextMessage(3000);
+    if (steer) replay(steer);
+    emit({ type: 'system', subtype: 'task_notification', task_id: 'moving-task', tool_use_id: mixedIds ? 'moving-agent' : undefined, status: 'failed', summary: 'Review failed', usage: { total_tokens: 700, tool_uses: 3 } });
+    emit({ type: 'system', subtype: 'background_tasks_changed', tasks: [] });
+    return result('The review failed.');
   }
   if (prompt === 'steer-discard') {
     emit({ type: 'assistant', message: { content: [{ type: 'tool_use', id: 'toolu_wait', name: 'Bash', input: { command: 'sleep 1' } }] } });
@@ -184,4 +251,5 @@ for await (const line of createInterface({ input: process.stdin })) {
   if (turn?.waiter) { turn.waiter(message); continue; }
   running = running.then(() => run(message));
 }
+inputClosed = true;
 await running;

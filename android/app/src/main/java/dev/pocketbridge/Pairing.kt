@@ -72,7 +72,7 @@ import org.json.JSONObject
         Spacer(Modifier.height(Spacing.xxl))
         Text("Pair with your Mac", Modifier.semantics { heading() }, style = MaterialTheme.typography.headlineMedium)
         Spacer(Modifier.height(Spacing.sm))
-        Text("In PocketBridge on your Mac, choose Connect phone. Scan its QR code, or enter the address and code.", style = MaterialTheme.typography.bodyLarge, color = colors.onSurfaceVariant)
+        Text("In Felva on your Mac, choose Connect phone. Scan its QR code, or enter the address and code.", style = MaterialTheme.typography.bodyLarge, color = colors.onSurfaceVariant)
         Spacer(Modifier.height(Spacing.xxxl))
         OutlinedTextField(
             model.pairUrl, { model.pairUrl = it }, Modifier.fillMaxWidth(), shape = field,
@@ -93,6 +93,11 @@ import org.json.JSONObject
             else Text("Connect", style = MaterialTheme.typography.titleSmall)
         }
         Spacer(Modifier.height(Spacing.xl))
-        Text("Tailscale on both devices. Claude and Codex sign-in stays on the Mac.", style = MaterialTheme.typography.bodySmall, color = colors.onSurfaceVariant)
+        Text("No VPN needed on this phone. Claude and Codex sign-in stays on the Mac.", style = MaterialTheme.typography.bodySmall, color = colors.onSurfaceVariant)
     }
 }
+
+/** What the Mac lists this phone as: the name its owner gave it in Android settings, or else its model. */
+fun phoneName(context: android.content.Context): String =
+    runCatching { android.provider.Settings.Global.getString(context.contentResolver, android.provider.Settings.Global.DEVICE_NAME) }.getOrNull()?.trim()?.takeIf { it.isNotEmpty() }
+        ?: Build.MODEL.orEmpty().trim().ifEmpty { "Android phone" }

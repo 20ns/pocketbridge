@@ -8,4 +8,4 @@ if [[ -z "$NODE" ]]; then
   done
 fi
 if [[ -z "$NODE" ]]; then print -u2 'Install Node.js 22 or newer first.'; exit 1; fi
-exec "$NODE" "$MAC_DIR/scripts/setup-private.mjs"
+exec "$NODE" "$MAC_DIR/scripts/setup-connection.mjs" "$@"

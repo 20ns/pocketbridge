@@ -323,7 +323,7 @@ $('rename-form').onsubmit = async event => {
 $('delete').onclick = async () => {
   const chat = currentChat(); if (!chat || busy(chat)) return;
   const local = !storedChat(chat.id);
-  if (!confirm(local ? `Delete "${chat.title}" from this browser? It has not been sent.` : `Delete "${chat.title}" from PocketBridge on this Mac and your phone?`)) return;
+  if (!confirm(local ? `Delete "${chat.title}" from this browser? It has not been sent.` : `Delete "${chat.title}" from Felva on this Mac and your phone?`)) return;
   try {
     if (!local) await api(`/chats/${encodeURIComponent(chat.id)}/delete`, {});
     delete localChats[chat.id]; delete drafts[chat.id]; delete overrides[chat.id];

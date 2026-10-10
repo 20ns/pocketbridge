@@ -11,6 +11,7 @@ import { randomUUID } from 'node:crypto';
 import { spawn, spawnSync } from 'node:child_process';
 import net from 'node:net';
 import { createService } from './server.mjs';
+import { processStamp } from './util.mjs';
 import { newestCli, compareVersions } from './agents.mjs';
 import { findIcons, measure, renderIcon } from './icons.mjs';
 const here = dirname(fileURLToPath(import.meta.url));
@@ -243,6 +244,214 @@ test('pairing is one-time, QR matches the issued code, phone token persists, and
   await f.restart(); assert.equal((await f.request('/api/state', undefined, { Authorization: `Bearer ${phoneToken}` })).status, 200);
 });
 
+// Plain requests against either listener, with whatever token and headers a test needs.
+const call = async (base, route, { method, token, body, headers = {} } = {}) => {
+  const response = await fetch(base + route, { method: method ?? (body === undefined ? 'GET' : 'POST'), headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}), ...(body === undefined ? {} : { 'Content-Type': 'application/json' }), ...headers }, ...(body === undefined ? {} : { body: typeof body === 'string' ? body : JSON.stringify(body) }) });
+  const text = await response.text();
+  return { status: response.status, data: text.startsWith('{') ? JSON.parse(text) : text };
+};
+const pairPhone = async (f, input = {}) => {
+  const pair = (await f.request('/api/pairing')).data;
+  const answer = await call(f.service.remoteUrl, '/api/pair', { body: { code: pair.code, ...input }, headers: { 'X-Forwarded-For': '100.64.0.9' } });
+  assert.equal(answer.status, 200); return answer.data.token;
+};
+const openStream = async (base, token) => {
+  const controller = new AbortController(), response = await fetch(base + '/api/events?after=0', { headers: { Authorization: `Bearer ${token}` }, signal: controller.signal });
+  assert.equal(response.status, 200);
+  const reader = response.body.getReader(); let ended = false;
+  (async () => { try { while (!(await reader.read()).done); } catch { /* destroyed */ } ended = true; })();
+  return { get ended() { return ended; }, close: () => controller.abort() };
+};
+
+test('paired phones are listed by name, and removing one on the Mac cuts it off at once', async t => {
+  const f = await fixture(t), remote = f.service.remoteUrl;
+  const pixel = await pairPhone(f, { name: '  Nav\'s\nPixel 9  ' }), other = await pairPhone(f, { name: 42 });
+  const listed = (await f.request('/api/devices')).data.devices;
+  assert.deepEqual(listed.map(item => item.name).sort(), ['Android phone', 'Nav\'s Pixel 9']);
+  assert.ok(listed.every(item => Object.keys(item).sort().join() === 'connected,createdAt,id,lastSeenAt,name' && item.connected === false));
+  const pixelId = listed.find(item => item.name === 'Nav\'s Pixel 9').id, otherId = listed.find(item => item.name === 'Android phone').id;
+  // Pairing and removing other phones stay with the Mac.
+  for (const route of ['/api/devices', '/api/pairing', '/api/pairing/qr']) assert.equal((await call(remote, route, { token: pixel })).status, 403, route);
+  assert.equal((await call(remote, `/api/devices/${otherId}/delete`, { token: pixel, body: {} })).status, 403);
+  assert.equal((await call(f.service.url, '/api/devices/current/delete', { token: f.token, body: {} })).status, 400);
+  const pixelStream = await openStream(remote, pixel), otherStream = await openStream(remote, other);
+  t.after(() => { pixelStream.close(); otherStream.close(); });
+  await wait(async () => (await f.request('/api/devices')).data.devices.every(item => item.connected));
+  assert.equal((await f.request(`/api/devices/${pixelId}/delete`, {})).status, 200);
+  await wait(() => pixelStream.ended);
+  assert.equal(otherStream.ended, false);
+  for (const base of [remote, f.service.url]) assert.equal((await call(base, '/api/state', { token: pixel })).status, 401);
+  assert.deepEqual((await f.request('/api/devices')).data.devices.map(item => [item.id, item.connected]), [[otherId, true]]);
+  // Safe to repeat, and a phone can remove itself when it disconnects.
+  assert.equal((await f.request(`/api/devices/${pixelId}/delete`, {})).status, 200);
+  assert.equal((await call(remote, '/api/devices/current/delete', { token: other, body: {} })).status, 200);
+  await wait(() => otherStream.ended);
+  assert.equal((await call(remote, '/api/state', { token: other })).status, 401);
+  assert.deepEqual((await f.request('/api/devices')).data.devices, []);
+});
+
+test('a removed phone cannot get its token back by retrying its pairing, nor act on a request still uploading', async t => {
+  const f = await fixture(t), pair = (await f.request('/api/pairing')).data, attempt = randomUUID();
+  const exchange = () => call(f.service.remoteUrl, '/api/pair', { body: { code: pair.code, attempt } });
+  const token = (await exchange()).data.token;
+  assert.equal((await exchange()).data.token, token);
+  const [device] = (await f.request('/api/devices')).data.devices;
+  const chat = await f.createChat();
+  // A rename whose body is still arriving when the phone is removed.
+  const late = new Promise((resolveLate, reject) => {
+    const port = new URL(f.service.remoteUrl).port;
+    const req = http.request({ host: '127.0.0.1', port, path: `/api/chats/${chat.id}/rename`, method: 'POST', headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json', 'Transfer-Encoding': 'chunked' } }, res => { res.resume(); res.on('end', () => resolveLate(res.statusCode)); });
+    req.on('error', reject); req.write('{"title":');
+    setTimeout(async () => { await f.request(`/api/devices/${device.id}/delete`, {}); req.end('"Renamed by a removed phone"}'); }, 100);
+  });
+  assert.equal(await late, 401);
+  assert.equal((await f.request('/api/state')).data.chats.find(item => item.id === chat.id).title, 'New chat');
+  assert.equal((await exchange()).status, 401);
+});
+
+test('the remote listener never gives out or accepts the Mac\'s own token, and proxied local requests are remote too', async t => {
+  const uiDir = mkdtempSync(join(tmpdir(), 'pocketbridge-ui-')); t.after(() => rmSync(uiDir, { recursive: true, force: true }));
+  writeFileSync(join(uiDir, 'index.html'), '<!doctype html>'); writeFileSync(join(uiDir, 'PocketBridge.apk'), 'apk');
+  const f = await fixture(t, { uiDir }), remote = f.service.remoteUrl, phone = await pairPhone(f);
+  assert.equal((await call(f.service.url, '/index.html')).status, 200);
+  assert.equal((await call(remote, '/PocketBridge.apk')).data, 'apk');
+  assert.equal((await call(remote, '/api/local-session')).status, 403);
+  assert.equal((await call(remote, '/api/local-session', { headers: { Host: new URL(f.service.url).host } })).status, 403);
+  assert.equal((await call(remote, '/api/state', { token: f.token })).status, 401);
+  assert.equal((await call(remote, '/internal/approval', { body: {} })).status, 401);
+  assert.equal((await call(remote, '/')).status, 404);
+  assert.equal((await call(remote, '/index.html')).status, 404);
+  assert.equal((await call(remote, '/api/health')).status, 200);
+  assert.equal((await call(remote, '/api/state', { token: phone })).status, 200);
+  // An older setup forwards to the browser's listener: whatever a proxy marks is treated as remote there too.
+  for (const header of [{ 'X-Forwarded-For': '100.64.0.1' }, { 'X-Forwarded-Host': 'mac.test.ts.net' }, { Forwarded: 'for=1.2.3.4' }, { 'Tailscale-User-Login': 'someone@example.com' }]) {
+    assert.equal((await call(f.service.url, '/api/state', { token: f.token, headers: header })).status, 401, JSON.stringify(header));
+    assert.equal((await call(f.service.url, '/api/local-session', { headers: header })).status, 403, JSON.stringify(header));
+    assert.equal((await call(f.service.url, '/api/state', { token: phone, headers: header })).status, 200, JSON.stringify(header));
+  }
+  // The emulator reaches the browser's listener directly and pairs like a phone.
+  assert.equal((await call(f.service.url, '/api/state', { token: phone })).status, 200);
+});
+
+test('every API route refuses a remote request without a paired phone\'s token', async t => {
+  const f = await fixture(t), id = randomUUID(), routes = [
+    ['GET', '/api/state'], ['GET', '/api/pairing'], ['GET', '/api/devices'], ['GET', '/api/usage'], ['GET', '/api/pairing/qr'], ['GET', '/api/events'],
+    ['GET', `/api/uploads/${id}`], ['GET', `/api/projects/${id}/git`], ['GET', `/api/projects/${id}/icon`], ['GET', `/api/chats/${id}/messages`], ['GET', `/api/chats/${id}/prompts/${id}`],
+    ['POST', '/api/usage/codex/reset'], ['POST', '/api/mac/lock'], ['POST', '/api/agents/claude'], ['POST', '/api/uploads'], ['POST', '/api/chats/continue'],
+    ['POST', '/api/projects/new'], ['POST', '/api/projects'], ['POST', '/api/chats'], ['POST', `/api/chats/${id}/prompts/${id}/cancel`], ['POST', `/api/chats/${id}/prompts`],
+    ['POST', `/api/chats/${id}/stop`], ['POST', `/api/chats/${id}/delete`], ['POST', `/api/chats/${id}/rename`], ['POST', `/api/chats/${id}/desktop`],
+    ['POST', `/api/approvals/${id}`], ['POST', `/api/devices/${id}/delete`], ['POST', '/api/devices/current/delete'], ['GET', '/api/not-a-route'], ['POST', '/api/not-a-route'],
+  ];
+  // A route added to the router without a line here fails, so none can slip in ahead of the token check unseen.
+  const named = [...readFileSync(join(here, 'routes.mjs'), 'utf8').matchAll(/route === '(\/api\/[^']+)'/g)].map(match => match[1]);
+  for (const route of named.filter(route => !['/api/health', '/api/local-session', '/api/pair'].includes(route))) assert.ok(routes.some(([, path]) => path === route), `${route} is missing from this test`);
+  for (const token of [undefined, 'not-a-token', f.token]) for (const [method, route] of routes)
+    assert.equal((await call(f.service.remoteUrl, route, { method, token, body: method === 'POST' ? {} : undefined })).status, 401, `${method} ${route} with ${token === f.token ? 'the Mac token' : token ?? 'no token'}`);
+});
+
+test('pairing tries are limited per caller and in total, so guessing a code fails and one noisy caller blocks no one', async t => {
+  const f = await fixture(t), pair = (await f.request('/api/pairing')).data;
+  const attempt = (from, code = 'WRONG00000') => call(f.service.remoteUrl, '/api/pair', { body: { code }, headers: { 'X-Forwarded-For': from } });
+  for (let index = 0; index < 10; index++) assert.equal((await attempt('203.0.113.1')).status, 401);
+  // Refused tries don't count toward the total, so this caller can't use up everyone's.
+  for (let index = 0; index < 150; index++) assert.equal((await attempt('203.0.113.1')).status, 429);
+  assert.equal((await attempt('198.51.100.7', pair.code)).status, 200);
+  for (let index = 0; index < 89; index++) assert.equal((await attempt(`192.0.2.${index}`)).status, 401);
+  assert.equal((await attempt('192.0.2.200')).status, 429);
+});
+
+test('a prompt still being checked when its phone is removed never starts', async t => {
+  const f = await fixture(t);
+  // A Codex CLI whose catalog never answers holds validation for a moment, the window a removal lands in.
+  const dir = join(f.dir, 'slow'); mkdirSync(join(dir, 'project'), { recursive: true });
+  const slow = join(dir, 'slow-codex.mjs');
+  writeFileSync(slow, `#!/usr/bin/env node\nif (process.argv.includes('--version')) { console.log('slow'); process.exit(0); }\nsetInterval(() => {}, 1000);\n`, { mode: 0o755 });
+  const service = await createService({ port: 0, dataDir: join(dir, 'data'), claudePath: join(here, 'fake-claude.mjs'), codexPath: slow, claudeProjectsDir: f.claudeProjectsDir, catalogWaitMs: 1500, stopTimeoutMs: 50 });
+  t.after(() => service.close());
+  const mac = (await (await fetch(service.url + '/api/local-session')).json()).token;
+  const project = (await call(service.url, '/api/projects', { token: mac, body: { path: join(dir, 'project') } })).data;
+  const code = (await call(service.url, '/api/pairing', { token: mac })).data.code;
+  const phone = (await call(service.remoteUrl, '/api/pair', { body: { code } })).data.token;
+  const [device] = (await call(service.url, '/api/devices', { token: mac })).data.devices;
+  const chatId = randomUUID(), sent = call(service.remoteUrl, `/api/chats/${chatId}/prompts`, { token: phone, body: { id: randomUUID(), text: 'hello', agent: 'codex', model: 'gpt-anything', projectId: project.id } });
+  await new Promise(resolveLater => setTimeout(resolveLater, 300));
+  assert.equal((await call(service.url, `/api/devices/${device.id}/delete`, { token: mac, body: {} })).status, 200);
+  assert.equal((await sent).status, 401);
+  assert.equal((await call(service.url, '/api/state', { token: mac })).data.chats.some(chat => chat.id === chatId), false);
+});
+
+test('a lock or a Codex reset still waiting when its phone is removed never happens', async t => {
+  let locks = 0, isLocked = false;
+  // The screen check before locking and Codex's handshake before the reset both take a moment.
+  const screen = { async locked() { await new Promise(resolveCheck => setTimeout(resolveCheck, 400)); return isLocked; }, async lock() { locks++; isLocked = true; } };
+  const previousDelay = process.env.FAKE_CODEX_INIT_DELAY_MS;
+  process.env.FAKE_CODEX_INIT_DELAY_MS = '400';
+  t.after(() => { if (previousDelay === undefined) delete process.env.FAKE_CODEX_INIT_DELAY_MS; else process.env.FAKE_CODEX_INIT_DELAY_MS = previousDelay; });
+  const f = await fixture(t, { screen, screenSettleMs: 50 });
+  const removeLater = async () => { await new Promise(resolveLater => setTimeout(resolveLater, 150)); const [device] = (await f.request('/api/devices')).data.devices; assert.equal((await f.request(`/api/devices/${device.id}/delete`, {})).status, 200); };
+  let phone = await pairPhone(f);
+  const [lock] = await Promise.all([call(f.service.remoteUrl, '/api/mac/lock', { token: phone, body: {} }), removeLater()]);
+  assert.equal(lock.status, 401); assert.equal(locks, 0);
+  // The Mac asking at the same time still gets its lock; only the removed phone is refused.
+  phone = await pairPhone(f);
+  const [shared, own] = await Promise.all([call(f.service.remoteUrl, '/api/mac/lock', { token: phone, body: {} }), f.request('/api/mac/lock', {}), removeLater()]);
+  assert.equal(shared.status, 401); assert.equal(own.status, 200); assert.equal(locks, 1);
+  phone = await pairPhone(f);
+  const [reset] = await Promise.all([call(f.service.remoteUrl, '/api/usage/codex/reset', { token: phone, body: { id: randomUUID(), creditId: 'credit-a' } }), removeLater()]);
+  assert.equal(reset.status, 401);
+  // The credit is still there for the Mac to use.
+  assert.equal((await f.request('/api/usage/codex/reset', { id: randomUUID(), creditId: 'credit-a' })).data.outcome, 'reset');
+});
+
+test('a phone port another app holds leaves the Mac browser working and says why', async t => {
+  const holder = net.createServer(); await new Promise(resolveListening => holder.listen(0, '127.0.0.1', resolveListening));
+  t.after(() => holder.close());
+  const errors = t.mock.method(console, 'error', () => {});
+  const f = await fixture(t, { remotePort: holder.address().port });
+  errors.mock.restore();
+  assert.match(errors.mock.calls.map(call => call.arguments[0]).join('\n'), new RegExp(`Phones can't connect: port ${holder.address().port} is in use`));
+  const state = (await f.request('/api/state')).data;
+  assert.equal(state.server.remotePort, null); assert.equal(f.service.remoteUrl, undefined);
+  assert.equal((await f.createChat()).agent, 'claude');
+});
+
+test('an update started beside a running service leaves that service\'s tokens alone', async t => {
+  const f = await fixture(t);
+  await f.service.close();
+  const legacy = 'legacy-token-' + 'y'.repeat(30), path = join(f.dir, 'data/data.sqlite');
+  const db = new DatabaseSync(path);
+  db.exec('DROP TABLE devices; CREATE TABLE tokens (token TEXT PRIMARY KEY, createdAt INTEGER NOT NULL);');
+  db.prepare('INSERT INTO tokens VALUES (?,?)').run(legacy, 1);
+  // This test process stands in for the older service that still owns the folder.
+  db.prepare('INSERT OR REPLACE INTO settings VALUES (?,?)').run('serviceOwner', JSON.stringify({ pid: process.pid, startTime: processStamp(process.pid) })); db.close();
+  await assert.rejects(f.restart(), /already running/);
+  const check = new DatabaseSync(path);
+  assert.deepEqual(check.prepare('SELECT token FROM tokens').all().map(row => row.token), [legacy]);
+  check.prepare("DELETE FROM settings WHERE key='serviceOwner'").run(); check.close();
+  await f.restart();
+  assert.equal((await call(f.service.remoteUrl, '/api/state', { token: legacy })).status, 200);
+});
+
+test('phone tokens from an older data folder keep working, kept only as hashes', async t => {
+  const f = await fixture(t);
+  await f.service.close();
+  const legacy = 'legacy-token-' + 'x'.repeat(30), path = join(f.dir, 'data/data.sqlite');
+  const db = new DatabaseSync(path);
+  db.exec('DROP TABLE devices; CREATE TABLE tokens (token TEXT PRIMARY KEY, createdAt INTEGER NOT NULL);');
+  db.prepare('INSERT INTO tokens VALUES (?,?)').run(legacy, 1_700_000_000_000); db.close();
+  await f.restart();
+  assert.equal((await call(f.service.remoteUrl, '/api/state', { token: legacy })).status, 200);
+  const [device] = (await f.request('/api/devices')).data.devices;
+  assert.equal(device.name, 'Android phone'); assert.equal(device.createdAt, 1_700_000_000_000);
+  await f.service.close();
+  for (const file of [path, `${path}-wal`]) if (existsSync(file)) assert.equal(readFileSync(file).includes(legacy), false, file);
+  const check = new DatabaseSync(path);
+  assert.equal(check.prepare("SELECT name FROM sqlite_master WHERE name='tokens'").get(), undefined);
+  assert.equal(check.prepare("SELECT value FROM settings WHERE key='tokenCleanup'").get(), undefined); check.close();
+  await f.restart();
+  assert.equal((await call(f.service.remoteUrl, '/api/state', { token: legacy })).status, 200);
+});
+
 test('auth rejects unknown hosts, cross-origin bootstrap, proxy bootstrap, missing token, and invalid cursors', async t => {
   const f = await fixture(t);
   assert.equal((await f.request('/api/state', undefined, { Authorization: '' })).status, 401);
@@ -255,7 +464,7 @@ test('auth rejects unknown hosts, cross-origin bootstrap, proxy bootstrap, missi
   assert.equal((await f.request('/api/health', undefined, { Host: 'evil.test' })).status, 403);
   assert.equal((await f.request('/api/health', undefined, { Host: 'evil.test' })).status, 403);
   // Logged once, with what to do when it is the Mac's own new address.
-  assert.deepEqual(errors.mock.calls.map(call => call.arguments[0]).filter(line => /unknown host/.test(line)), ['Rejected a request for unknown host "evil.test". If that is this Mac\'s private address, run "Setup private connection" again.']);
+  assert.deepEqual(errors.mock.calls.map(call => call.arguments[0]).filter(line => /unknown host/.test(line)), ['Rejected a request for unknown host "evil.test". If that is this Mac\'s address, run "Setup phone connection" again.']);
   errors.mock.restore();
   assert.equal((await f.request('/api/events?after=-1')).status, 400);
   assert.equal((await f.request('/api/chats', { projectId: 'missing' })).status, 404);
@@ -383,6 +592,17 @@ test('deleted projects reject delivery without consuming id; malformed output an
   for (const failure of ['error', 'empty-error']) {
     await f.send(chat, failure); assert.match((await f.finished(chat)).error, /subscription unavailable/);
   }
+});
+
+test('malformed output without a result releases the chat, preserves its delivery and permits continuation', async t => {
+  const f = await fixture(t), chat = await f.createChat(), promptId = randomUUID();
+  assert.equal((await f.send(chat, 'malformed-hang', promptId)).status, 202);
+  const failed = await f.finished(chat);
+  assert.equal(failed.status, 'error'); assert.match(failed.error, /malformed/);
+  assert.equal((await f.send(chat, 'malformed-hang', promptId)).data.duplicate, true);
+  assert.equal((await f.send(chat, 'hello')).status, 202);
+  assert.equal((await f.finished(chat)).status, 'idle');
+  assert.deepEqual((await f.request(`/api/chats/${chat.id}/messages`)).data.messages.filter(m => m.role === 'user').map(m => m.text), ['malformed-hang', 'hello']);
 });
 
 test('pending questions require answers, are visible after disconnect, and resolve once', async t => {
@@ -978,7 +1198,7 @@ test('"/" commands list Claude custom commands and Codex skills, and a Codex ski
   assert.equal((await f.request(`/api/projects/${project.id}/commands?agent=gemini`)).status, 400);
 });
 
-test('continuing a Terminal session forks it into a new chat that brings the last exchange along', async t => {
+test('continuing a Terminal session runs it in place and brings the last exchange along', async t => {
   const f = await fixture(t), project = (await f.request('/api/state')).data.projects[0];
   const dir = join(f.claudeProjectsDir, project.path.replace(/[^a-zA-Z0-9]/g, '-')), source = randomUUID(); mkdirSync(dir, { recursive: true });
   const record = value => JSON.stringify(value) + '\n';
@@ -996,13 +1216,17 @@ test('continuing a Terminal session forks it into a new chat that brings the las
   assert.equal((await turnWith(f, created.data.id, 'hello')).status, 202);
   await f.finished(created.data);
   const args = readFileSync(join(f.projectPath, 'calls.ndjson'), 'utf8').trim().split('\n').map(JSON.parse)[0].args;
-  assert.deepEqual(args.slice(args.indexOf('--resume'), args.indexOf('--resume') + 5), ['--resume', source, '--fork-session', '--session-id', created.data.id]);
+  assert.equal(args[args.indexOf('--resume') + 1], source); assert.ok(!args.includes('--fork-session') && !args.includes('--session-id'));
+  assert.equal((await f.request('/api/chats/continue', { projectId: project.id, agent: 'claude', sessionId: source })).data.id, created.data.id);
   assert.ok(!(await f.request(`/api/projects/${project.id}/sessions`)).data.sessions.some(item => item.id === source));
+  // Deleting the chat gives the session back to "On this Mac" rather than hiding it.
+  assert.equal((await f.request(`/api/chats/${created.data.id}/delete`, {})).status, 200);
+  assert.ok((await f.request(`/api/projects/${project.id}/sessions`)).data.sessions.some(item => item.id === source));
   const codexChat = (await f.request('/api/chats/continue', { projectId: project.id, agent: 'codex', sessionId: 'codex-thread-1' })).data;
   assert.equal((await turnWith(f, codexChat.id, 'hello')).status, 202);
   await f.finished(codexChat);
-  const forked = readFileSync(join(f.projectPath, 'codex-calls.ndjson'), 'utf8').trim().split('\n').map(JSON.parse).find(call => call.method === 'thread/fork');
-  assert.equal(forked.params.threadId, 'codex-thread-1');
+  const opened = readFileSync(join(f.projectPath, 'codex-calls.ndjson'), 'utf8').trim().split('\n').map(JSON.parse).filter(call => call.method?.startsWith('thread/'));
+  assert.deepEqual(opened.map(call => [call.method, call.params.threadId]), [['thread/resume', 'codex-thread-1']]);
   assert.equal((await f.request('/api/chats/continue', { projectId: project.id, agent: 'claude', sessionId: randomUUID() })).status, 404);
 });
 
@@ -1041,6 +1265,7 @@ test('review regressions: shells do not hold a run, unechoed steers close, answe
   await wait(async () => (await messagesOf(f, swallow)).messages.some(m => m.text.includes('sleep 1')));
   assert.equal((await turnWith(f, swallow, '/local-only', { delivery: 'steer' })).status, 202);
   assert.equal((await f.finished({ id: swallow })).status, 'idle');
+  assert.ok((await messagesOf(f, swallow)).messages.some(m => m.role === 'activity' && m.text === 'Claude did not confirm taking "/local-only". Check its reply before sending it again.'));
   const asking = randomUUID();
   assert.equal((await turnWith(f, asking, 'question', { projectId: project.id })).status, 202);
   await wait(async () => (await f.request('/api/state')).data.chats.find(c => c.id === asking)?.status === 'waiting');
@@ -1063,10 +1288,10 @@ test('review regressions: one chat per continued session under concurrency, sess
   assert.ok(listed.includes(mine)); assert.ok(!listed.includes(other));
   const [a, b] = await Promise.all([0, 1].map(() => f.request('/api/chats/continue', { projectId: project.id, agent: 'claude', sessionId: mine })));
   assert.equal(a.data.id, b.data.id);
-  const codexChat = (await f.request('/api/chats/continue', { projectId: project.id, agent: 'codex', sessionId: 'codex-thread-1' })).data;
-  assert.equal((await turnWith(f, codexChat.id, 'hello')).status, 202); await f.finished(codexChat);
-  const thread = new DatabaseSync(join(f.dir, 'data/data.sqlite'), { readOnly: true }).prepare('SELECT agentSession FROM chats WHERE id=?').get(codexChat.id).agentSession;
-  assert.equal((await f.request(`/api/chats/${codexChat.id}/delete`, {})).status, 200);
+  const codexChat = randomUUID();
+  assert.equal((await turnWith(f, codexChat, 'hello', { agent: 'codex', projectId: project.id })).status, 202); await f.finished({ id: codexChat });
+  const thread = new DatabaseSync(join(f.dir, 'data/data.sqlite'), { readOnly: true }).prepare('SELECT agentSession FROM chats WHERE id=?').get(codexChat).agentSession;
+  assert.equal((await f.request(`/api/chats/${codexChat}/delete`, {})).status, 200);
   const db = new DatabaseSync(join(f.dir, 'data/data.sqlite'), { readOnly: true });
   assert.ok(db.prepare('SELECT id FROM hidden_sessions WHERE id=?').get(thread)); db.close();
   const big = Buffer.alloc(5 * 1024 * 1024 + 10, 0); png.copy(big);

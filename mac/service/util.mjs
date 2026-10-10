@@ -1,8 +1,10 @@
 // Small helpers shared by the service modules.
-import { randomBytes, timingSafeEqual } from 'node:crypto';
+import { randomBytes, timingSafeEqual, createHash } from 'node:crypto';
 import { spawnSync, execFile } from 'node:child_process';
 
 export const secret = () => randomBytes(32).toString('base64url');
+// Phone tokens are kept only as this hash: a copy of the data folder (a backup) can't be used to reach the Mac.
+export const tokenHash = token => createHash('sha256').update(token).digest('hex');
 export const loopback = address => ['127.0.0.1', '::1', '::ffff:127.0.0.1'].includes(address);
 export const equal = (a, b) => typeof a === 'string' && typeof b === 'string' && Buffer.byteLength(a) === Buffer.byteLength(b) && timingSafeEqual(Buffer.from(a), Buffer.from(b));
 export const fail = (status, message) => Object.assign(new Error(message), { status });

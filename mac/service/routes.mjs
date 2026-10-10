@@ -8,9 +8,12 @@ import QRCode from 'qrcode';
 import { agentIds, agentNames } from './agents.mjs';
 import { createPrompts, MAX_PROMPT } from './prompts.mjs';
 import { createSchedules } from './schedules.mjs';
-import { secret, loopback, equal, fail, text, listed, plainText, oneLine, uuid, openUrl, imageType, imageExtensions } from './util.mjs';
+import { secret, tokenHash, loopback, equal, fail, text, listed, plainText, oneLine, uuid, openUrl, imageType, imageExtensions } from './util.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
+// A proxy marks what it forwards. Tailscale always sets X-Forwarded-For, -Host and -Proto and its own Tailscale-*
+// headers, replacing any the caller sent.
+const proxied = request => Object.keys(request.headers).some(key => key.startsWith('x-forwarded-') || key === 'forwarded' || key.startsWith('tailscale-'));
 
 export function createRoutes(ctx) {
   const { options, dataDir, get, all, run, transaction, change, status, chat, active, waiting, agents, projects, runs } = ctx;
@@ -18,10 +21,38 @@ export function createRoutes(ctx) {
   const { stop, message } = runs;
   const uploadsDir = join(dataDir, 'uploads'); mkdirSync(uploadsDir, { recursive: true, mode: 0o700 });
   const uploadPath = row => join(uploadsDir, `${row.id}.${imageExtensions[row.type]}`);
-  const pairAttempts = new Map(), loggedHosts = new Set();
+  const pairAttempts = new Map(), loggedHosts = new Set(), seenAt = new Map();
   // usedPairs keeps each unexpired exchange's token in memory, so the same attempt can fetch an answer it lost even
   // after another phone paired with a newer code.
   let latestPair; const usedPairs = [];
+  // Ten pairing tries a minute from one address and a hundred from everyone: a 40-bit code that lives ten minutes
+  // faces at most 1,000 guesses. A refused try doesn't count toward the total, so one noisy address can't use it up.
+  const pairLimit = key => {
+    const now = Date.now(), window = name => pairAttempts.get(name) ?? pairAttempts.set(name, { count: 0, until: now + 60_000 }).get(name);
+    for (const [name, entry] of pairAttempts) if (entry.until < now) pairAttempts.delete(name);
+    const every = window('*');
+    if (every.count >= 100) throw fail(429, 'Too many pairing attempts; wait a minute');
+    const mine = window(key);
+    if (mine.count >= 10) throw fail(429, 'Too many pairing attempts; wait a minute');
+    mine.count++; every.count++;
+  };
+  const paired = token => typeof token === 'string' && token ? get('SELECT id FROM devices WHERE tokenHash=?', tokenHash(token)) : undefined;
+  // A phone removed while its request was arriving or being checked can't act: this runs right before any effect.
+  const current = request => !request.device || Boolean(get('SELECT id FROM devices WHERE id=?', request.device.id));
+  const stillPaired = request => { if (!current(request)) throw fail(401, 'Unauthorized'); };
+  // Last seen is written at most once a minute per phone.
+  const seen = id => { const now = Date.now(); if (now - (seenAt.get(id) ?? 0) < 60_000) return; seenAt.set(id, now); run('UPDATE devices SET lastSeenAt=? WHERE id=?', now, id); };
+  const devices = () => all('SELECT id,name,createdAt,lastSeenAt FROM devices ORDER BY createdAt DESC')
+    .map(row => ({ ...row, connected: [...ctx.clients].some(client => client.deviceId === row.id) }));
+  const unpair = id => {
+    const row = get('SELECT tokenHash FROM devices WHERE id=?', id);
+    run('DELETE FROM devices WHERE id=?', id); seenAt.delete(id);
+    if (!row) return;
+    for (let index = usedPairs.length - 1; index >= 0; index--) if (tokenHash(usedPairs[index].token) === row.tokenHash) usedPairs.splice(index, 1);
+    // Its streams end now, so a removed phone stops hearing about chats at once, not at its next request.
+    for (const client of ctx.clients) if (client.deviceId === id) client.response.destroy();
+    change('state');
+  };
   const schedules = ctx.schedules = createSchedules(ctx, uploadPath);
   const deliver = createPrompts(ctx, uploadPath);
   // Transcripts are mostly text; gzip keeps phone refreshes small over Tailscale.
@@ -35,33 +66,38 @@ export function createRoutes(ctx) {
     // Chunks are joined as bytes first: a character split across two network chunks must not be corrupted.
     const chunks = []; let size = 0; for await (const chunk of request) { size += chunk.length; if (size > max) throw fail(413, 'Request too large'); chunks.push(chunk); }
     if (ctx.closed) throw fail(503, 'Mac service is shutting down');
+    stillPaired(request);
     try { const result = JSON.parse(Buffer.concat(chunks).toString('utf8')); if (!result || typeof result !== 'object' || Array.isArray(result)) throw new Error(); return result; } catch { throw fail(400, 'Invalid JSON body'); }
   };
   const rawBody = async (request, max) => {
     const chunks = []; let size = 0;
     for await (const chunk of request) { size += chunk.length; if (size > max) throw fail(413, 'Image is too large; the limit is 5 MB'); chunks.push(chunk); }
     if (ctx.closed) throw fail(503, 'Mac service is shutting down');
+    stillPaired(request);
     return Buffer.concat(chunks);
   };
   const pairing = () => {
     const code = randomBytes(5).toString('hex').toUpperCase();
     latestPair = { code, expiresAt: Date.now() + 600_000, url: ctx.publicUrl, link: `pocketbridge://pair?url=${encodeURIComponent(ctx.publicUrl)}&code=${code}` }; return latestPair;
   };
-  return async (request, response) => {
+  // fromRemote: the request came in on the listener Tailscale forwards to. Those requests, and any a proxy forwarded,
+  // are remote: they can never use the Mac's own token, its local-only routes or the browser client's files.
+  return async (request, response, fromRemote = false) => {
     response.gzip = /\bgzip\b/.test(request.headers['accept-encoding'] ?? '');
     try {
       if (ctx.closed) throw fail(503, 'Mac service is shutting down');
       const port = ctx.server.address().port, localUrl = ctx.localUrl, publicUrl = ctx.publicUrl;
-      const allowedHosts = new Set([new URL(localUrl).host, `localhost:${port}`, `10.0.2.2:${port}`, new URL(publicUrl).host]);
+      const remote = fromRemote || proxied(request) || !loopback(request.socket.remoteAddress);
+      const allowedHosts = new Set([new URL(localUrl).host, `localhost:${port}`, `10.0.2.2:${port}`, new URL(publicUrl).host, ...(ctx.remoteUrl ? [new URL(ctx.remoteUrl).host] : [])]);
       if (!allowedHosts.has(request.headers.host)) {
         const host = String(request.headers.host ?? '').slice(0, 200);
-        if (!loggedHosts.has(host) && loggedHosts.size < 20) { loggedHosts.add(host); console.error(`Rejected a request for unknown host ${JSON.stringify(host)}. If that is this Mac's private address, run "Setup private connection" again.`); }
+        if (!loggedHosts.has(host) && loggedHosts.size < 20) { loggedHosts.add(host); console.error(`Rejected a request for unknown host ${JSON.stringify(host)}. If that is this Mac's address, run "Setup phone connection" again.`); }
         throw fail(403, 'Unknown host');
       }
       if (request.headers.origin && ![localUrl, localUrl.replace('127.0.0.1', 'localhost'), publicUrl].includes(request.headers.origin)) throw fail(403, 'Unknown origin');
       const url = new URL(request.url, localUrl), route = url.pathname, bearer = request.headers.authorization?.replace(/^Bearer /, '');
       if (route === '/internal/approval' && request.method === 'POST') {
-        if (!loopback(request.socket.remoteAddress) || !equal(bearer, ctx.internalToken)) throw fail(401, 'Unauthorized');
+        if (remote || !equal(bearer, ctx.internalToken)) throw fail(401, 'Unauthorized');
         const input = await body(request);
         if (!active.has(input.chatId) || active.get(input.chatId).stopped) throw fail(409, 'Task is no longer running');
         const tool = text(input.tool, 'tool', 200), toolInput = input.input && typeof input.input === 'object' && !Array.isArray(input.input) ? input.input : {}, id = randomUUID();
@@ -76,40 +112,56 @@ export function createRoutes(ctx) {
       }
       if (route === '/api/health' && request.method === 'GET') return json(response, 200, { ok: true, version: 1 });
       if (route === '/api/local-session' && request.method === 'GET') {
-        if (!loopback(request.socket.remoteAddress) || ![new URL(localUrl).host, `localhost:${port}`].includes(request.headers.host) || Object.keys(request.headers).some(key => key.startsWith('x-forwarded-') || key === 'forwarded') || (request.headers['sec-fetch-site'] && request.headers['sec-fetch-site'] !== 'same-origin')) throw fail(403, 'Local session is only available directly on this Mac');
+        if (remote || ![new URL(localUrl).host, `localhost:${port}`].includes(request.headers.host) || (request.headers['sec-fetch-site'] && request.headers['sec-fetch-site'] !== 'same-origin')) throw fail(403, 'Local session is only available directly on this Mac');
         return json(response, 200, { token: ctx.localToken });
       }
       if (route === '/api/pair' && request.method === 'POST') {
-        const key = request.socket.remoteAddress, attempt = pairAttempts.get(key) ?? { count: 0, until: Date.now() + 60_000 };
-        if (attempt.until < Date.now()) { attempt.count = 0; attempt.until = Date.now() + 60_000; } attempt.count++; pairAttempts.set(key, attempt);
-        if (attempt.count > 10) throw fail(429, 'Too many pairing attempts; wait a minute');
+        // Through Tailscale every connection comes from this Mac; X-Forwarded-For names the caller instead.
+        pairLimit(remote ? String(request.headers['x-forwarded-for'] ?? '').split(',').pop().trim() || 'remote' : request.socket.remoteAddress);
         const input = await body(request), code = typeof input.code === 'string' ? input.code.toUpperCase() : undefined;
         if (input.attempt != null && (typeof input.attempt !== 'string' || !uuid(input.attempt))) throw fail(400, 'attempt must be a UUID for this pairing attempt');
         // The same attempt asking again gets its token again until the code would have expired; any other finds it used.
         while (usedPairs.length && usedPairs[0].expiresAt < Date.now()) usedPairs.shift();
         const used = input.attempt && usedPairs.find(pair => equal(code, pair.code) && equal(input.attempt.toLowerCase(), pair.attempt));
-        if (used && get('SELECT token FROM tokens WHERE token=?', used.token)) return json(response, 200, { token: used.token });
+        if (used && paired(used.token)) return json(response, 200, { token: used.token });
         if (!latestPair || latestPair.expiresAt < Date.now() || !equal(code, latestPair.code)) throw fail(401, 'Pairing code is invalid or expired');
-        const token = secret(); run('INSERT INTO tokens VALUES (?,?)', token, Date.now());
+        const token = secret(), now = Date.now();
+        run('INSERT INTO devices (id,tokenHash,name,createdAt,lastSeenAt) VALUES (?,?,?,?,?)', randomUUID(), tokenHash(token), oneLine(input.name, 60) || 'Android phone', now, now);
         if (input.attempt) usedPairs.push({ code: latestPair.code, expiresAt: latestPair.expiresAt, attempt: input.attempt.toLowerCase(), token });
-        latestPair = undefined; return json(response, 200, { token });
+        latestPair = undefined; change('state'); return json(response, 200, { token });
       }
       if (route.startsWith('/api/')) {
-        if (!equal(bearer, ctx.localToken) && !(typeof bearer === 'string' && get('SELECT token FROM tokens WHERE token=?', bearer))) throw fail(401, 'Unauthorized');
+        // The Mac's own token works only on the Mac; a phone's works anywhere until the Mac removes that phone.
+        const mac = !remote && equal(bearer, ctx.localToken), device = request.device = mac ? undefined : paired(bearer);
+        if (!mac && !device) throw fail(401, 'Unauthorized');
+        if (device) seen(device.id);
+        // Pairing more phones and removing them stays with the Mac, so a lost phone can't add one that outlives it.
+        const macOnly = message => { if (!mac) throw fail(403, message); };
         // Discovery reads session files; it runs after the answer, and a found folder sends a state event.
         if (route === '/api/state' && request.method === 'GET') { json(response, 200, ctx.state()); setImmediate(() => { if (!ctx.closed) { projects.refreshDiscovery(); projects.refreshIcons(); } }); return; }
-        if (route === '/api/pairing' && request.method === 'GET') return json(response, 200, pairing());
+        if (route === '/api/pairing' && request.method === 'GET') { macOnly('Create pairing codes on the Mac'); return json(response, 200, pairing()); }
+        if (route === '/api/devices' && request.method === 'GET') { macOnly('Manage paired phones on the Mac'); return json(response, 200, { devices: devices() }); }
+        // Removing is safe to repeat. A phone may remove only itself, as current, when it disconnects.
+        const deviceRoute = route.match(/^\/api\/devices\/([^/]+)\/delete$/);
+        if (deviceRoute && request.method === 'POST') {
+          await body(request);
+          const id = deviceRoute[1] === 'current' ? device?.id : deviceRoute[1];
+          if (!id) throw fail(400, 'The Mac is not a paired phone');
+          if (!mac && id !== device.id) throw fail(403, 'Remove other phones on the Mac');
+          unpair(id); return json(response, 200, { ok: true });
+        }
         if (route === '/api/usage' && request.method === 'GET') return json(response, 200, { agents: await agents.usageReport() });
         if (route === '/api/usage/codex/reset' && request.method === 'POST') {
           const input = await body(request);
           if (!uuid(input.id)) throw fail(400, 'id must be a UUID for this reset attempt');
           if (input.creditId !== undefined && input.creditId !== null && (typeof input.creditId !== 'string' || !/^[\w.:-]{1,200}$/.test(input.creditId))) throw fail(400, 'Invalid credit id');
-          const answer = await agents.redeemReset(input.id.toLowerCase(), input.creditId ?? null);
+          const answer = await agents.redeemReset(input.id.toLowerCase(), input.creditId ?? null, () => current(request));
+          if (answer?.cancelled) throw fail(401, 'Unauthorized');
           if (!answer) throw fail(504, 'Codex did not answer. Try again; the same attempt cannot use a second reset.');
           if (answer.error) throw fail(502, answer.error);
           return json(response, 200, { outcome: answer.outcome });
         }
-        if (route === '/api/mac/lock' && request.method === 'POST') { await body(request); const locked = await ctx.screen.lock(); return json(response, 200, { locked }); }
+        if (route === '/api/mac/lock' && request.method === 'POST') { await body(request); const locked = await ctx.screen.lock(() => current(request)); return json(response, 200, { locked }); }
         const agentRoute = route.match(/^\/api\/agents\/([^/]+)$/);
         if (agentRoute && request.method === 'POST') {
           const agent = listed(agentRoute[1], agentIds, 'agent'), input = await body(request);
@@ -119,6 +171,7 @@ export function createRoutes(ctx) {
           change('state'); return json(response, 200, agents.agentCatalog(agent));
         }
         if (route === '/api/pairing/qr' && request.method === 'GET') {
+          macOnly('Create pairing codes on the Mac');
           if (!latestPair || latestPair.expiresAt < Date.now() || (url.searchParams.has('code') && url.searchParams.get('code') !== latestPair.code)) throw fail(410, 'Request a new pairing code');
           response.writeHead(200, { 'Content-Type': 'image/svg+xml', 'Cache-Control': 'no-store' }); response.end(await QRCode.toString(latestPair.link, { type: 'svg', margin: 2, width: 256 })); return;
         }
@@ -154,18 +207,20 @@ export function createRoutes(ctx) {
         if (route === '/api/chats/continue' && request.method === 'POST') {
           const input = await body(request), folder = projects.project(text(input.projectId, 'project id', 128)), agent = listed(input.agent, agentIds, 'agent'), sessionId = text(input.sessionId, 'session id', 128);
           if (!enabled[agent]) throw fail(409, `${agentNames[agent]} is turned off. Turn it on in Settings.`);
-          const waitingChat = get('SELECT id FROM chats WHERE forkFrom=? AND sessionStarted=0', sessionId);
-          if (waitingChat) return json(response, 200, chat(waitingChat.id));
+          const known = get('SELECT id FROM chats WHERE agentSession=?', sessionId);
+          if (known) return json(response, 200, chat(known.id));
           const session = (await projects.externalSessions(folder)).find(item => item.id === sessionId && item.agent === agent);
           if (!session) throw fail(404, 'Session not found in this project');
           if (agent === 'codex') Object.assign(session, await projects.codexLastExchange(sessionId) ?? {});
           if (ctx.closed) throw fail(503, 'Mac service is shutting down');
+          stillPaired(request);
           const created = transaction(() => {
             // Another request for the same session may have created the chat while this one listed sessions.
-            const raced = get('SELECT id FROM chats WHERE forkFrom=? AND sessionStarted=0', sessionId);
+            const raced = get('SELECT id FROM chats WHERE agentSession=?', sessionId);
             if (raced) return raced.id;
             const id = randomUUID(), defaults = catalogs[agent];
-            run('INSERT INTO chats (id,projectId,agent,title,mode,model,effort,status,updatedAt,forkFrom) VALUES (?,?,?,?,?,?,?,?,?,?)', id, folder.id, agent, oneLine(session.title, 160) || 'Continued session', 'bypassPermissions', defaults?.defaultModel ?? 'default', defaults?.defaultEffort ?? 'default', 'idle', Date.now(), sessionId);
+            // The chat runs on the session itself, so Terminal and the desktop app see what the phone sends.
+            run('INSERT INTO chats (id,projectId,agent,title,mode,model,effort,status,updatedAt,forkFrom,agentSession) VALUES (?,?,?,?,?,?,?,?,?,?,?)', id, folder.id, agent, oneLine(session.title, 160) || 'Continued session', 'bypassPermissions', defaults?.defaultModel ?? 'default', defaults?.defaultEffort ?? 'default', 'idle', Date.now(), sessionId, sessionId);
             // Only the last exchange comes along, as context; the full history stays in the session the agent resumes.
             if (session.lastPrompt) message(id, 'user', session.lastPrompt, randomUUID(), { kind: 'imported' });
             if (session.lastReply) message(id, 'assistant', session.lastReply, randomUUID(), { kind: 'imported' });
@@ -203,6 +258,7 @@ export function createRoutes(ctx) {
         if (route === '/api/chats' && request.method === 'POST') {
           const input = await body(request); text(input.projectId, 'project id', 128); if (!get('SELECT id FROM projects WHERE id=?', input.projectId)) throw fail(404, 'Project not found');
           const agent = input.agent === undefined ? 'claude' : listed(input.agent, agentIds, 'agent'), options = await agents.chatOptions(agent, input);
+          stillPaired(request);
           if (!enabled[agent]) throw fail(409, `${agentNames[agent]} is turned off. Turn it on in Settings.`);
           if (ctx.closed) throw fail(503, 'Mac service is shutting down');
           const id = randomUUID();
@@ -238,13 +294,13 @@ export function createRoutes(ctx) {
               run("UPDATE prompts SET scheduleState='cancelled' WHERE chatId=? AND scheduleState='scheduled'", id);
               for (const upload of all('SELECT * FROM uploads WHERE chatId=?', id)) rmSync(uploadPath(upload), { force: true });
               run('DELETE FROM uploads WHERE chatId=?', id);
-              // A deleted Codex chat's thread stays out of "On this Mac" too.
-              const thread = get('SELECT agentSession FROM chats WHERE id=?', id)?.agentSession; if (thread) run('INSERT OR IGNORE INTO hidden_sessions VALUES (?)', thread);
+              // A deleted chat's own Codex thread stays out of "On this Mac"; a session it continued comes back there.
+              const { agentSession, forkFrom } = get('SELECT agentSession,forkFrom FROM chats WHERE id=?', id); if (agentSession && agentSession !== forkFrom) run('INSERT OR IGNORE INTO hidden_sessions VALUES (?)', agentSession);
               run('INSERT OR REPLACE INTO deleted_chats VALUES (?,?)', id, Date.now()); run('DELETE FROM chats WHERE id=?', id); change('state', id);
             });
             return json(response, 200, { ok: true });
           }
-          if (action === 'prompts' && request.method === 'POST') { const [code, value] = await deliver(id, await body(request, 4 * MAX_PROMPT)); return json(response, code, value); }
+          if (action === 'prompts' && request.method === 'POST') { const [code, value] = await deliver(id, await body(request, 4 * MAX_PROMPT), () => stillPaired(request)); return json(response, code, value); }
           const row = { ...chat(id), ...get('SELECT activity,thinking FROM chats WHERE id=?', id) };
           if (action === 'messages' && request.method === 'GET') {
             const clock = get('SELECT generation,revision FROM message_clock WHERE id=1');
@@ -269,12 +325,12 @@ export function createRoutes(ctx) {
           if (action === 'stop' && request.method === 'POST') { stop(id); return json(response, 200, { ok: true }); }
           // Claude Desktop lists only sessions handed to it; this is the same claude://resume link the CLI's /desktop opens.
           if (action === 'desktop' && request.method === 'POST') {
-            const row = get('SELECT agent,status,sessionStarted FROM chats WHERE id=?', id);
+            const row = get('SELECT agent,status,sessionStarted,agentSession FROM chats WHERE id=?', id);
             if (!row) throw fail(404, 'Chat not found');
             if ((row.agent || 'claude') !== 'claude') throw fail(409, 'Only Claude chats open in Claude Desktop');
             if (!row.sessionStarted) throw fail(409, 'Send a prompt first');
             if (active.has(id) || ['running', 'waiting', 'stopping'].includes(row.status)) throw fail(409, 'Wait for this chat to finish, so both apps don\'t write to it at once');
-            const opened = await (options.openUrl ?? openUrl)(`claude://resume?session=${encodeURIComponent(id)}`);
+            const opened = await (options.openUrl ?? openUrl)(`claude://resume?session=${encodeURIComponent(row.agentSession ?? id)}`);
             if (!opened) throw fail(502, 'Couldn\'t open Claude Desktop on the Mac');
             return json(response, 200, { ok: true });
           }
@@ -300,12 +356,14 @@ export function createRoutes(ctx) {
           const after = Number(url.searchParams.get('after') ?? request.headers['last-event-id'] ?? 0); if (!Number.isSafeInteger(after) || after < 0) throw fail(400, 'Invalid event cursor');
           response.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', Connection: 'keep-alive', 'X-Accel-Buffering': 'no' }); response.write(': connected\n\n');
           // A cursor ahead of this Mac (a replaced database) gets the reset hint, so the client reconciles everything.
-          const client = { response, seq: after > ctx.lastSeq() ? -1 : after, statusOnly: url.searchParams.get('scope') === 'status' }; ctx.clients.add(client); ctx.replay(client);
+          const client = { response, seq: after > ctx.lastSeq() ? -1 : after, statusOnly: url.searchParams.get('scope') === 'status', deviceId: device?.id }; ctx.clients.add(client); ctx.replay(client);
           // Replay bounds its own waits; a peer that hasn't taken earlier keepalives in 15 seconds is dropped.
           const heartbeat = setInterval(() => { if (client.replaying) return; if (response.writableNeedDrain) response.destroy(); else response.write(': keepalive\n\n'); }, 15_000); response.on('close', () => { clearInterval(heartbeat); ctx.clients.delete(client); }); return;
         }
         throw fail(404, 'Route not found');
       }
+      // From outside the Mac only the Android app's download is served; the browser client is for this Mac.
+      if (remote && route !== '/PocketBridge.apk') throw fail(404, 'Route not found');
       if (!['GET', 'HEAD'].includes(request.method)) throw fail(405, 'Method not allowed');
       const uiDir = options.uiDir ?? join(here, '../public'), path = resolve(uiDir, `.${route === '/' ? '/index.html' : route}`);
       if (!path.startsWith(resolve(uiDir) + '/') || !existsSync(path) || !statSync(path).isFile()) throw fail(404, 'File not found');

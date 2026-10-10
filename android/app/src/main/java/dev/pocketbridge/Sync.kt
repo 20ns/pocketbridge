@@ -86,10 +86,10 @@ fun failureReason(failure: Throwable) = when (failure) {
     is ApiError -> failure.message?.takeIf { it.isNotBlank() } ?: "Your Mac rejected the request."
     // Only a failed handshake is about the certificate; other TLS errors are a connection dropping mid-read.
     is javax.net.ssl.SSLHandshakeException, is javax.net.ssl.SSLPeerUnverifiedException -> "Secure connection could not be verified. Check your Mac's HTTPS address and certificate."
-    is SocketTimeoutException -> if (failure.message.orEmpty().contains("connect", ignoreCase = true)) "Can't reach your Mac. It may be asleep, or Tailscale is off on one of the devices."
-        else "Your Mac took too long to answer. Check Tailscale on both devices."
-    is UnknownHostException, is ConnectException, is NoRouteToHostException -> "Can't reach your Mac. Check that Tailscale is on and the Mac is awake."
-    is java.io.IOException -> "The connection to your Mac was interrupted. Check Tailscale on both devices."
+    is SocketTimeoutException -> if (failure.message.orEmpty().contains("connect", ignoreCase = true)) "Can't reach your Mac. It may be asleep, or Tailscale is off on it."
+        else "Your Mac took too long to answer. Check that it's awake and online."
+    is UnknownHostException, is ConnectException, is NoRouteToHostException -> "Can't reach your Mac. Check that it's awake and Tailscale is on."
+    is java.io.IOException -> "The connection to your Mac was interrupted. Check that it's awake and online."
     else -> failure.message?.takeIf { it.isNotBlank() } ?: "Something went wrong. Try again."
 }
 

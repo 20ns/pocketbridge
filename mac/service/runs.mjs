@@ -85,6 +85,8 @@ export function createRuns(ctx) {
     // Unexpected CLI output fails this turn; it must never take the service and every other chat down with it.
     const safely = line => {
       try { consume(line); } catch (error) { entry.parseError ??= `PocketBridge could not read ${agentNames[agent]} output: ${error.message}`; console.error(`Chat ${id}: ${error.stack ?? error.message}`); }
+      // Invalid structured output cannot leave a chat waiting forever for a result we may never understand.
+      if (entry.parseError) stop(id, 'output');
     };
     child.stdout.setEncoding('utf8');
     child.stdout.on('data', chunk => {
@@ -113,13 +115,15 @@ export function createRuns(ctx) {
       if (entry.turnPrompt) run('UPDATE prompts SET endedAt=COALESCE(endedAt,?) WHERE id=?', Date.now(), entry.turnPrompt);
       run('UPDATE chats SET activity=NULL,thinking=NULL WHERE id=?', id);
       const codex = agent === 'codex';
+      // A pipe write proves delivery to the process, not that Claude used it. Never repeat uncertain work.
+      for (const next of entry.written?.values() ?? []) message(id, 'activity', `Claude did not confirm taking "${oneLine(next.text, 80)}". Check its reply before sending it again.`);
       // Messages sent while the run was closing start the next run rather than being lost.
       if (!entry.stopped && entry.after.length) { start(id, entry.after.shift(), entry.after); return; }
       if (entry.stopped) {
         // These prompts never reached the CLI; written but unacknowledged steers remain uncertain.
         const dropped = new Map([...entry.after, ...(entry.queue ?? []), ...(entry.early ?? [])].map(next => [next.promptId, next])), shutdown = entry.stopped === 'shutdown';
         for (const next of dropped.values()) message(id, 'activity', `${shutdown ? 'Mac service restarted' : 'Stopped'} before "${oneLine(next.text, 80)}" ran. Send it again if you still need it.`);
-        if (entry.stopped === 'overflow') status(id, 'error', entry.parseError);
+        if (['overflow', 'output'].includes(entry.stopped)) status(id, 'error', entry.parseError);
         else status(id, 'interrupted', shutdown ? restarted : 'Stopped by you. Completed changes remain on disk.');
       }
       else if (codex && (entry.parseError || !entry.result.ok)) status(id, 'error', entry.parseError ?? entry.failure ?? entry.codex?.state.failure ?? (entry.stderr.trim().split('\n').slice(-12).join('\n') || `Codex exited ${code ?? signal} without a completed turn.`));

@@ -111,7 +111,7 @@ import org.json.JSONObject
     if (confirm) AlertDialog(
         onDismissRequest = { confirm = false },
         title = { Text("Disconnect from your Mac?") },
-        text = { Text("You'll need a new pairing code to reconnect. Drafts on this phone are removed. Work already running on the Mac keeps going.") },
+        text = { Text("Your Mac forgets this phone, and you'll need a new pairing code to reconnect. Drafts on this phone are removed. Work already running on the Mac keeps going.") },
         confirmButton = { TextButton(onClick = { model.disconnect(); confirm = false }) { Text("Disconnect", color = colors.error) } },
         dismissButton = { TextButton(onClick = { confirm = false }) { Text("Cancel") } },
     )
@@ -146,7 +146,7 @@ import org.json.JSONObject
             },
             supporting = {
                 Text(when {
-                    !agent.available -> "Not found. Install and sign in on the Mac, then restart PocketBridge."
+                    !agent.available -> "Not found. Install and sign in on the Mac, then restart Felva."
                     !agent.enabled -> "Off. New chats and usage skip it."
                     agent.models.isEmpty() -> "Model list unavailable"
                     else -> listOfNotNull(agent.version.ifBlank { null }, plural(agent.models.size, "model"), modelName(agent, agent.defaultModel)).joinToString(" · ")
@@ -198,14 +198,14 @@ import org.json.JSONObject
     GroupRow(
         0, 1, onClick = toggle, onClickLabel = if (on) "Turn off" else "Turn on",
         leading = { Tile(colors.secondaryContainer) { Icon(Icons.Default.Notifications, null, Modifier.size(20.dp), tint = colors.onSecondaryContainer) } },
-        supporting = { Text(if (model.alertsOn && !permitted) "Notifications are off for PocketBridge in Android settings." else "Done, failed and questions while the app is closed.") },
+        supporting = { Text(if (model.alertsOn && !permitted) "Notifications are off for Felva in Android settings." else "Done, failed and questions while the app is closed.") },
         trailing = { Switch(on, null, modifier = Modifier.semantics { contentDescription = "Alerts ${if (on) "on" else "off"}" }) },
     ) { Text("Alerts when closed") }
     // Android refused the alerts service when the app was last left: battery restrictions, so say how to lift them.
     val blocked = remember(lifecycle) { model.alertsBlocked() }
     if (on) Text(
-        if (blocked) "Android blocked background alerts. Set battery use to Unrestricted for PocketBridge."
-        else "On Samsung, set PocketBridge's battery use to Unrestricted so alerts arrive on time.",
+        if (blocked) "Android blocked background alerts. Set battery use to Unrestricted for Felva."
+        else "On Samsung, set Felva's battery use to Unrestricted so alerts arrive on time.",
         Modifier.padding(start = Spacing.xxxl, end = Spacing.xxl, top = Spacing.sm), style = MaterialTheme.typography.bodySmall, color = colors.onSurfaceVariant,
     )
     // Android 16 lets the owner turn off Live Updates per app; work then shows only in the shade.
@@ -235,5 +235,5 @@ import org.json.JSONObject
                 else -> FilledTonalButton(onClick = model.updates::check) { Text("Check") }
             }
         },
-    ) { Text("PocketBridge ${update.installed}") }
+    ) { Text("Felva ${update.installed}") }
 }

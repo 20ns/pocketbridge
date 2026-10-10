@@ -39,7 +39,7 @@ fun liveNotice(active: List<ChatStatus>, started: Map<String, Long>, steps: Map<
             lines = active.map { "${it.title}: ${stepLine(it, steps[it.id])}" },
             chip = plural(active.size, "chat"), promoted = active.any { underway(it.status) },
         )
-        else -> LiveNotice("PocketBridge", "Checking your Mac")
+        else -> LiveNotice("Felva", "Checking your Mac")
     }
 }
 

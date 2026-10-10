@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 72 72" role="img" aria-labelledby="title">
+  <title id="title">Felva app icon</title>
+  <path fill="#006B5F" d="M0,0H72V72H0Z"/>
+  <g transform="translate(-18 -18)">
+    <path fill="#FFFFFF" d="M49,30H69C72.314,30 75,32.686 75,36S72.314,42 69,42H50C46.686,42 44,44.686 44,48V72C44,75.314 41.314,78 38,78S32,75.314 32,72V48C32,38.059 39.611,30 49,30Z"/>
+    <path fill="#83D5C6" d="M54,48H68C71.314,48 74,50.686 74,54S71.314,60 68,60H54C50.686,60 48,57.314 48,54S50.686,48 54,48Z"/>
+  </g>
+</svg>

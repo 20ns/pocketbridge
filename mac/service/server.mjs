@@ -102,7 +102,7 @@ export async function createService(options = {}) {
         (SELECT substr(text,1,400) FROM messages m WHERE m.chatId=chats.id AND m.role!='activity' ORDER BY m.rowid DESC LIMIT 1) AS preview
         FROM chats ORDER BY updatedAt DESC`).map(chatRow),
       lastSeq: lastSeq(), capabilities: { modes: agentModes.claude, models: legacyModels, efforts: legacyEfforts, agents: agentIds.map(agents.agentCatalog), promptStatus: true, scheduledPrompts: true, mac: { lock: ctx.screen.available, unlock: false } },
-      server: { claudeAvailable: agents.available.claude, codexAvailable: agents.available.codex, publicUrl: ctx.publicUrl, experiments: experimentsDir ? experimentsDir.replace(homedir(), '~') : null, locked: ctx.screen.locked },
+      server: { claudeAvailable: agents.available.claude, codexAvailable: agents.available.codex, publicUrl: ctx.publicUrl, remotePort: ctx.remoteServer?.address()?.port ?? null, experiments: experimentsDir ? experimentsDir.replace(homedir(), '~') : null, locked: ctx.screen.locked },
     };
   };
   const status = ctx.status = (id, value, error = null) => { run('UPDATE chats SET status=?,error=?,updatedAt=? WHERE id=?', value, error, Date.now(), id); change('state', id); };
@@ -129,6 +129,7 @@ export async function createService(options = {}) {
   } catch (error) { db.close(); throw error; }
   const releaseOwner = () => run('DELETE FROM settings WHERE key=? AND value=?', 'serviceOwner', owner);
   try {
+    database.migrateTokens();
     // Retention never removes conversation messages, prompt delivery records or the AUTOINCREMENT high-water mark.
     run('DELETE FROM events WHERE seq<?', lastSeq() - 9999);
     run("DELETE FROM raw_events WHERE id < COALESCE((SELECT seq FROM sqlite_sequence WHERE name='raw_events'),0)-199");
@@ -153,14 +154,23 @@ export async function createService(options = {}) {
   ctx.runs = createRuns(ctx);
   // Tests never reach the real screen: they lock a fake or nothing.
   const screen = ctx.screen = createScreen(ctx, options.screen !== undefined ? options.screen : testing || process.platform !== 'darwin' ? null : macScreen, { settleMs: options.screenSettleMs });
-  const server = ctx.server = http.createServer(createRoutes(ctx));
+  const routes = createRoutes(ctx);
+  // Two listeners on this Mac: the browser client's, and the one Tailscale forwards phones to. The second can never
+  // serve the Mac's own token, whatever headers a request carries.
+  const server = ctx.server = http.createServer(routes);
+  const remoteServer = ctx.remoteServer = http.createServer((request, response) => routes(request, response, true));
+  const listen = (listener, port) => new Promise((resolveListening, reject) => { listener.once('error', reject); listener.listen(port, options.host ?? '127.0.0.1', resolveListening); });
   // Slow links get two minutes for a full upload. Idle connections outlive Tailscale Serve's (Go's default is 90s),
   // so Serve never reuses one Node is closing (a spurious 502). Node 22 times headers from a request's first byte.
-  server.requestTimeout = 120_000; server.headersTimeout = 20_000; server.keepAliveTimeout = 120_000;
+  for (const listener of [server, remoteServer]) { listener.requestTimeout = 120_000; listener.headersTimeout = 20_000; listener.keepAliveTimeout = 120_000; }
   try {
-    await new Promise((resolveListening, reject) => { server.once('error', reject); server.listen(options.port ?? Number(process.env.POCKETBRIDGE_PORT ?? 8787), options.host ?? '127.0.0.1', resolveListening); });
-  } catch (error) { ctx.closed = true; ctx.probes.abort(); screen.close(); projects.close(); clearTimeout(eventTimer); releaseOwner(); db.close(); throw error; }
-  ctx.localUrl = `http://127.0.0.1:${server.address().port}`; ctx.publicUrl ??= ctx.localUrl;
+    await listen(server, options.port ?? Number(process.env.POCKETBRIDGE_PORT ?? 8787));
+    ctx.localUrl = `http://127.0.0.1:${server.address().port}`; ctx.publicUrl ??= ctx.localUrl;
+    // A taken phone port mustn't take the Mac's browser and running chats down with it; phones wait for a restart.
+    const remotePort = options.remotePort ?? (testing ? 0 : Number(process.env.POCKETBRIDGE_REMOTE_PORT ?? 8789));
+    try { await listen(remoteServer, remotePort); ctx.remoteUrl = `http://127.0.0.1:${remoteServer.address().port}`; }
+    catch (error) { console.error(`Phones can't connect: port ${remotePort} is in use (${error.code ?? error.message}). Free it or set another "remotePort" in config.json, then restart PocketBridge.`); }
+  } catch (error) { server.close(); remoteServer.close(); ctx.closed = true; ctx.probes.abort(); screen.close(); projects.close(); clearTimeout(eventTimer); releaseOwner(); db.close(); throw error; }
   projects.refreshIcons();
   // Prompts that came due while the service was down never started, so running them now is not a repeat.
   ctx.schedules.wake();
@@ -172,13 +182,13 @@ export async function createService(options = {}) {
     while (ctx.active.size && Date.now() < until) await pause(20);
     screen.close(); await projects.close(); clearTimeout(eventTimer);
     for (const client of ctx.clients) client.response.end();
-    await new Promise(resolveClosed => {
-      const deadline = setTimeout(() => server.closeAllConnections(), options.shutdownTimeoutMs ?? 1000);
-      server.close(() => { clearTimeout(deadline); resolveClosed(); }); server.closeIdleConnections();
-    });
+    await Promise.all([server, remoteServer].map(listener => new Promise(resolveClosed => {
+      const deadline = setTimeout(() => listener.closeAllConnections(), options.shutdownTimeoutMs ?? 1000);
+      listener.close(() => { clearTimeout(deadline); resolveClosed(); }); listener.closeIdleConnections();
+    })));
     releaseOwner(); db.close();
   })();
-  return { server, url: ctx.localUrl, publicUrl: ctx.publicUrl, close, state, ready: catalogsReady };
+  return { server, url: ctx.localUrl, remoteUrl: ctx.remoteUrl, publicUrl: ctx.publicUrl, close, state, ready: catalogsReady };
 }
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   process.on('unhandledRejection', error => console.error(`Unhandled rejection: ${error?.stack ?? error}`));

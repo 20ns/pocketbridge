@@ -46,6 +46,26 @@ class Store internal constructor(private val prefs: SharedPreferences) {
     fun pendingPrompts() = prefs.all.keys.filter { it.startsWith("pending:") }.mapNotNull { key ->
         runCatching { key.removePrefix("pending:") to PendingPrompt.parse(get(key)) }.getOrNull()
     }.toMap()
+    /** Cancel removes the Mac's message, so keep its text here before making that request. */
+    fun saveCancellation(id: String, promptId: String, text: String, session: Int) =
+        commit("cancel:$promptId", JSONObject().put("chatId", id).put("text", text).toString(), session)
+    fun pendingCancellations() = prefs.all.keys.filter { it.startsWith("cancel:") }.mapNotNull { key ->
+        runCatching { JSONObject(get(key)).let { key.removePrefix("cancel:") to (it.getString("chatId") to it.getString("text")) } }.getOrNull()
+    }.toMap()
+    /** Restoration and forgetting its recovery record are one durable write. Newer drafts keep the record for later. */
+    @Synchronized fun completeCancellation(id: String, promptId: String, session: Int, cancelled: Boolean): Boolean = synchronized(prefs) {
+        requireSession(session)
+        val saved = runCatching { JSONObject(get("cancel:$promptId")) }.getOrNull()?.takeIf { it.optString("chatId") == id } ?: return@synchronized false
+        val edit = prefs.edit().remove("cancel:$promptId")
+        if (cancelled) {
+            val text = draftAfterCancel(get("draft:$id"), pastes(id), decodeAttachments(get("attachments:$id")).isNotEmpty(), get("pending:$id").isNotEmpty(), saved.getString("text"))
+                ?: return@synchronized false
+            if (isLargePaste(text)) edit.putString("pastes:$id", encodePastes(listOf(Paste(promptId, text))))
+            else edit.putString("draft:$id", text)
+        }
+        check(edit.commit()) { "Could not save cancelled prompt recovery." }
+        true
+    }
     /** A service acknowledgement clears only this pairing's exact saved delivery, including when another chat is open. */
     @Synchronized fun reconcilePrompt(id: String, promptId: String, pairing: String): PendingPrompt? = synchronized(prefs) {
         if (get("token") != pairing) return@synchronized null
@@ -80,7 +100,9 @@ class Store internal constructor(private val prefs: SharedPreferences) {
         check(edit.commit()) { "Could not save chat deletion." }
     }
     @Synchronized fun removeChat(id: String) { chatRemoval(id).apply() }
-    private fun chatRemoval(id: String) = prefs.edit().remove("messages:$id").remove("draft:$id").remove("pending:$id").remove("watch:$id").remove("draftChat:$id").remove("options:$id").remove("attachments:$id").remove("pastes:$id")
+    private fun chatRemoval(id: String) = prefs.edit().remove("messages:$id").remove("draft:$id").remove("pending:$id").remove("watch:$id").remove("draftChat:$id").remove("options:$id").remove("attachments:$id").remove("pastes:$id").apply {
+        pendingCancellations().filterValues { it.first == id }.keys.forEach { remove("cancel:$it") }
+    }
     /** Prepared image files some composer still holds, so the outbox can drop the rest. */
     fun attachmentFiles(): Set<String> = prefs.all.filterKeys { it.startsWith("attachments:") }.values.flatMap { decodeAttachments(it as? String ?: "").map(Attachment::file) }.toSet()
     private fun requireSession(session: Int) {

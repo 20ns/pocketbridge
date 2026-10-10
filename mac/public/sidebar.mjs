@@ -84,7 +84,7 @@ setInterval(() => { if (app.state) renderChatList(); }, 60000);
 /** The setup note when neither agent can start a chat. */
 export function renderCliStatus() {
   const ready = app.agents.some(usableAgent);
-  $('cli-status').textContent = ready ? '' : app.agents.some(agent => agent.available) ? 'Claude and Codex are both off. Turn one on below.' : 'Neither Claude Code nor Codex was found. Sign in with an official CLI on this Mac, then restart PocketBridge.';
+  $('cli-status').textContent = ready ? '' : app.agents.some(agent => agent.available) ? 'Claude and Codex are both off. Turn one on below.' : 'Neither Claude Code nor Codex was found. Sign in with an official CLI on this Mac, then restart Felva.';
   $('cli-status').hidden = ready;
 }
 

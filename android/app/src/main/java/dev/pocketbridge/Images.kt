@@ -20,15 +20,25 @@ import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.rememberTransformableState
 import androidx.compose.foundation.gestures.transformable
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Text
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -207,15 +217,22 @@ class ImageCache(private val dir: File) {
 private sealed interface Loaded { data object Loading : Loaded; data object Failed : Loaded; data class Done(val bitmap: Bitmap) : Loaded }
 
 /** One image, fetched and decoded off the main thread; a tonal block while loading and a mark when it can't load. */
-@Composable private fun CachedImage(key: String, description: String?, modifier: Modifier, scale: ContentScale, placeholder: Color, fit: Boolean = false, load: suspend () -> Bitmap?) {
-    val state by produceState<Loaded>(Loaded.Loading, key) { value = load()?.let { Loaded.Done(it) } ?: Loaded.Failed }
+@Composable private fun CachedImage(key: String, description: String?, modifier: Modifier, scale: ContentScale, placeholder: Color, fit: Boolean = false, online: Boolean = false, retryable: Boolean = false, load: suspend () -> Bitmap?) {
+    var retry by remember(key) { mutableIntStateOf(0) }
+    val state by produceState<Loaded>(Loaded.Loading, key, online, retry) {
+        value = Loaded.Loading
+        value = load()?.let { Loaded.Done(it) } ?: Loaded.Failed
+    }
     // [fit]: one prompt image keeps its own shape inside a bounded box, so a tall screenshot stays a tall thumbnail.
     fun Modifier.bounded(ratio: Float) = if (fit) widthIn(max = 220.dp).heightIn(max = 280.dp).aspectRatio(ratio) else this
     when (val shown = state) {
         is Loaded.Done -> Image(shown.bitmap.asImageBitmap(), description, modifier.bounded(shown.bitmap.width.toFloat() / shown.bitmap.height.coerceAtLeast(1)), contentScale = scale)
         Loaded.Loading -> Box(modifier.bounded(0.75f).background(placeholder).semantics { description?.let { contentDescription = it } })
         Loaded.Failed -> Box(modifier.bounded(1f).background(placeholder).semantics { contentDescription = "Image unavailable" }, contentAlignment = Alignment.Center) {
-            Icon(PocketIcons.BrokenImage, null, Modifier.size(Sizes.smallIcon), tint = MaterialTheme.colorScheme.onSurfaceVariant)
+            if (retryable) Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                Text("Image unavailable", color = Color.White, style = MaterialTheme.typography.bodyMedium)
+                IconButton(onClick = { retry++ }) { Icon(PocketIcons.Reset, "Retry image", tint = Color.White) }
+            } else Icon(PocketIcons.BrokenImage, null, Modifier.size(Sizes.smallIcon), tint = MaterialTheme.colorScheme.onSurfaceVariant)
         }
     }
 }
@@ -223,10 +240,10 @@ private sealed interface Loaded { data object Loading : Loaded; data object Fail
 /** An image the Mac holds, by upload id. */
 @Composable fun UploadedImage(
     model: BridgeModel, id: String, maxPx: Int, modifier: Modifier = Modifier, description: String? = "Image", scale: ContentScale = ContentScale.Crop,
-    placeholder: Color = MaterialTheme.colorScheme.surfaceContainerHigh, fit: Boolean = false,
+    placeholder: Color = MaterialTheme.colorScheme.surfaceContainerHigh, fit: Boolean = false, retryable: Boolean = false,
 ) {
     val key = "u:$id@$maxPx"
-    CachedImage(key, description, modifier, if (fit) ContentScale.Crop else scale, placeholder, fit) { model.images.load(key, maxPx) { model.uploadFile(id) } }
+    CachedImage(key, description, modifier, if (fit) ContentScale.Fit else scale, placeholder, fit, model.online, retryable) { model.images.load(key, maxPx) { model.uploadFile(id) } }
 }
 
 /** A prepared image still on this phone. */
@@ -240,7 +257,7 @@ val LocalImageViewer = staticCompositionLocalOf<(List<String>, Int) -> Unit> { {
 
 /**
  * Full screen over everything, black, pinch to zoom and pan, double tap to zoom. Swipes between a prompt's images.
- * The back gesture shrinks it away like any page; there is no close button.
+ * The back gesture shrinks it away like any page; a back arrow and image count keep navigation visible.
  */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable fun ImageViewer(model: BridgeModel, ids: List<String>, start: Int, onDismiss: () -> Unit) {
@@ -280,8 +297,18 @@ val LocalImageViewer = staticCompositionLocalOf<(List<String>, Int) -> Unit> { {
                 UploadedImage(
                     model, ids[page], maxPx, Modifier.fillMaxSize().graphicsLayer { scaleX = zoom; scaleY = zoom; translationX = pan.x; translationY = pan.y },
                     description = if (ids.size > 1) "Image ${page + 1} of ${ids.size}" else "Image", scale = ContentScale.Fit, placeholder = Color.Black,
+                    retryable = true,
                 )
             }
         }
+        Row(Modifier.fillMaxWidth().align(Alignment.TopCenter).background(Color.Black.copy(alpha = 0.75f)).statusBarsPadding().padding(end = Spacing.lg), verticalAlignment = Alignment.CenterVertically) {
+            IconButton(onClick = onDismiss) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back", tint = Color.White) }
+            Text(if (ids.size > 1) "Image ${pages.currentPage + 1} of ${ids.size}" else "Image", color = Color.White, style = MaterialTheme.typography.titleSmall)
+        }
+        Text(
+            if (ids.size > 1) "Pinch to zoom · Swipe for next image" else "Pinch or double tap to zoom",
+            Modifier.align(Alignment.BottomCenter).background(Color.Black.copy(alpha = 0.75f)).navigationBarsPadding().padding(Spacing.md),
+            color = Color.White, style = MaterialTheme.typography.bodySmall,
+        )
     }
 }

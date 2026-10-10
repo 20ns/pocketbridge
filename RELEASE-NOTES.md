@@ -1,3 +1,31 @@
+Felva 0.10.2
+
+- Includes the Felva app icon, monochrome icon and notification icon, with the new name in Android settings and guidance, the Mac browser and repository artwork.
+- Includes the Claude conversation recovery, background-agent visibility, responsive Stop and approvals, scheduled-message recovery and screenshot improvements from 0.10.1.
+- Published to the existing PocketBridge GitHub repository, so Settings > Check latest can download this update. APK filenames and the Android package stay the same for update compatibility.
+
+Install over the existing app to preserve pairing and drafts.
+
+PocketBridge 0.10.1
+
+- Claude conversations keep all completed thinking blocks, wait for background follow-ups, and release failed turns even when Claude leaves a background task listed. Malformed output stops that run with a readable error so you can continue from the phone. Claude's own retries show their attempt count and wait time.
+- Sub-agents moved into the background stay marked Running until their completion or failure arrives. The phone shows their names beside current activity and their status in each row. Agents from an older finished turn stay stopped when you send another prompt.
+- Stop and question answers reach the Mac while uploads or slow reads are waiting. A lost Stop acknowledgement checks the Mac's state. Failed transcript reads now say why, and a chat deleted on another device refreshes the list.
+- Screenshots retry when the connection returns. The full-screen viewer has Back, an image count, zoom guidance and Retry when an image cannot load.
+- Cancelling a scheduled message saves its text on the phone before sending. A lost reply or app restart checks whether the Mac cancelled it, then restores the text when the composer is empty.
+
+Install over the existing app to preserve pairing. Update the Mac service too for the Claude fixes.
+
+PocketBridge 0.10.0
+
+- Your phone no longer needs Tailscale or a VPN, so it stops draining battery on that and other VPNs are free to use. On the Mac, run Setup phone connection once: it turns on Tailscale Funnel, and the phone reaches the Mac over HTTPS from any network. Encryption ends on your Mac, so Tailscale's relay can't read the traffic. To keep the Mac inside your tailnet instead, run the helper with --tailnet-only.
+- Connect phone on the Mac lists your paired phones and when each was last used. Remove cuts a phone off at once: its token stops working, its open connections close, and nothing it was still sending can run. Disconnect on the phone removes it from the Mac too.
+- Continuing a Terminal or desktop session now runs in that same session, so `claude --resume` and the desktop app show what you sent from the phone. Before, it ran in a separate copy.
+- A turn where a background task finished no longer ends with "Claude returned malformed structured output" after it completed fine.
+- Built for an internet address: phones use their own port, which never accepts or hands out the Mac's own token and never serves the Mac's browser client. Only the Mac can create pairing codes, so a lost phone can't add another. Pairing tries are limited per caller and in total. Phone tokens are stored only as hashes; existing pairings carry over.
+
+Update the Mac service, then run Setup phone connection; paired phones keep working at the same address. Install the APK over the existing app so the Mac shows the phone's name and Disconnect removes it there.
+
 PocketBridge 0.9.1
 
 - Reconnects as soon as the phone has a network again (airplane mode off, Wi-Fi to mobile data, Tailscale back on) instead of waiting out a retry delay. Short outages show a quiet "Reconnecting"; the banner only appears if it lasts, and says whether there's no internet, the Mac is asleep, or PocketBridge isn't running on it.

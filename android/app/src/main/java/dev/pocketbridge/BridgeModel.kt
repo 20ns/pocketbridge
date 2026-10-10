@@ -61,7 +61,7 @@ class BridgeModel(application: Application) : AndroidViewModel(application) {
     private var answerJob: Job? = null
     private var cancelCheck: Job? = null
     /** Cancels whose answer was lost, prompt id to its chat and text: once the Mac says it was cancelled, the text comes back. */
-    private val uncertainCancels = mutableMapOf<String, Pair<String, String>>()
+    private val uncertainCancels get() = store.pendingCancellations()
     /** The Mac answers GET /api/chats/:id/prompts/:promptId. */
     private var promptStatus = false
     private val syncMutex = Mutex()
@@ -322,7 +322,7 @@ class BridgeModel(application: Application) : AndroidViewModel(application) {
         // Pair, or after the app was killed) gets the same token instead of finding the one-time code used.
         // Pairing clears every preference, this one too.
         val attempt = pairAttemptId(store.get(PAIR_ATTEMPT), base, code) ?: UUID.randomUUID().toString()
-        val request = JSONObject().put("code", code).put("attempt", attempt)
+        val request = JSONObject().put("code", code).put("attempt", attempt).put("name", phoneName(getApplication()))
         val token = withContext(Dispatchers.IO) {
             store.commit(PAIR_ATTEMPT, pairAttemptValue(base, code, attempt), pairingSession)
             val answer = try { Api(base).request("/api/pair", request) }
@@ -335,6 +335,8 @@ class BridgeModel(application: Application) : AndroidViewModel(application) {
         if (foreground) start()
     }
     fun disconnect() {
+        // The Mac forgets this phone too when it can be reached; otherwise the owner removes it in Connect phone there.
+        api?.let { previous -> viewModelScope.launch(Dispatchers.IO) { withTimeoutOrNull(5000) { runCatching { previous.request("/api/devices/current/delete", JSONObject()) } } } }
         // The client goes first so a sync already on the IO thread can't write this pairing's transcript again.
         api = null; actionJob?.cancel(); answerJob?.cancel(); refreshJob?.cancel(); cachedMessagesJob?.cancel(); stopConnection(); store.clear()
         transcriptClearJob = viewModelScope.launch(Dispatchers.IO) { syncMutex.withLock { transcripts.clear() } }
@@ -363,7 +365,7 @@ class BridgeModel(application: Application) : AndroidViewModel(application) {
         cancelShare()
         Alerts.deliveries.clear(); Alerts.inFlight.clear()
         turns = emptyList(); subagents = emptyList(); activity = ""; thinking = ""; scheduled = emptyMap(); canSchedule = false; attachments = emptyList(); attachmentLists.clear(); shared = emptyList()
-        details.clear(); acceptedAt.clear(); alertsOn = true; uncertainCancels.clear(); sending = emptySet()
+        details.clear(); acceptedAt.clear(); alertsOn = true; sending = emptySet()
         deleting = null; deletions = emptyMap(); agentSwitching = emptyMap(); experiments = ""; mac = MacScreen(); projectError = ""; newChatRequested = false; showChat = false
         viewModelScope.launch(Dispatchers.IO) { outbox.deleteRecursively(); images.clear() }
     }
@@ -546,9 +548,11 @@ class BridgeModel(application: Application) : AndroidViewModel(application) {
      */
     private fun fail(failure: Throwable) {
         if (failure is CancellationException) return
-        if (failure !is ApiError) return
-        if (failure.status == 401) restartStream()
-        else if (online && failure.status != 404) error = failureReason(failure)
+        when {
+            failure is ApiError && failure.status == 401 -> restartStream()
+            failure is ApiError && failure.status == 404 -> { pendingSync.getAndUpdate { it or SYNC_STATE }; changes.tryEmit(Unit) }
+            online -> error = "Couldn't refresh the chat. " + failureReason(failure)
+        }
     }
     private fun action(block: suspend () -> Unit) {
         if (busy) return
@@ -750,17 +754,21 @@ class BridgeModel(application: Application) : AndroidViewModel(application) {
     private fun savedPromptId(id: String) = runCatching { PendingPrompt.parse(store.get("pending:$id")).id }.getOrNull()
     /** Cancels whose answer was lost: a prompt the Mac did cancel puts its text back, as a confirmed cancel would. */
     private suspend fun checkCancels(currentApi: Api) {
+        val session = store.session()
         for ((promptId, target) in uncertainCancels.toList()) {
-            val (id, text) = target
+            // A lookup must not forget the saved text while its Cancel POST still waits for acknowledgement.
+            if (busy) return
+            val (id, _) = target
             val status = orNull { withContext(Dispatchers.IO) { currentApi.request("/api/chats/$id/prompts/$promptId") } } ?: continue
             if (api !== currentApi) return
-            uncertainCancels.remove(promptId)
-            if (status.optJSONObject("schedule")?.optString("state") == "cancelled") restoreCancelled(id, text)
+            if (busy) return
+            completeCancellation(id, promptId, session, status.optJSONObject("schedule")?.optString("state") == "cancelled")
         }
     }
-    /** A cancelled prompt's text goes back into the open chat's composer while it's empty; long text as a pasted block. */
-    private fun restoreCancelled(id: String, text: String) {
-        if (selected == id) draftAfterCancel(draft, pastes, attachments.isNotEmpty(), pending != null, text)?.let { if (isLargePaste(it)) addPaste(it) else editDraft(it) }
+    private suspend fun completeCancellation(id: String, promptId: String, session: Int, cancelled: Boolean) {
+        if (selected == id) flushDraft()
+        val restored = withContext(Dispatchers.IO) { store.completeCancellation(id, promptId, session, cancelled) }
+        if (restored && selected == id) loadDraft(id)
     }
     /** After the Mac accepted [prompt], by its answer or by the transcript: the composer lets go of it. */
     private fun accepted(id: String, prompt: PendingPrompt) {
@@ -928,14 +936,17 @@ class BridgeModel(application: Application) : AndroidViewModel(application) {
     fun cancelScheduled(promptId: String, text: String) = action {
         val currentApi = api ?: return@action
         val id = selected
+        val session = store.session()
+        withContext(Dispatchers.IO) { store.saveCancellation(id, promptId, text, session) }
         try { withContext(Dispatchers.IO) { currentApi.request("/api/chats/$id/prompts/$promptId/cancel", JSONObject()) } }
         catch (failure: java.io.IOException) {
             // The Mac may have cancelled it and lost only the answer: the next state read asks, so the text isn't lost.
-            if (failure !is ApiError) uncertainCancels[promptId] = id to text
+            if (api === currentApi && failure is ApiError && failure.definitiveRejection) completeCancellation(id, promptId, session, cancelled = false)
+            if (api === currentApi) refresh()
             throw failure
         }
         if (api !== currentApi) return@action
-        restoreCancelled(id, text)
+        completeCancellation(id, promptId, session, cancelled = true)
         refresh()
     }
     /** Sends a scheduled prompt now, or right after the turn running in its chat. */
@@ -947,7 +958,7 @@ class BridgeModel(application: Application) : AndroidViewModel(application) {
     fun stop() = answer {
         val currentApi = api ?: return@answer
         val id = selected
-        withContext(Dispatchers.IO) { currentApi.request("/api/chats/$id/stop", JSONObject()) }
+        withContext(Dispatchers.IO) { currentApi.stopChat(id) }
         refresh()
     }
     fun decide(id: String, allow: Boolean, answers: JSONObject) = answer {
@@ -1096,10 +1107,10 @@ class BridgeModel(application: Application) : AndroidViewModel(application) {
         val cached = images.file(id)
         if (cached.isFile) return cached
         val currentApi = api ?: return null
-        return runCatching {
+        return orNull {
             withContext(Dispatchers.IO) { images.put(id, currentApi.bytes("/api/uploads/$id")) }
             cached.takeIf { it.isFile }
-        }.getOrNull()
+        }
     }
 
     // Sharing images into PocketBridge from another app.
@@ -1189,12 +1200,12 @@ class BridgeModel(application: Application) : AndroidViewModel(application) {
         if (baseline.isNotEmpty()) Alerts.start(getApplication(), baseline)
     }
 
-    /** Forks a Mac session into a new chat and opens it; the original session keeps its history. */
+    /** Continues a Mac session in a new chat and opens it; turns sent here land in that same session. */
     fun continueSession(projectId: String, session: MacSession) = action {
         val currentApi = api ?: return@action
         val chat = withContext(Dispatchers.IO) { currentApi.request("/api/chats/continue", JSONObject().put("projectId", projectId).put("agent", session.agent).put("sessionId", session.id)) }
         if (api !== currentApi) return@action
-        // Opening refreshes; a failing read there says so without calling this fork a failure.
+        // Opening refreshes; a failing read there says so without calling this continue a failure.
         open(chat.getString("id"))
         details.forgetSession(projectId, session.id)
     }

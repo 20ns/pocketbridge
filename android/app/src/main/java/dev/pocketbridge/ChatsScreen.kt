@@ -85,7 +85,7 @@ import org.json.JSONObject
         // Bottom room keeps the last row clear of the New chat button.
         LazyColumn(Modifier.fillMaxSize().then(insets.scroll), list, PaddingValues(bottom = insets.bottom + 96.dp)) {
             item(key = "top-gap") { Spacer(Modifier.height(Spacing.xs)) }
-            if (model.agents.isNotEmpty() && model.agents.none { it.available }) item { Notice("No coding agent found on your Mac. Install Claude Code or Codex and sign in there, then restart PocketBridge.", Modifier.padding(Spacing.lg)) }
+            if (model.agents.isNotEmpty() && model.agents.none { it.available }) item { Notice("No coding agent found on your Mac. Install Claude Code or Codex and sign in there, then restart Felva.", Modifier.padding(Spacing.lg)) }
             if (sessions.isNotEmpty()) {
                 item(key = "mac-label") { SectionToggle("On your Mac", sessions.size, macOpen) { macOpen = !macOpen } }
                 if (macOpen) {
@@ -125,7 +125,7 @@ import org.json.JSONObject
     }
 }
 
-/** A session from the Mac: agent mark, title, its last words and when. Tapping forks it into a chat here. */
+/** A session from the Mac: agent mark, title, its last words and when. Tapping continues it in a chat here. */
 @Composable private fun SessionRow(session: MacSession, agentName: String, now: Long, index: Int, count: Int, continuing: Boolean, enabled: Boolean, onContinue: () -> Unit) {
     val colors = MaterialTheme.colorScheme
     GroupRow(

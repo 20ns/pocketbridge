@@ -114,7 +114,7 @@ private fun projectActivity(project: JSONObject, chats: List<JSONObject>) = proj
             if (general != null && !searching) item(key = "general") {
                 GeneralRow(byProject[general.optString("id")].orEmpty(), now) { onOpenProject(general.optString("id")) }
             }
-            if (model.agents.isNotEmpty() && model.agents.none { it.available }) item { Notice("No coding agent found on your Mac. Install Claude Code or Codex and sign in there, then restart PocketBridge.", Modifier.padding(Spacing.lg)) }
+            if (model.agents.isNotEmpty() && model.agents.none { it.available }) item { Notice("No coding agent found on your Mac. Install Claude Code or Codex and sign in there, then restart Felva.", Modifier.padding(Spacing.lg)) }
             if (active.isNotEmpty()) {
                 item(key = "active-label") { GroupLabel("Active", Modifier.padding(top = 0.dp)) }
                 itemsIndexed(active, key = { _, chat -> "active:" + chat.getString("id") }) { index, chat -> ActiveRow(model, chat, index, active.size, now) { onOpenChat(chat) } }

@@ -1,3 +1,108 @@
+Felva 0.10.2 release preparation, 10 October 2026
+
+- The in-app updater points to 20ns/pocketbridge, whose latest published release
+  was still 0.9.1. The prior 0.10.1 APK had only been served from the Mac.
+- Version code 23; display branding uses Felva. Android package, pairing scheme,
+  updater repository and PocketBridge APK asset names retain compatibility.
+- Mac pnpm test: 138 passed. Android debug/release builds, 198 unit tests and both
+  lint variants passed. No physical phone attached in this release pass.
+- Review checked Android identity/permission guidance and Mac branding. Exact
+  existing Felva SVG is served locally, excluded remotely and used for the browser
+  header/favicon. 29 browser tests passed. Desktop and 390px header checks showed
+  no overflow; compact mobile layout preserves its existing icon-only brand link.
+- Signing certificate matches the previously installed personal release key.
+  Source includes all four brand assets; runtime data and signing keys are ignored.
+
+PocketBridge 0.10.1 conversation stability pass (uncommitted on main), 9 October 2026
+
+- Investigated the real Mac's saved state without changing its chats. Three Claude
+  failures recorded "Claude returned malformed structured output" on 7–9 October.
+  The retained raw-event window no longer contained those failures, so the exact
+  original event cannot be established. Regression cases cover the discovered
+  lifecycle and structured-output failures rather than claiming a proven incident
+  reconstruction.
+- Mac: pnpm test passed, 138 tests, no failures. Added checks cover malformed
+  output with a CLI that never exits; uncertain steers without replay; terminal
+  errors with stale background tasks followed by a successful resume; twelve
+  consecutive conversations with resumes, steers, thinking blocks and subagents;
+  late background follow-ups without init; turn timing while a follow-up Agent
+  runs; foreground-to-background transitions and mixed optional task identifiers;
+  repeated official retry notices and restoring prior or empty activity.
+- Android: assembleDebug, assembleRelease, testDebugUnitTest, lintDebug and
+  lintRelease passed. 198 JVM tests; five API 36 emulator instrumentation checks
+  passed for EXIF orientation/bitmap ownership, fresh state and HTTPS boundaries.
+  Lint: zero errors, 22 non-fatal warnings (dependency/platform and KTX suggestions).
+  New checks cover Stop/approval requests during request saturation, ambiguous Stop
+  acknowledgements, cancelled text surviving process death, deferred restoration
+  beside newer drafts/images/sends, multiple cancellations, deletion and pairing
+  changes, plus a 2,000-turn subagent transcript.
+- Three implementation agents and independent cross-reviews caught additional
+  background-agent, retry-activity and scheduled-cancellation races; fixed with
+  focused regression checks. Final review of turn timing and task IDs found no
+  blocking issue.
+- Official installed Claude CLI 2.1.296: two real turns through an isolated
+  PocketBridge service/project passed. The second resumed and recalled the first
+  turn's word. No existing conversation was resumed or edited by this smoke test.
+- API 36 emulator against the isolated demo service: running/completed/stopped
+  agents remained readable at font scale 1.3 in light and dark themes; force-stop
+  and reopen recovered a still-running Mac conversation; Stop settled it; a
+  screenshot opened with Back and zoom guidance. No crash log entries observed.
+- Signed 0.10.1 APK uses the same certificate as 0.9.1. Its HTTPS download from
+  the Mac matched the local SHA256. Restarted the idle live service gracefully;
+  all 14 chats and both phone pairings survived. No user turn was interrupted.
+- Limits: no physical phone, extended real-Claude stress session, long Doze run or
+  real network handover checked in this pass. Twelve-turn stress uses the fake CLI;
+  the real CLI smoke covers fresh/resumed context, not background-agent execution.
+
+PocketBridge 0.10.0 phone connection pass (uncommitted on main), 8 to 9 October 2026
+
+- Goal: the phone reaches the Mac without Tailscale or a VPN (Tailscale Funnel to a
+  separate loopback phone port), and a paired phone can be removed properly.
+- Mac: pnpm test passed, 130 tests. New checks: paired phones listed by name;
+  removing one on the Mac ends its open streams at once while another phone's stay
+  up; a removed phone's token fails on both ports; phones can't list or remove
+  other phones or create pairing codes; a phone removes itself as current; a
+  pairing retry can't fetch a removed phone's token; a request whose body was still
+  arriving, a prompt waiting on a catalog, a screen lock waiting on its check and a
+  Codex reset waiting on its handshake are each refused once the phone is removed
+  (the reset credit stays unspent; the Mac's own concurrent lock still works); the
+  phone port never gives out or accepts the Mac's token, never serves the browser
+  client (only /PocketBridge.apk), and proxied requests on the browser port count
+  as remote; every API route refuses a remote request without a phone token, and a
+  route added without a line in that test fails it; pairing tries limited per
+  caller (10/min) and in total (100/min) with refused tries not counted; plaintext
+  tokens from an older data folder migrate to hashes and are gone from the database
+  and WAL; the migration waits until this process owns the data folder; a taken
+  phone port leaves the Mac client working; setup refuses Funnel while Tailscale
+  serves other paths at the address, never forwards to a port another app holds or
+  to a service that doesn't answer properly, leaves Tailscale alone while chats work,
+  forwards to the port the running service reports, and falls back to tailnet only
+  when Funnel can't be confirmed.
+- Each safeguard was removed in turn and its test failed (mutation check), except
+  that the pairing-retry test needs both of its two independent safeguards removed.
+- Android: assembleDebug, testDebugUnitTest and lintDebug passed. 192 JVM tests,
+  no failures; lint 0 errors, no warnings in changed files.
+- Reviews: four Codex (GPT-6.1-Sol) passes. The first found 8 problems, the second
+  6, the third 5 (mostly setup rollback edge cases, which led to removing rollback
+  from setup altogether); all fixed with tests. The fourth found nothing significant:
+  a removed phone could get 502 instead of 401 from a lock macOS refused (fixed), and
+  two clients reusing one Codex reset attempt id share the first one's access check
+  (left: each client makes a random id per attempt).
+- Tailscale Serve headers checked on a throwaway tailnet-only port (since removed):
+  X-Forwarded-For and Tailscale-User-* are replaced by Tailscale, a spoofed Host
+  passes through (so Host is never trusted for remote requests), X-Real-IP passes
+  through (unused).
+- API 36 emulator against the isolated demo service: pairing sent the device name
+  and the Mac listed the phone as connected; Remove on the Mac showed "Pairing
+  removed" on the phone within about 1 s; Disconnect in Settings removed the phone
+  from the Mac's list. No crashes in logcat.
+- Browser (built-in browser, demo service): Connect phone lists phones with last
+  use and pairing date; Remove asks first and drops the row; checked at 420 px wide.
+- Not tested yet: Funnel itself (not enabled on the real Mac; Tailscale asks the
+  owner to allow it), a physical phone with Tailscale off or another VPN on, event
+  streams through Funnel relays, and the setup script's restart against the real
+  launchd job.
+
 PocketBridge connection robustness pass (unreleased, branch connection-robustness), 8 October 2026
 
 - Mac: pnpm test passed, 117 tests. New checks: a question or approval left

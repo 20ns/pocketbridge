@@ -48,7 +48,7 @@ class LiveUpdateTest {
         // A prompt still on its way has nothing on the Mac to stop yet.
         val sending = liveNotice(listOf(chat("a", "sending")), emptyMap(), emptyMap())
         assertTrue(sending.promoted); assertFalse(sending.stoppable)
-        assertEquals(LiveNotice("PocketBridge", "Checking your Mac"), liveNotice(emptyList(), emptyMap(), emptyMap()))
+        assertEquals(LiveNotice("Felva", "Checking your Mac"), liveNotice(emptyList(), emptyMap(), emptyMap()))
     }
 
     @Test fun `several chats share one notification, counted, with a line each and no single Stop`() {

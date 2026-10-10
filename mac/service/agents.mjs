@@ -100,12 +100,13 @@ export function converse({ command, args, cwd, env, signal, timeoutMs = 20_000, 
 }
 
 /** One app-server request after the initialize handshake. Resolves {result} or {error}; null when Codex didn't answer. */
-export function codexCall({ command, cwd, env, signal, timeoutMs, method, params }) {
+/** ready, when given, is asked right before the call is sent; false ends the conversation with {cancelled: true}. */
+export function codexCall({ command, cwd, env, signal, timeoutMs, method, params, ready }) {
   return converse({
     command, cwd, env, signal, timeoutMs, args: ['app-server'],
     start: write => write({ id: 0, method: 'initialize', params: { clientInfo } }),
     onMessage: (message, write) => {
-      if (message.id === 0) { if (message.error) return null; write({ method: 'initialized' }); write({ id: 1, method, params }); return; }
+      if (message.id === 0) { if (message.error) return null; if (ready && !ready()) return { cancelled: true }; write({ method: 'initialized' }); write({ id: 1, method, params }); return; }
       if (message.id === 1) return message.error ? { error: message.error } : { result: message.result ?? null };
     },
   });

@@ -6,18 +6,21 @@ registered as a project. Other folders are discovered from local Claude Code and
 Codex chats; use Add folder on the Mac for projects neither has used yet.
 
 ONE-TIME PHONE SETUP
-1. Open Tailscale on the Mac, sign in and approve its macOS VPN/network extension.
-   Install Tailscale on the S25 from Google Play and sign in to the same account.
-2. Double-click mac/launcher/Setup private connection.command in this folder.
-   It configures private HTTPS Serve, saves the address and restarts PocketBridge.
-   If it prints a Tailscale HTTPS enablement link, complete that step and rerun it.
+1. Open Tailscale on the Mac, sign in and approve its macOS network extension.
+   The phone doesn't need Tailscale or any VPN.
+2. Double-click mac/launcher/Setup phone connection.command in this folder.
+   It turns on Tailscale Funnel for PocketBridge, saves the address and restarts
+   PocketBridge when no chat is working. If it prints a link to allow Funnel or
+   HTTPS, open it, approve, and let the helper finish (or rerun it). Only phones
+   you pair can use the address. To keep it inside your tailnet instead, run
+   mac/scripts/setup-connection.mjs --tailnet-only and use Tailscale on the phone.
 3. Download the latest PocketBridge APK from
    https://github.com/20ns/pocketbridge/releases/latest . Install it over the old app.
    The local releases folder also contains PocketBridge-0.4.1.apk.
-   Alternatively, open the private address from step 2 followed by /PocketBridge.apk
+   Alternatively, open the address from step 2 followed by /PocketBridge.apk
    in Chrome on your phone. Android will ask for the usual APK installation approval.
 4. In the Mac client choose Connect phone, then Create pairing code.
-5. On the phone enter the private address and one-time code in PocketBridge.
+5. On the phone enter the address and one-time code in PocketBridge.
    Or scan the QR with the phone camera to prefill them, then tap Connect to Mac.
 
 After pairing, open the app, choose a project and make a chat. Model, effort and
@@ -34,14 +37,15 @@ Hold a saved chat for Rename or Delete, or use its menu. Stop active work before
 deleting. Settings checks for APK updates; Android may ask you to allow
 PocketBridge to install apps once. Accept the system update without uninstalling.
 
-Pairing stays saved across app/service restarts. Keep Tailscale connected on both
-devices. Claude and Codex sign-ins and Tailscale device keys can each require renewal;
-disable key expiry for your own devices in Tailscale if desired.
+Pairing stays saved across app/service restarts. Connect phone on the Mac lists
+paired phones; Remove cuts one off at once. Keep Tailscale running on the Mac.
+Claude and Codex sign-ins and the Mac's Tailscale key can each require renewal;
+disable key expiry for the Mac in Tailscale if desired.
 
 Only chats started through PocketBridge appear. Use its Mac client to continue a
 phone chat on the Mac. On this Mac, in the Mac client's sidebar, lists a project's
-Terminal, desktop and Codex sessions; picking one forks it into a new chat with
-its last exchange. Other sessions stay untouched. Stop does not undo completed edits. Ready means the turn has ended;
+Terminal, desktop and Codex sessions; picking one continues that same session in
+a new chat with its last exchange, so Terminal sees what you send. Other sessions stay untouched. Stop does not undo completed edits. Ready means the turn has ended;
 PocketBridge cleans up tools left running in that turn. Concurrent
 manual file edits have the usual filesystem conflict risk.
 

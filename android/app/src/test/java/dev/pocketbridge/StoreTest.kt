@@ -99,6 +99,52 @@ class StoreTest {
         assertEquals("", store.get("draft:chat"))
     }
 
+    @Test fun `cancel recovery survives restart and restores text with its record cleared in one commit`() {
+        val prefs = Preferences()
+        Store(prefs.value).saveCancellation("chat", "scheduled", "finish the refactor", 0)
+        val store = Store(prefs.value)
+        assertEquals(mapOf("scheduled" to ("chat" to "finish the refactor")), store.pendingCancellations())
+        assertTrue(prefs.commits.single().containsKey("cancel:scheduled"))
+        assertTrue(store.completeCancellation("chat", "scheduled", store.session(), cancelled = true))
+        assertEquals("finish the refactor", prefs.commits.last()["draft:chat"])
+        assertFalse(prefs.commits.last().containsKey("cancel:scheduled"))
+        assertTrue(Store(prefs.value).pendingCancellations().isEmpty())
+        assertFalse(store.completeCancellation("chat", "scheduled", store.session(), cancelled = true))
+    }
+
+    @Test fun `cancel recovery preserves newer drafts images and deliveries and restores a long paste later`() {
+        val store = Store(Preferences().value)
+        val text = "log line\n".repeat(40)
+        store.saveCancellation("chat", "old", text, store.session())
+        store.saveCancellation("chat", "new", "another cancelled prompt", store.session())
+        store.saveDraft("chat", "newer draft", emptyList())
+        assertFalse(store.completeCancellation("chat", "old", store.session(), cancelled = true))
+        assertEquals("newer draft", store.get("draft:chat"))
+        store.saveDraft("chat", "", emptyList())
+        store.put("attachments:chat", encodeAttachments(listOf(Attachment("image", "/image.jpg", "upload"))))
+        assertFalse(store.completeCancellation("chat", "old", store.session(), cancelled = true))
+        store.remove("attachments:chat")
+        store.savePrompt("chat", PendingPrompt("delivery", "next"), 100, store.session())
+        assertFalse(store.completeCancellation("chat", "old", store.session(), cancelled = true))
+        store.remove("pending:chat")
+        assertEquals(2, store.pendingCancellations().size)
+        assertTrue(store.completeCancellation("chat", "old", store.session(), cancelled = true))
+        assertEquals(listOf(Paste("old", text)), store.pastes("chat"))
+        assertFalse(store.completeCancellation("chat", "new", store.session(), cancelled = true))
+        // A refusal leaves the Mac's original message; forgetting its recovery does not overwrite this draft.
+        assertTrue(store.completeCancellation("chat", "new", store.session(), cancelled = false))
+        assertEquals(listOf(Paste("old", text)), store.pastes("chat"))
+        assertTrue(store.pendingCancellations().isEmpty())
+        store.saveCancellation("chat", "deleted", "deleted prompt", store.session())
+        store.removeChat("chat")
+        assertTrue(store.pendingCancellations().isEmpty())
+        val oldSession = store.session()
+        store.clear()
+        store.saveCancellation("chat", "later", "new pairing", store.session())
+        assertThrows(CancellationException::class.java) { store.completeCancellation("chat", "later", oldSession, cancelled = true) }
+        assertEquals("new pairing", store.pendingCancellations()["later"]?.second)
+    }
+
     @Test fun `a late reset answer clears only its own attempt in its own pairing`() {
         val store = Store(Preferences().value)
         val first = ResetAttempt("key-1", "c1")

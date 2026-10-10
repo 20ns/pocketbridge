@@ -1,0 +1,8 @@
+Generated with the built-in image_gen tool. Final selected PNG uses an opaque warm-white background.
+
+Use case: logo-brand.
+Create a finished brand logo for "Felva", F-e-l-v-a exactly, an Android remote controller for Claude Code and Codex on the owner's Mac. One professional horizontal logo lockup, bold compact abstract F symbol paired with the exact wordmark "Felva". Credible, distinctive contemporary developer brand. Original design.
+BACKGROUND: fully opaque smooth solid warm-white #F5F4EF edge to edge. Do not create transparency. No cutout, masking, chroma key, isolation matte, checkerboard or background-removal effects.
+Symbol: an elegant bold F silhouette formed from a continuous deep teal hook-like stem sweeping into a thick top arm; under the top arm, one shorter detached mint-teal horizontal bar. Rounded outer contours, open negative space, deliberate optical balance, recognizable silhouette. Entire symbol purely flat #006B5F, detached bar purely flat #83D5C6.
+Wordmark: exactly "Felva" in deep teal #006B5F, a confident clean geometric sans-serif medium-bold weight, carefully spaced. Capital F lowercase elva. Symbol beside the wordmark. Single centered horizontal composition, landscape 3:1 proportions, sensible generous margins.
+Render as precise clean vector-like artwork with smooth contours and completely solid fills. Uniform stroke geometry. No gradients, outlines, texture, shadows, speckles, fringe pixels, rough edges, glossy effects, 3D, extra objects, captions, multiple variants or watermark. The output must look like a finished flat graphic designed in a vector editor.

@@ -40,7 +40,7 @@ class ConnectionTest {
         assertTrue(failureReason(SSLHandshakeException("bad cert")).contains("certificate"))
         val dropped = failureReason(SSLException("Connection reset by peer"))
         assertFalse(dropped.contains("certificate"))
-        assertEquals("The connection to your Mac was interrupted. Check Tailscale on both devices.", dropped)
+        assertEquals("The connection to your Mac was interrupted. Check that it's awake and online.", dropped)
     }
     @Test fun `a connect timeout says the Mac may be asleep and a slow answer says it took too long`() {
         assertTrue(failureReason(SocketTimeoutException("failed to connect to /100.64.0.2 (port 443) after 10000ms")).contains("may be asleep"))
@@ -56,7 +56,7 @@ class ConnectionTest {
             val proxy = runCatching { api.request("/api/chats/chat/prompts", PendingPrompt("id", "hi").json()) }.exceptionOrNull() as ApiError
             assertEquals(502, proxy.status)
             assertFalse(proxy.fromMac)
-            assertEquals("Your Mac is reachable, but PocketBridge isn't answering on it. It restarts on its own; check the Mac if this lasts.", failureReason(proxy))
+            assertEquals("Your Mac is reachable, but Felva isn't answering on it. It restarts on its own; check the Mac if this lasts.", failureReason(proxy))
             val service = runCatching { api.request("/api/chats/chat/prompts", PendingPrompt("id", "hi").json()) }.exceptionOrNull() as ApiError
             assertEquals(503, service.status)
             assertTrue(service.fromMac)

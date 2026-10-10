@@ -77,9 +77,9 @@ export const resetOutcomes = ['reset', 'nothingToReset', 'noCredit', 'alreadyRed
  * Redeems one banked Codex reset through the CLI. The idempotency key identifies one attempt, so a retry with the
  * same key cannot use a second credit. Resolves {outcome} or {error}; null when Codex didn't answer.
  */
-export async function consumeCodexReset(probe, { idempotencyKey, creditId }) {
-  const answer = await codexCall({ ...probe, method: 'account/rateLimitResetCredit/consume', params: { idempotencyKey, ...(creditId ? { creditId } : {}) } });
-  if (!answer) return null;
+export async function consumeCodexReset(probe, { idempotencyKey, creditId, ready }) {
+  const answer = await codexCall({ ...probe, ready, method: 'account/rateLimitResetCredit/consume', params: { idempotencyKey, ...(creditId ? { creditId } : {}) } });
+  if (!answer || answer.cancelled) return answer;
   if (answer.error) return { error: clean(answer.error.message, 300) || 'Codex could not redeem the reset' };
   return resetOutcomes.includes(answer.result?.outcome) ? { outcome: answer.result.outcome } : { error: 'Codex gave an unknown reset outcome' };
 }

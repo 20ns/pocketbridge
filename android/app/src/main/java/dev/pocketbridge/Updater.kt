@@ -230,7 +230,7 @@ class Updater(private val context: Context) {
         if (Build.VERSION.SDK_INT >= 26 && !context.packageManager.canRequestPackageInstalls()) {
             withContext(Dispatchers.IO) { check(saved.edit().putBoolean("permission", true).commit()) { "Could not save update state." } }
             context.startActivity(Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.parse("package:${BuildConfig.APPLICATION_ID}")).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
-            return status.copy(message = "Allow installs from PocketBridge, then return to continue.", waitingForPermission = true)
+            return status.copy(message = "Allow installs from Felva, then return to continue.", waitingForPermission = true)
         }
         withContext(Dispatchers.IO) { check(saved.edit().remove("permission").commit()) { "Could not save update state." } }
         val uri = FileProvider.getUriForFile(context, "${BuildConfig.APPLICATION_ID}.files", apk)

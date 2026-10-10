@@ -223,4 +223,54 @@ class ApiTest {
             assertEquals(3, server.requestCount)
         }
     }
+
+    @Test fun `stop and approval answers reach the Mac while other requests fill its queue`() = runBlocking {
+        MockWebServer().use { server ->
+            repeat(5) { server.enqueue(MockResponse().setSocketPolicy(SocketPolicy.NO_RESPONSE)) }
+            val api = Api(server.url("/").toString())
+            val stalled = (1..5).map { index ->
+                launch { api.request("/api/slow/$index") }.also {
+                    withContext(Dispatchers.IO) { assertNotNull(server.takeRequest(2, TimeUnit.SECONDS)) }
+                }
+            }
+            try {
+                for (path in listOf("/api/chats/chat/stop", "/api/approvals/question")) {
+                    server.enqueue(MockResponse().setBody("{\"ok\":true}"))
+                    assertTrue(withTimeout(2000) { api.request(path, JSONObject()).getBoolean("ok") })
+                    assertEquals(path, server.takeRequest().path)
+                }
+                // The Stop reached the Mac but its answer did not; its recovery read must bypass the same queue.
+                server.enqueue(MockResponse().setSocketPolicy(SocketPolicy.DISCONNECT_AFTER_REQUEST))
+                server.enqueue(MockResponse().setBody("{\"chats\":[{\"id\":\"chat\",\"status\":\"interrupted\"}]}"))
+                withTimeout(2000) { api.stopChat("chat") }
+                assertEquals("/api/chats/chat/stop", server.takeRequest().path)
+                assertEquals("/api/state", server.takeRequest().path)
+            } finally { stalled.forEach { it.cancelAndJoin() } }
+        }
+    }
+
+    @Test fun `a lost stop acknowledgement checks state once and never repeats stop`() = runBlocking {
+        for (status in listOf("stopping", "interrupted", "running")) MockWebServer().use { server ->
+            server.enqueue(MockResponse().setSocketPolicy(SocketPolicy.DISCONNECT_AFTER_REQUEST))
+            server.enqueue(MockResponse().setBody("{\"chats\":[{\"id\":\"chat\",\"status\":\"$status\"}]}"))
+            val result = runCatching { Api(server.url("/").toString()).stopChat("chat") }
+            assertEquals(status != "running", result.isSuccess)
+            assertEquals("/api/chats/chat/stop", server.takeRequest().path)
+            assertEquals("/api/state", server.takeRequest().path)
+            assertEquals(2, server.requestCount)
+        }
+    }
+
+    @Test fun `stop reconciles a proxy failure but keeps a definitive rejection`() = runBlocking {
+        MockWebServer().use { server ->
+            server.enqueue(MockResponse().setResponseCode(502).setBody("Bad Gateway"))
+            server.enqueue(MockResponse().setBody("{\"chats\":[{\"id\":\"chat\",\"status\":\"interrupted\"}]}"))
+            val api = Api(server.url("/").toString())
+            api.stopChat("chat")
+            server.enqueue(MockResponse().setResponseCode(403).setBody("{\"error\":\"Denied\"}"))
+            val denied = runCatching { api.stopChat("chat") }.exceptionOrNull() as ApiError
+            assertEquals(403, denied.status)
+            assertEquals(3, server.requestCount)
+        }
+    }
 }

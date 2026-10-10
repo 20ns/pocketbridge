@@ -109,7 +109,7 @@ for await (const line of createInterface({ input: process.stdin })) {
   const reply = result => emit({ id: message.id, result });
   const params = message.params ?? {};
   switch (message.method) {
-    case 'initialize': reply({ userAgent: 'fake' }); break;
+    case 'initialize': setTimeout(reply, Number(process.env.FAKE_CODEX_INIT_DELAY_MS ?? 0), { userAgent: 'fake' }); break;
     case 'model/list': setTimeout(reply, Number(process.env.FAKE_CODEX_LIST_DELAY_MS ?? 0), { data: [
       ...(process.env.FAKE_CODEX_VERSION ? [{ id: 'gpt-test-nova', model: 'gpt-test-nova', displayName: 'GPT-Test-Nova', description: 'Newest', hidden: false, isDefault: false, defaultReasoningEffort: 'medium', supportedReasoningEfforts: efforts, serviceTiers: fast, additionalSpeedTiers: ['fast'] }] : []),
       { id: 'gpt-test-astra', model: 'gpt-test-astra', displayName: 'GPT-Test-Astra', description: 'Frontier', hidden: false, isDefault: true, defaultReasoningEffort: 'medium', supportedReasoningEfforts: efforts, serviceTiers: fast, additionalSpeedTiers: ['fast'] },
@@ -146,7 +146,7 @@ for await (const line of createInterface({ input: process.stdin })) {
       { id: 'a0', type: 'agentMessage', text: 'Looking.' }, { id: 'c1', type: 'commandExecution', command: 'ls' },
       { id: 'a1', type: 'agentMessage', text: 'Login now loads in 300 ms.' },
     ] }] : [], nextCursor: null }); break;
-    case 'thread/start': case 'thread/resume': case 'thread/fork':
+    case 'thread/start': case 'thread/resume':
       await sleep(Number(process.env.FAKE_CODEX_THREAD_DELAY_MS ?? 0));
       thread = message.method === 'thread/resume' ? params.threadId : randomUUID();
       log({ method: message.method, params });

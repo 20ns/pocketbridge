@@ -6,7 +6,7 @@ import {renderProjects, renderChatList, renderCliStatus, renderAgentSwitches, lo
 import {renderHeader, headerControls, renderEmpty, clearConversation, loadMessages, cancelRename} from './conversation.mjs';
 import {renderOptions, renderAttachments, composerControls, autosize, clearPrompt, hideSlash, loadGit, sameOptions, savedOptions, reconcileDrafts} from './composer.mjs';
 import {loadUsage} from './usage.mjs';
-import './pairing.mjs';
+import {loadPhones} from './pairing.mjs';
 
 let seq = 0, refreshTimer, streamController, pendingRefresh = false, refreshing = false, previousBusy = false, refreshError = '';
 
@@ -54,7 +54,7 @@ export async function refresh() {
     if (app.selected && !currentChat()) { app.selected = null; clearPrompt(); }
     // Settled only once the transcript loaded too, so a retry after a failed one still sees the turn end.
     const stopped = previousBusy && !busy(currentChat()), nowBusy = busy(currentChat());
-    renderState(); await loadMessages(); previousBusy = nowBusy;
+    renderState(); loadPhones(); await loadMessages(); previousBusy = nowBusy;
     // Sequences only grow, so a lower lastSeq means a replaced database. Committed once state and messages are in.
     seq = state.lastSeq;
     if (refreshError && $('notice').textContent === refreshError) notice();
@@ -123,7 +123,7 @@ async function connect() {
     } catch {
       if (app.passive) break;
       connection(false, 'Reconnecting to Mac…');
-      if (!app.state) notice('PocketBridge could not connect. Open this page through the Mac launcher. It will retry automatically.');
+      if (!app.state) notice('Felva could not connect. Open this page through the Mac launcher. It will retry automatically.');
       await pause(retry); retry = Math.min(retry * 2, 10000);
     }
   }

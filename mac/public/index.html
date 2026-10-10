@@ -4,7 +4,8 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="light dark">
-  <title>PocketBridge</title>
+  <title>Felva</title>
+  <link rel="icon" href="/felva-icon.svg" type="image/svg+xml">
   <link rel="stylesheet" href="/style.css">
   <link rel="modulepreload" href="/support.mjs">
   <link rel="modulepreload" href="/core.mjs">
@@ -18,7 +19,7 @@
 <body>
   <header class="app-header">
     <button id="chats-toggle" class="quiet drawer-toggle" aria-expanded="false" aria-controls="sidebar"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h10"/></svg>Chats</button>
-    <a class="brand" href="/" aria-label="PocketBridge home"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 17V7a3 3 0 0 1 3-3h4M20 7v10a3 3 0 0 1-3 3h-4M8 12h8m-3-3 3 3-3 3"/></svg><span>PocketBridge</span></a>
+    <a class="brand" href="/" aria-label="Felva home"><img src="/felva-icon.svg" alt="" width="22" height="22"><span>Felva</span></a>
     <div class="header-actions">
       <span id="connection" class="connection" data-state="connecting" role="status"><span class="dot" aria-hidden="true"></span><span id="connection-text">Connecting to Mac…</span></span>
       <button id="usage-toggle" class="quiet usage-toggle" popovertarget="usage-panel" aria-label="Plan usage" hidden></button>
@@ -29,7 +30,7 @@
   <div id="usage-panel" class="usage-panel" popover aria-label="Plan usage"></div>
   <dialog id="elsewhere" class="elsewhere" aria-labelledby="elsewhere-title">
     <h2 id="elsewhere-title">Open in another tab</h2>
-    <p>PocketBridge is open in another tab or window. Use it there, or here instead.</p>
+    <p>Felva is open in another tab or window. Use it there, or here instead.</p>
     <button id="use-here">Use here</button>
   </dialog>
   <dialog id="viewer" class="viewer" aria-label="Image"><img id="viewer-image" alt=""></dialog>
@@ -42,30 +43,34 @@
       </div>
       <div class="settings-body">
         <section class="pairing" aria-label="Pairing">
-          <p>Install PocketBridge on Android, then scan the code with your phone camera or enter the address and code in the app. Both devices need Tailscale for remote access.</p>
+          <p>Install Felva on Android, then scan the code with your phone camera or enter the address and code in the app.</p>
           <div class="settings-actions">
             <button id="pair-button" autofocus>Create pairing code</button>
             <a class="button-link" href="/PocketBridge.apk" download>Download Android APK</a>
           </div>
           <div id="pair-details" class="pair-details" hidden>
             <dl class="pair-facts">
-              <dt>Private Mac address</dt><dd><code id="pair-url"></code></dd>
+              <dt>Mac address</dt><dd><code id="pair-url"></code></dd>
               <dt>One-time code</dt><dd><strong id="pair-code" class="pair-code"></strong></dd>
             </dl>
             <p id="pair-expiry" class="muted"></p>
             <button id="copy-pair" class="quiet">Copy connection link</button>
             <div id="pair-qr" class="pair-qr" hidden></div>
           </div>
+          <section class="phones" aria-labelledby="phones-title">
+            <h3 id="phones-title">Paired phones</h3>
+            <p id="phones-empty" class="muted">No phones paired yet.</p>
+            <ul id="phones" class="phones-list"></ul>
+          </section>
         </section>
         <section class="setup" aria-labelledby="setup-title">
           <h3 id="setup-title">One-time setup</h3>
           <ol>
-            <li>Sign in to Tailscale on your Mac and phone.</li>
-            <li>Open <code>Setup private connection.command</code> in <code>mac/launcher</code>.</li>
-            <li>The helper saves your private address. Follow its restart instructions before pairing.</li>
+            <li>Sign in to Tailscale on this Mac. Your phone doesn't need it.</li>
+            <li>Open <code>Setup phone connection.command</code> in <code>mac/launcher</code>. Allow Funnel if Tailscale asks.</li>
             <li>Create a pairing code here, then scan it on your phone.</li>
           </ol>
-          <p class="muted">Use private Serve. Do not enable Funnel. Your app connection persists; Claude may still ask you to sign in again.</p>
+          <p class="muted">Funnel gives this Mac an internet address that only paired phones can use. Remove a phone here and it is cut off at once. To keep the Mac inside your tailnet instead, run the helper with <code>--tailnet-only</code> and use Tailscale on the phone too.</p>
         </section>
       </div>
     </div>

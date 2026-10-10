@@ -1,14 +1,16 @@
 // The service's SQLite state: schema, additive migrations for older data folders, and query helpers.
 import { DatabaseSync } from 'node:sqlite';
+import { randomUUID } from 'node:crypto';
 import { chmodSync } from 'node:fs';
 import { join } from 'node:path';
+import { tokenHash } from './util.mjs';
 
 export function openDatabase(dataDir) {
   const path = join(dataDir, 'data.sqlite');
   const db = new DatabaseSync(path); chmodSync(path, 0o600);
   db.exec(`PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA foreign_keys=ON;
     CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
-    CREATE TABLE IF NOT EXISTS tokens (token TEXT PRIMARY KEY, createdAt INTEGER NOT NULL);
+    CREATE TABLE IF NOT EXISTS devices (id TEXT PRIMARY KEY, tokenHash TEXT UNIQUE NOT NULL, name TEXT NOT NULL, createdAt INTEGER NOT NULL, lastSeenAt INTEGER);
     CREATE TABLE IF NOT EXISTS projects (id TEXT PRIMARY KEY, name TEXT NOT NULL, path TEXT UNIQUE NOT NULL);
     CREATE TABLE IF NOT EXISTS chats (id TEXT PRIMARY KEY, projectId TEXT NOT NULL REFERENCES projects(id), title TEXT NOT NULL, mode TEXT NOT NULL, status TEXT NOT NULL, updatedAt INTEGER NOT NULL, error TEXT, sessionStarted INTEGER NOT NULL DEFAULT 0);
     CREATE TABLE IF NOT EXISTS messages (id TEXT PRIMARY KEY, chatId TEXT NOT NULL REFERENCES chats(id), role TEXT NOT NULL, text TEXT NOT NULL, createdAt INTEGER NOT NULL);
@@ -38,6 +40,8 @@ export function openDatabase(dataDir) {
     // scheduledAt the resolved time, scheduleState scheduled, started or cancelled.
     ['prompts', 'schedule', 'TEXT'], ['prompts', 'scheduledAt', 'INTEGER'], ['prompts', 'scheduleState', 'TEXT'],
   ]) if (!columns(table).includes(column)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${type}`);
+  // 0.10: a continued session runs in place instead of as a fork, including a continue still waiting for its first prompt.
+  db.exec('UPDATE chats SET agentSession=forkFrom WHERE forkFrom IS NOT NULL AND agentSession IS NULL AND sessionStarted=0');
   db.exec(`CREATE TABLE IF NOT EXISTS deleted_chats (id TEXT PRIMARY KEY, deletedAt INTEGER NOT NULL);
     CREATE INDEX IF NOT EXISTS messages_chat ON messages(chatId);
     CREATE INDEX IF NOT EXISTS messages_chat_revision ON messages(chatId,revision);
@@ -77,5 +81,19 @@ export function openDatabase(dataDir) {
   const transaction = fn => { db.exec('BEGIN IMMEDIATE'); try { const result = fn(); db.exec('COMMIT'); return result; } catch (e) { db.exec('ROLLBACK'); throw e; } };
   const setting = key => get('SELECT value FROM settings WHERE key=?', key)?.value;
   const saveSetting = (key, value) => run('INSERT OR REPLACE INTO settings VALUES (?,?)', key, value);
-  return { db, get, all, run, transaction, setting, saveSetting };
+  /**
+   * 0.10: paired phones became devices the Mac can list and remove, and their plain tokens are replaced by hashes.
+   * Destructive, so it runs only once this process owns the data folder: an older service still running keeps its
+   * tokens table. Freed pages are overwritten, and they leave the files only when the write-ahead log is checkpointed
+   * into the database and emptied; until that succeeds it is retried at each start.
+   */
+  const migrateTokens = () => {
+    if (get("SELECT name FROM sqlite_master WHERE type='table' AND name='tokens'")) transaction(() => {
+      for (const row of all('SELECT token,createdAt FROM tokens')) run('INSERT OR IGNORE INTO devices (id,tokenHash,name,createdAt) VALUES (?,?,?,?)', randomUUID(), tokenHash(row.token), 'Android phone', row.createdAt);
+      db.exec('PRAGMA secure_delete=ON; DROP TABLE tokens; PRAGMA secure_delete=OFF;');
+      saveSetting('tokenCleanup', 'pending');
+    });
+    if (setting('tokenCleanup') && db.prepare('PRAGMA wal_checkpoint(TRUNCATE)').get().busy === 0) run('DELETE FROM settings WHERE key=?', 'tokenCleanup');
+  };
+  return { db, get, all, run, transaction, setting, saveSetting, migrateTokens };
 }

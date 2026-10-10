@@ -249,10 +249,24 @@ class FeaturesTest {
             Subagent("b", "gone", "Plan", "", "", "", "running", "", 220, null),
             Subagent("c", "t2", "Done", "", "", "", "completed", "", 205, 250),
         )
-        assertEquals(agents, settledSubagents(agents, stale, working = true, stoppedAt = 900))
+        val laterTurn = settledSubagents(agents, stale, working = true, stoppedAt = 900)
+        assertEquals(listOf("stopped" to 300L, "running" to null, "completed" to 250L), laterTurn.map { it.status to it.endedAt })
         val settled = settledSubagents(agents, stale, working = false, stoppedAt = 900)
         assertEquals(listOf("stopped" to 300L, "stopped" to 900L, "completed" to 250L), settled.map { it.status to it.endedAt })
         assertTrue(settled.none { it.running })
+    }
+
+    @Test fun `sub-agent groups stay inside their turns throughout a long conversation`() {
+        val turns = (0 until 2000).map { i -> Turn("u$i", i * 100L, i * 100L + 40) }
+        val entries = transcript(turns.flatMap { turn -> listOf(
+            said(turn.id, "user", "Run", turn.startedAt),
+            said("tool:${turn.id}", "activity", "Agent\n{\"description\":\"Check files\"}", turn.startedAt + 10),
+            said("reply:${turn.id}", "assistant", "Done", turn.startedAt + 30),
+        ) })
+        val agents = turns.map { turn -> Subagent("agent:${turn.id}", turn.id, "Check files", "", "", "", "completed", "", turn.startedAt + 20, turn.endedAt) }
+        assertEquals(turns.flatMap { listOf(it.id, "steps:tool:${it.id}", "agents:${it.id}", "reply:${it.id}") }, withSubagents(entries, agents, turns).map { it.key })
+        assertEquals(emptyList<Entry>(), withSubagents(emptyList(), emptyList()))
+        assertEquals(listOf("agents:u0"), withSubagents(emptyList(), agents.take(1)).map { it.key })
     }
 
     @Test fun `a prompt the Mac saved settles without a resend and an older snapshot can't close its chat`() {

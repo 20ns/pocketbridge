@@ -154,7 +154,7 @@ export function codexRun(ctx, session, delivery) {
     send({ method: 'initialized' });
     const { model, effort, approvalPolicy, sandbox } = settings(delivery.promptId);
     const base = { cwd: project.path, approvalPolicy, sandbox, ...(model ? { model } : {}), ...(effort ? { config: { model_reasoning_effort: effort } } : {}) };
-    const opened = row.agentSession ? await call('thread/resume', { threadId: row.agentSession, ...base }) : row.forkFrom ? await call('thread/fork', { threadId: row.forkFrom, ...base }) : await call('thread/start', base);
+    const opened = row.agentSession ? await call('thread/resume', { threadId: row.agentSession, ...base }) : await call('thread/start', base);
     entry.threadId = opened?.thread?.id; entry.serviceTier = typeof opened?.serviceTier === 'string' ? opened.serviceTier : null;
     if (!entry.threadId) throw new Error('Codex did not open a thread.');
     run('UPDATE chats SET agentSession=?,sessionStarted=1 WHERE id=?', entry.threadId, id);

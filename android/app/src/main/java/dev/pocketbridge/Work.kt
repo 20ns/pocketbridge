@@ -59,9 +59,10 @@ private fun startOf(entry: Entry) = when (entry) { is Message -> entry.said.crea
 fun withSubagents(entries: List<Entry>, subagents: List<Subagent>, turns: List<Turn> = emptyList()): List<Entry> {
     if (subagents.isEmpty()) return entries
     val starts = turns.map { it.id }.toSet()
+    val prompts = entries.mapIndexedNotNull { index, entry -> (entry as? Message)?.said?.id?.let { it to index } }.toMap()
     val placed = subagents.groupBy { it.promptId }.map { (promptId, group) ->
         val start = group.minOf { it.startedAt }
-        val prompt = entries.indexOfFirst { it is Message && it.said.id == promptId }
+        val prompt = prompts[promptId] ?: -1
         var at = if (prompt < 0) entries.size - 1 else prompt
         if (prompt >= 0) for (i in prompt + 1 until entries.size) {
             if (opensTurn(entries[i], starts)) break
@@ -69,10 +70,13 @@ fun withSubagents(entries: List<Entry>, subagents: List<Subagent>, turns: List<T
         }
         Triple(at + 1, start, Agents(promptId, group))
     }
-    val result = entries.toMutableList()
-    // Inserting from the end keeps earlier indices valid; equal places keep start order.
-    placed.sortedWith(compareByDescending<Triple<Int, Long, Agents>> { it.first }.thenByDescending { it.second }).forEach { (index, _, agents) -> result.add(index, agents) }
-    return result
+    val positions = placed.groupBy { it.first }
+    return buildList {
+        for (index in 0..entries.size) {
+            positions[index]?.sortedBy { it.second }?.forEach { add(it.third) }
+            entries.getOrNull(index)?.let(::add)
+        }
+    }
 }
 
 /** For each finished turn, the key of the last reply in it and how long the turn ran. */
@@ -99,14 +103,17 @@ fun runningSince(turns: List<Turn>, lastPromptAt: Long?, working: Boolean = true
     if (!working) null else turns.maxByOrNull { it.startedAt }?.takeIf { it.endedAt == null }?.startedAt?.takeIf { it > 0 } ?: lastPromptAt
 
 /**
- * Sub-agents as they stand once the chat has stopped working: one still marked running (its turn ended with a crash
- * or a stop) shows as stopped, timed to its turn's end or [stoppedAt].
+ * A running row outliving its turn shows as stopped, even while a later turn works. Once the whole chat stops,
+ * any remaining running row also settles, timed to its turn's end or [stoppedAt].
  */
-fun settledSubagents(agents: List<Subagent>, turns: List<Turn>, working: Boolean, stoppedAt: Long?): List<Subagent> =
-    if (working) agents else agents.map { agent ->
-        if (!agent.running) agent
-        else agent.copy(status = "stopped", endedAt = (turns.find { it.id == agent.promptId }?.endedAt ?: stoppedAt)?.coerceAtLeast(agent.startedAt))
+fun settledSubagents(agents: List<Subagent>, turns: List<Turn>, working: Boolean, stoppedAt: Long?): List<Subagent> {
+    val ends = turns.associate { it.id to it.endedAt }
+    return agents.map { agent ->
+        val end = ends[agent.promptId]
+        if (!agent.running || working && end == null) agent
+        else agent.copy(status = "stopped", endedAt = (end ?: stoppedAt)?.coerceAtLeast(agent.startedAt))
     }
+}
 
 /** "Worked 2m 14s"; under a second reads as "Worked 1s" so a finished turn never says 0. */
 fun workedLabel(millis: Long) = "Worked " + elapsedLabel(millis.coerceAtLeast(1000))
@@ -163,10 +170,10 @@ fun subagentOrder(agents: List<Subagent>) = agents.sortedWith(compareBy<Subagent
         }
         Column(Modifier.weight(1f).padding(start = Spacing.md), verticalArrangement = Arrangement.spacedBy(Spacing.xxs)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(agent.title, Modifier.weight(1f), style = MaterialTheme.typography.titleSmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text(agent.title, Modifier.weight(1f), style = MaterialTheme.typography.titleSmall, maxLines = 2, overflow = TextOverflow.Ellipsis)
                 Text(elapsed, Modifier.padding(start = Spacing.sm), style = MaterialTheme.typography.labelMedium.copy(fontFeatureSettings = "tnum"), color = if (agent.running) colors.primary else colors.onSurfaceVariant)
             }
-            if (detail.isNotEmpty()) Text(detail, style = MaterialTheme.typography.bodySmall, color = colors.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Text(subagentStatusLabel(agent.status) + if (detail.isNotEmpty()) " · $detail" else "", style = MaterialTheme.typography.bodySmall, color = if (agent.status == "failed") colors.error else colors.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
             if (agent.activity.isNotBlank()) Text(firstLine(agent.activity, 200), style = MaterialTheme.typography.bodySmall, color = if (agent.running) colors.onSurface else colors.onSurfaceVariant, maxLines = 1, overflow = TextOverflow.Ellipsis)
         }
     }

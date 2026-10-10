@@ -101,7 +101,7 @@ private val Mine = RoundedCornerShape(Corners.bubble, Corners.bubble, Corners.ta
     val firstImported = entries.firstOrNull { it is Message && it.said.kind == "imported" }?.key
     val agentName = agentProduct(chat?.optString("agent").orEmpty())
     val activity = model.activity.ifBlank { chat?.optString("activity").orEmpty() }
-    val runningAgents = subagents.count { it.running }
+    val runningAgents = subagents.filter { it.running }
     val openImage = LocalImageViewer.current
     Box(Modifier.fillMaxSize()) {
         // Reverse layout anchors the newest content above the composer while replies stream in.
@@ -186,7 +186,7 @@ private val Mine = RoundedCornerShape(Corners.bubble, Corners.bubble, Corners.ta
     }
 }
 
-private val imageOnlyText = setOf("Look at the attached image.", "Look at the attached images.")
+private val imageOnlyText = setOf("Look at the attached image.", "Look at the attached images.", "Look at the attached image(s).")
 
 private fun deliveryLabel(kind: String) = when (kind) { STEER -> PocketIcons.ArrowUp to "Steered"; INTERRUPT -> PocketIcons.SkipNext to "Sent now"; else -> null }
 
@@ -300,7 +300,7 @@ private const val PROMPT_LINES = 8
     }
 }
 
-@Composable private fun Footer(status: String, error: String, answering: Boolean, step: Step?, startedAt: Long?, activity: String, subagents: Int) {
+@Composable private fun Footer(status: String, error: String, answering: Boolean, step: Step?, startedAt: Long?, activity: String, subagents: List<Subagent>) {
     Box(Modifier.fillMaxWidth().semantics { liveRegion = LiveRegionMode.Polite }) {
         when (status) {
             "running" -> Working("Working", step, startedAt, activity = activity, subagents = subagents)
@@ -313,14 +313,14 @@ private const val PROMPT_LINES = 8
 }
 
 /** Typing dots, then the status with its elapsed time and live sub-agents, then the agent's own summary or the step running now. */
-@Composable private fun Working(label: String, step: Step?, startedAt: Long?, tint: Color = MaterialTheme.colorScheme.primary, activity: String = "", subagents: Int = 0) {
+@Composable private fun Working(label: String, step: Step?, startedAt: Long?, tint: Color = MaterialTheme.colorScheme.primary, activity: String = "", subagents: List<Subagent> = emptyList()) {
     val now by produceState(System.currentTimeMillis(), startedAt) { while (true) { value = System.currentTimeMillis(); delay(1000) } }
     val muted = MaterialTheme.colorScheme.onSurfaceVariant
     Row(Modifier.padding(vertical = Spacing.xs), verticalAlignment = Alignment.Top) {
         Box(Modifier.height(20.dp), contentAlignment = Alignment.Center) { Typing(tint) }
         Column(Modifier.padding(start = Spacing.md).weight(1f, fill = false), verticalArrangement = Arrangement.spacedBy(Spacing.xxs)) {
             Text(
-                listOfNotNull(label, startedAt?.let { elapsedLabel(now - it) }, subagents.takeIf { it > 0 }?.let { plural(it, "sub-agent") + " running" }).joinToString(" · "),
+                listOfNotNull(label, startedAt?.let { elapsedLabel(now - it) }, subagents.takeIf { it.isNotEmpty() }?.let { plural(it.size, "sub-agent") + " running" }).joinToString(" · "),
                 style = MaterialTheme.typography.labelLarge.copy(fontFeatureSettings = "tnum"), color = tint,
             )
             if (activity.isNotBlank()) Text(firstLine(activity, 160), style = MaterialTheme.typography.bodySmall, color = muted, maxLines = 1, overflow = TextOverflow.Ellipsis)
@@ -330,6 +330,7 @@ private const val PROMPT_LINES = 8
                     style = MaterialTheme.typography.bodySmall, color = muted, maxLines = 1, overflow = TextOverflow.Ellipsis,
                 )
             }
+            if (subagents.isNotEmpty()) Text(subagents.joinToString(" · ") { it.title }, style = MaterialTheme.typography.bodySmall, color = muted, maxLines = 2, overflow = TextOverflow.Ellipsis)
         }
     }
 }

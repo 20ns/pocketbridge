@@ -102,10 +102,10 @@ export function createAgents(ctx) {
 
   // One redemption per idempotency key at a time; Codex itself answers alreadyRedeemed for a key it has used.
   const redeeming = new Map();
-  const redeemReset = (key, creditId) => {
+  const redeemReset = (key, creditId, ready) => {
     if (!enabled.codex) throw fail(409, 'Codex is turned off. Turn it on in Settings.');
     if (!available.codex) throw fail(409, 'Codex is not installed or could not be started');
-    if (!redeeming.has(key)) redeeming.set(key, consumeCodexReset(probe('codex'), { idempotencyKey: key, creditId }).finally(() => {
+    if (!redeeming.has(key)) redeeming.set(key, consumeCodexReset(probe('codex'), { idempotencyKey: key, creditId, ready }).finally(() => {
       redeeming.delete(key);
       // A probe already under way may predate the reset; the next one starts after it.
       Promise.resolve(usageProbe.codex).then(() => { usageAt.codex = 0; return refreshUsage('codex'); }).catch(() => {});

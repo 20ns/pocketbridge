@@ -26,6 +26,7 @@ export const macScreen = {
 /** system is macScreen, a test fake, or null where locking isn't offered (tests, other platforms). */
 export function createScreen(ctx, system, { pollMs = 15_000, settleMs = 3000 } = {}) {
   let locked = null, checkedAt = 0, checking = null, locking = null;
+  const callers = new Set();
   const check = () => checking ??= (async () => {
     let value = null;
     try { value = await system.locked(); } catch { /* unknown */ }
@@ -42,18 +43,28 @@ export function createScreen(ctx, system, { pollMs = 15_000, settleMs = 3000 } =
     available: Boolean(system),
     /** The last reading, refreshed in the background when it is a few seconds old; state never waits for it. */
     get locked() { if (system && Date.now() - checkedAt > 3000) check(); return locked; },
-    lock: () => locking ??= (async () => {
-      if (!system) throw fail(404, 'Locking is not available on this Mac');
-      if (await check() === true) return true;
-      const log = result => { if (!ctx.testing) console.log(`Screen lock requested: ${result}`); };
-      try { await system.lock(); } catch { log('refused'); throw fail(502, 'macOS refused to lock the screen'); }
-      const end = Date.now() + settleMs;
-      let value = await check();
-      while (value === false && Date.now() < end) { await pause(200); value = await check(); }
-      log(value === true ? 'locked' : value === false ? 'still unlocked' : 'unknown');
-      if (value === false) throw fail(502, 'The Mac did not lock');
-      return value;
-    })().finally(() => { locking = null; }),
+    /**
+     * Callers waiting together share one lock. Each one's ready is asked again at the end and right before macOS is:
+     * a caller that lost access meanwhile gets 401, and nothing locks unless a caller still has access.
+     */
+    lock: (ready = () => true) => {
+      callers.add(ready);
+      locking ??= lockOnce().finally(() => { locking = null; callers.clear(); });
+      return locking.finally(() => { if (!ready()) throw fail(401, 'Unauthorized'); });
+    },
     close() { clearInterval(timer); },
   };
+  async function lockOnce() {
+    if (!system) throw fail(404, 'Locking is not available on this Mac');
+    if (await check() === true) return true;
+    if (![...callers].some(caller => caller())) throw fail(401, 'Unauthorized');
+    const log = result => { if (!ctx.testing) console.log(`Screen lock requested: ${result}`); };
+    try { await system.lock(); } catch { log('refused'); throw fail(502, 'macOS refused to lock the screen'); }
+    const end = Date.now() + settleMs;
+    let value = await check();
+    while (value === false && Date.now() < end) { await pause(200); value = await check(); }
+    log(value === true ? 'locked' : value === false ? 'still unlocked' : 'unknown');
+    if (value === false) throw fail(502, 'The Mac did not lock');
+    return value;
+  }
 }

@@ -10,7 +10,7 @@ Pairing should persist. The Mac keeps working when the phone disconnects or clos
 - `android/`: native Kotlin and Jetpack Compose app, targeting Android 16 API 36.
 - `mac/service/`: Node.js service, local SQLite state and the official Claude and Codex CLIs.
 - `mac/public/`: browser client for Mac chats, project registration and phone pairing.
-- `mac/scripts/` and `mac/launcher/`: launchers, login startup and private Tailscale setup.
+- `mac/scripts/` and `mac/launcher/`: launchers, login startup and Tailscale connection setup.
 - `PROTOCOL.md`: shared HTTP and streaming contract. Keep both clients compatible.
 - `PRODUCT.md`, component `README.md` files and `TEST-REPORT.txt`: scope, setup and verification.
 - `work/` and `releases/`: ignored scratch files and generated downloads.
@@ -24,10 +24,13 @@ Pairing should persist. The Mac keeps working when the phone disconnects or clos
 - Claude and Codex logins stay inside their unmodified official CLIs. Never extract subscription
   credentials or replace their authentication with direct API calls. Model lists come from
   each CLI's own local handshake.
-- Keep the Mac service private through Tailscale. Source and signed APK releases
-  are public; credentials, runtime data and signing keys stay private and ignored.
+- Reach the Mac through Tailscale: Funnel by default, so the phone needs no VPN, or
+  tailnet-only Serve. Only paired phone tokens work remotely, never the Mac's own token or
+  local routes. The Mac can remove a phone, cutting it off at once. Source and signed APK
+  releases are public; credentials, runtime data and signing keys stay private and ignored.
 - Discover project folders from Claude and Codex session metadata. Old sessions are never imported
-  wholesale; the owner can explicitly continue one, which forks it and copies only its last exchange.
+  wholesale; the owner can explicitly continue one, which resumes that same session (so Terminal and
+  the desktop app see the phone's turns) and copies only its last exchange into the chat.
 - New chats stay local drafts until their first prompt. Preserve agent, model, effort and
   permission mode with the immutable delivery ID. Deleted chats cannot be recreated by a retry.
 - Show real model names from the catalog, pulled from the newest installed CLI; never hard-code model or tier lists. Model, effort and mode sit in the composer, not a

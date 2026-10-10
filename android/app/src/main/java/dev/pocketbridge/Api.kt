@@ -6,6 +6,7 @@ import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.suspendCancellableCoroutine
 import okhttp3.Call
 import okhttp3.ConnectionPool
+import okhttp3.Dispatcher
 import okhttp3.Callback
 import okhttp3.Response
 import okhttp3.OkHttpClient
@@ -24,8 +25,8 @@ class ApiError(val status: Int, message: String, val fromMac: Boolean = false) :
 
 /** The error a non-2xx answer carries: the Mac's own words, or what a bare proxy status means. */
 internal fun rejection(status: Int, error: String?, fallback: String) = ApiError(status, error?.takeIf { it.isNotBlank() } ?: when (status) {
-    // Tailscale Serve answers for the Mac when the service behind it is down or restarting.
-    502, 503, 504 -> "Your Mac is reachable, but PocketBridge isn't answering on it. It restarts on its own; check the Mac if this lasts."
+    // Tailscale answers for the Mac when the service behind it is down or restarting.
+    502, 503, 504 -> "Your Mac is reachable, but Felva isn't answering on it. It restarts on its own; check the Mac if this lasts."
     else -> fallback
 }, fromMac = !error.isNullOrBlank())
 
@@ -45,15 +46,18 @@ private fun isLoopbackIp(host: String): Boolean {
 }
 class Api(base: String, val token: String = "") {
     val base = normalizeServer(base)
-    // HTTP/2 pings (Tailscale Serve speaks it) find a dead pooled connection before a request waits out its timeout.
+    // HTTP/2 pings (Tailscale speaks it) find a dead pooled connection before a request waits out its timeout.
     private val readClient = OkHttpClient.Builder().followRedirects(false).followSslRedirects(false).retryOnConnectionFailure(true).callTimeout(30, TimeUnit.SECONDS).connectTimeout(10, TimeUnit.SECONDS).readTimeout(20, TimeUnit.SECONDS).pingInterval(15, TimeUnit.SECONDS).build()
     // Mutations use fresh connections so expired server keepalives cannot lose an action.
     private val client = readClient.newBuilder().retryOnConnectionFailure(false).connectionPool(ConnectionPool(0, 5, TimeUnit.MINUTES)).build()
+    // Stop and answers must not queue behind the stream, slow reads, sends or screenshot uploads.
+    private val controlClient = client.newBuilder().dispatcher(Dispatcher()).build()
+    private val controlReadClient = readClient.newBuilder().dispatcher(controlClient.dispatcher).build()
     // The Mac sends a keepalive every 15 seconds: two missed ones mean the stream is dead (a network handover, a sleeping Mac).
     private val streamClient = readClient.newBuilder().callTimeout(0, TimeUnit.SECONDS).readTimeout(35, TimeUnit.SECONDS).build()
     /** Drops pooled connections after a network change: they belong to the old network and would only time out. */
     fun evictConnections() { readClient.connectionPool.evictAll() }
-    suspend fun request(path: String, body: JSONObject? = null): JSONObject {
+    suspend fun request(path: String, body: JSONObject? = null, control: Boolean = false): JSONObject {
         val request = Request.Builder().url(base + path).header("Authorization", "Bearer $token")
         if (body != null) {
             val payload = body.toString().toRequestBody("application/json".toMediaType())
@@ -66,11 +70,22 @@ class Api(base: String, val token: String = "") {
             })
         }
         // Only reads may transparently recover a stale pooled connection.
-        return (if (body == null) readClient else client).newCall(request.build()).consume { response ->
+        val urgent = control || body != null && (path.startsWith("/api/approvals/") || path.endsWith("/stop"))
+        val transport = if (body == null) { if (urgent) controlReadClient else readClient } else if (urgent) controlClient else client
+        return transport.newCall(request.build()).consume { response ->
             val text = response.body?.string().orEmpty()
             val result = runCatching { JSONObject(text) }.getOrNull()
             if (!response.isSuccessful) throw rejection(response.code, result?.optString("error"), "The Mac rejected the request (${response.code}).")
             result ?: throw IOException("The Mac returned an unreadable response.")
+        }
+    }
+    /** A lost Stop answer is settled by the Mac's state, without repeating the mutation. */
+    suspend fun stopChat(chatId: String) {
+        try { request("/api/chats/$chatId/stop", JSONObject()) }
+        catch (failure: IOException) {
+            if (failure is ApiError && failure.definitiveRejection) throw failure
+            val state = kotlinx.coroutines.withTimeoutOrNull(5000) { orNull { request("/api/state", control = true) } }
+            if (!stopSettled(state, chatId)) throw failure
         }
     }
     /** One image as raw bytes. Single attempt like every mutation; an unowned upload left behind is harmless. */

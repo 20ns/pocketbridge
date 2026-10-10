@@ -12,8 +12,11 @@ export function createPrompts(ctx, uploadPath) {
   const { get, run, transaction, change, active, agents, runs, schedules } = ctx;
   const { available, enabled } = agents;
   const { launch, message } = runs;
-  /** Resolves [status code, response body] for POST /api/chats/:id/prompts. */
-  return async (id, input) => {
+  /**
+   * Resolves [status code, response body] for POST /api/chats/:id/prompts. authorized throws if the sender lost access
+   * while the prompt was being validated; it runs right before anything is recorded or started.
+   */
+  return async (id, input, authorized = () => {}) => {
     if (get('SELECT id FROM deleted_chats WHERE id=?', id)) throw fail(410, 'Chat was deleted');
     const attachmentIds = input.attachments === undefined ? [] : input.attachments;
     if (!Array.isArray(attachmentIds) || attachmentIds.length > 8 || attachmentIds.some(item => typeof item !== 'string' || !uuid(item))) throw fail(400, 'Attachments must be up to 8 upload ids');
@@ -87,6 +90,7 @@ export function createPrompts(ctx, uploadPath) {
     const scheduled = schedule !== null;
     // Scheduling acknowledges the owner's next step, so a failed or interrupted chat reads as ready again.
     const status = scheduled ? (busy ? next.status : 'idle') : 'running';
+    authorized();
     transaction(() => {
       if (!stored) run('INSERT INTO chats (id,projectId,agent,title,mode,model,effort,speed,status,updatedAt) VALUES (?,?,?,?,?,?,?,?,?,?)', id, next.projectId, agent, next.title, next.mode, next.model, next.effort, next.speed, status, Date.now());
       else if (busy) run('UPDATE chats SET mode=?,model=?,effort=?,speed=?,updatedAt=? WHERE id=?', next.mode, next.model, next.effort, next.speed, Date.now(), id);

@@ -155,7 +155,7 @@ object Alerts {
         context.getSystemService(NotificationManager::class.java).createNotificationChannels(listOf(
             NotificationChannel(NEEDS, "Needs you", NotificationManager.IMPORTANCE_HIGH).apply { description = "Questions, plans and permission requests" },
             NotificationChannel(FINISHED, "Finished", NotificationManager.IMPORTANCE_DEFAULT).apply { description = "Chats that finish, fail or stop" },
-            NotificationChannel(WORKING, "Working", NotificationManager.IMPORTANCE_LOW).apply { description = "Chats working on your Mac while PocketBridge is closed"; setShowBadge(false) },
+            NotificationChannel(WORKING, "Working", NotificationManager.IMPORTANCE_LOW).apply { description = "Chats working on your Mac while Felva is closed"; setShowBadge(false) },
         ))
     }
 

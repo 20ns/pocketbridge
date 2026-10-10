@@ -4,7 +4,7 @@ Personal remote control for the user's official Claude Code and Codex installati
 
 ## Confirmed scope
 - New chats started through this app or Mac launcher, or an explicit continue of a Terminal or
-  desktop session in that project (forked; only its last exchange is copied in). Each chat runs on Claude Code
+  desktop session in that project (resumed in place, so the Mac sees the phone's turns; only its last exchange is copied in). Each chat runs on Claude Code
   or Codex; a draft can switch until its first prompt. Discover folders from local Claude Code
   and Codex session metadata, with manual registration on the Mac as a fallback.
 - An on/off switch per agent, shared by phone and Mac, for when only one subscription is
@@ -17,7 +17,7 @@ Personal remote control for the user's official Claude Code and Codex installati
   Typed drafts and unconfirmed first prompts remain reachable in Recent chats.
 - Send at reset: at a plan limit, a prompt can wait on the Mac and send itself once when that
   limit resets, with the phone off. It can be cancelled or sent now until it starts.
-- Persistent pairing, private networking, Mac service starts at user login.
+- Persistent pairing the Mac can revoke, Tailscale Funnel so the phone needs no VPN, Mac service starts at user login.
 - Recent chats, prompts, formatted replies, streamed tool activity, Stop, questions when needed.
 - Bypass permissions is the preferred mode; Auto is also offered. Never silently change modes.
 - Model, effort and permission mode sit in the composer as one-tap choices with real model
